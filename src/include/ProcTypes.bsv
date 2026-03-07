@@ -1,9 +1,5 @@
 import Types::*;
 import FShow::*;
-import MemTypes::*;
-import CacheTypes::*;
-import GetPut::*;
-import Vector::*;
 
 // cpu to host data type
 typedef enum {
@@ -18,24 +14,10 @@ typedef struct {
   Bit#(16) data;
 } CpuToHostData deriving(Bits, Eq, FShow);
 
-typedef struct {
-  CoreID id;
-  CpuToHostData data;
-} CpuToHost deriving(Bits, Eq, FShow);
-
 interface Core;
-  interface MessageGet toParent;
-  interface MessagePut fromParent;
   method ActionValue#(CpuToHostData) cpuToHost;
   method Bool cpuToHostValid;
   method Action hostToCpu(Addr startpc);
-endinterface
-
-interface Proc;
-  interface Get#(CpuToHost) cpuToHost;
-  interface Put#(Addr) hostToCpu;
-  interface Put#(WideMemInit) memInit;
-  interface DDR3_Client ddr3client;
 endinterface
 
 // general purpose reg index

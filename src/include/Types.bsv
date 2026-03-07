@@ -9,9 +9,6 @@ typedef Bit#(DataSz) Data;
 typedef 32 InstSz;
 typedef Bit#(InstSz) Instruction;
 
-`ifndef CORE_NUM
-`define CORE_NUM 1
-`endif
-
-typedef `CORE_NUM CoreNum;
+// Single-core; kept for external module (CacheTypes) compatibility
+typedef 1 CoreNum;
 typedef Bit#(TLog#(CoreNum)) CoreID;

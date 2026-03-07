@@ -10,33 +10,25 @@ import Ehr::*;
 import Btb::*;
 import Scoreboard::*;
 import Bht::*;
-import GetPut::*;
-import ClientServer::*;
-import Memory::*;
 import ICache::*;
 import DCache::*;
 import CacheTypes::*;
-import WideMemInit::*;
-import MemUtil::*;
 import Vector::*;
 import FShow::*;
-import MemReqIDGen::*;
-import RefTypes::*;
-import MessageFifo::*;
 
 typedef struct {
   Addr        pc;
   Addr        predPc;
   Bool        ifExeEpoch;
   Bool        ifDecodeEpoch;
-}   F2D deriving (Bits, Eq);
+}   F2D deriving(Bits, Eq);
 
 typedef struct {
   Addr        pc;
   Addr        predPc;
   DecodedInst dInst;
   Bool        idExeEpoch;
-}   D2R deriving (Bits, Eq);
+}   D2R deriving(Bits, Eq);
 
 typedef struct {
   Addr        pc;
@@ -46,24 +38,23 @@ typedef struct {
   Data        csrVal;
   DecodedInst rInst;
   Bool        irExeEpoch;
-}   R2E deriving (Bits, Eq);
+}   R2E deriving(Bits, Eq);
 
 typedef struct {
   Addr                pc;
   Maybe#(ExecInst)    eInst;
-}   E2M deriving (Bits, Eq);
+}   E2M deriving(Bits, Eq);
 
 typedef struct {
   Addr                pc;
   Maybe#(ExecInst)    mInst;
-}   M2W deriving (Bits, Eq);
+}   M2W deriving(Bits, Eq);
 
 module mkCore#(CoreID id)(
-  WideMem iMem,
-  RefDMem refDMem,
-  Core ifc
+    WideMem iMem,
+    RefDMem refDMem,
+    Core ifc
 );
-
   Ehr#(2, Addr)         pcReg <- mkEhr(?);
   CsrFile                csrf <- mkCsrFile(id);
   RFile                    rf <- mkRFile;
@@ -71,13 +62,13 @@ module mkCore#(CoreID id)(
   ICache               iCache <- mkICache(iMem);
   MessageFifo#(8)   toParentQ <- mkMessageFifo;
   MessageFifo#(8) fromParentQ <- mkMessageFifo;
-  DCache               dCache <- mkDCache(id, toMessageGet(fromParentQ), toMessagePut(toParentQ), refDMem);
+  DCache               dCache <- mkDCache(id, toMessageGet(fromParentQ),
+    toMessagePut(toParentQ), refDMem);
   Btb#(6)                 btb <- mkBtb; // 64-entry BTB
   Bht#(8)                 bht <- mkBht;
   Scoreboard#(6)           sb <- mkCFScoreboard;
 
-  // global epoch for redirection from Execute stage
-  Reg#(Bool)    exeEpoch    <- mkReg(False);
+  Reg#(Bool)    exeEpoch <- mkReg(False);
   Reg#(Bool)    decodeEpoch <- mkReg(False);
   Reg#(Data)    scSuccValue <- mkRegU;
 
@@ -92,7 +83,7 @@ module mkCore#(CoreID id)(
     Addr predPc = btb.predPc(pcReg[0]);
 
     f2dFifo.enq(F2D{pc: pcReg[0], predPc: predPc, ifExeEpoch: exeEpoch,
-                ifDecodeEpoch: decodeEpoch});
+      ifDecodeEpoch: decodeEpoch});
     pcReg[0] <= predPc;
   endrule
 
@@ -101,40 +92,39 @@ module mkCore#(CoreID id)(
     DecodedInst dInst = decode(inst);
 
     let _Fetch = f2dFifo.first();
-    if (decodeEpoch == _Fetch.ifDecodeEpoch && exeEpoch == _Fetch.ifExeEpoch) begin
+    if (decodeEpoch == _Fetch.ifDecodeEpoch && exeEpoch ==
+      _Fetch.ifExeEpoch) begin
       Addr    ppc;
       if (dInst.iType == Br) begin
-          ppc = bht.ppcDP(_Fetch.pc, fromMaybe(?, dInst.imm) + _Fetch.pc);
+        ppc = bht.ppcDP(_Fetch.pc, fromMaybe(?, dInst.imm) + _Fetch.pc);
       end else if (dInst.iType == J) begin
-          ppc = fromMaybe(?, dInst.imm) + _Fetch.pc;
+        ppc = fromMaybe(?, dInst.imm) + _Fetch.pc;
       end else begin
-          ppc = _Fetch.predPc;
+        ppc = _Fetch.predPc;
       end
       if (ppc != _Fetch.predPc) begin
-          decodeEpoch <= !decodeEpoch;
-          pcReg[1] <= ppc;
+        decodeEpoch <= !decodeEpoch;
+        pcReg[1] <= ppc;
       end
 
-      // $display("pc: %h, inst: %h extended: ", _Fetch.pc, inst, fshow(dInst));
       d2rFifo.enq(D2R{pc: _Fetch.pc, predPc: ppc, dInst: dInst,
-                idExeEpoch: _Fetch.ifExeEpoch});
+        idExeEpoch: _Fetch.ifExeEpoch});
     end
     f2dFifo.deq();
   endrule
 
   rule doRrf (csrf.started);
     let _Decode = d2rFifo.first();
-    let rInst   = _Decode.dInst;
+    let rInst = _Decode.dInst;
 
-    // search scoreboard to determine stall
     if (!sb.search1(rInst.src1) && !sb.search2(rInst.src2)) begin
       Data    rVal1 = rf.rd1(fromMaybe(?, rInst.src1));
       Data    rVal2 = rf.rd2(fromMaybe(?, rInst.src2));
-      Data    csrVal= csrf.rd(fromMaybe(?, rInst.csr));
+      Data    csrVal = csrf.rd(fromMaybe(?, rInst.csr));
 
-      // $display("RegFile: PC = %x, rVal1 = %x, rVal2 = %x, csrVal = %x", _Decode.pc, rVal1, rVal2, csrVal);
-      r2eFifo.enq(R2E{pc: _Decode.pc, predPc: _Decode.predPc, rVal1: rVal1, rVal2: rVal2, csrVal: csrVal,
-                    rInst: rInst, irExeEpoch: _Decode.idExeEpoch});
+      r2eFifo.enq(R2E{pc: _Decode.pc, predPc: _Decode.predPc, rVal1: rVal1,
+        rVal2: rVal2, csrVal: csrVal,
+        rInst: rInst, irExeEpoch: _Decode.idExeEpoch});
       sb.insert(rInst.dst);
       d2rFifo.deq();
     end
@@ -145,23 +135,20 @@ module mkCore#(CoreID id)(
     r2eFifo.deq();
 
     if (exeEpoch == _Rrf.irExeEpoch) begin
-      ExecInst eInst = exec(_Rrf.rInst, _Rrf.rVal1, _Rrf.rVal2, _Rrf.pc, _Rrf.predPc, _Rrf.csrVal);
-      // check unsupported instruction at commit time. Exiting
+      ExecInst eInst = exec(_Rrf.rInst, _Rrf.rVal1, _Rrf.rVal2, _Rrf.pc,
+        _Rrf.predPc, _Rrf.csrVal);
+
       if (eInst.iType == Unsupported) begin
-          $fwrite(stderr,"ERROR: Executing unsupported instruction at pc: %x. Exiting\n", _Rrf.pc);
-          $finish;
-          end
+        $fwrite(stderr, "ERROR: Executing unsupported instruction at pc: %x. \
+          Exiting\n", _Rrf.pc);
+        $finish;
+      end
       if (eInst.mispredict) begin
-          // 更新 epoch
-          // redirection
-          // 移除此时处于 Rrf 级向计分板写入的数据
-          exeEpoch <= !exeEpoch;
-          pcReg[1] <= eInst.addr;
-          btb.update(_Rrf.pc, eInst.addr);
-          // $display("Exec: mispredict ppc: %h, real pc: %h", _Rrf.predPc, eInst.addr);
+        exeEpoch <= !exeEpoch;
+        pcReg[1] <= eInst.addr;
+        btb.update(_Rrf.pc, eInst.addr);
       end else begin
-          btb.update(_Rrf.pc, _Rrf.predPc);
-          // $display("Exec: pc: %h", _Rrf.pc);
+        btb.update(_Rrf.pc, _Rrf.predPc);
       end
 
       e2mFifo.enq(E2M{pc: _Rrf.pc, eInst: tagged Valid eInst});
@@ -177,36 +164,39 @@ module mkCore#(CoreID id)(
     if (isValid(_Exec.eInst)) begin
       let _eInst = fromMaybe(?, _Exec.eInst);
       case (_eInst.iType)
-          Ld: begin
-            let rid <- memReqIDGen.getID;
-            let req = MemReq { op: Ld, addr: _eInst.addr, data: ?, rid: rid };
-            dCache.req(req);
-          end
-          St: begin
-            let rid <- memReqIDGen.getID;
-            let req = MemReq { op: St, addr: _eInst.addr, data: _eInst.data, rid: rid };
-            scSuccValue <= _eInst.data;
-            dCache.req(req);
-          end
-          Ll: begin
-            let rid <- memReqIDGen.getID;
-            let req = MemReq { op: Lr, addr: _eInst.addr, data: ?, rid: rid };
-            dCache.req(req);
-          end
-          Sc: begin
-            let rid <- memReqIDGen.getID;
-            let req = MemReq { op: Sc, addr: _eInst.addr, data: _eInst.data, rid: rid };
-            dCache.req(req);
-          end
-          Fence: begin
-            let rid <- memReqIDGen.getID;
-            let req = MemReq { op: Fence, addr: ?, data: ?, rid: rid };
-            dCache.req(req);
-          end
-          default: begin
-          end
+        Ld: begin
+          let rid <- memReqIDGen.getID;
+          let req = MemReq { op: Ld, addr: _eInst.addr, data: ?, rid: rid};
+          dCache.req(req);
+        end
+        St: begin
+          let rid <- memReqIDGen.getID;
+          let req = MemReq { op: St, addr: _eInst.addr, data: _eInst.data,
+            rid:
+            rid};
+          scSuccValue <= _eInst.data;
+          dCache.req(req);
+        end
+        Ll: begin
+          let rid <- memReqIDGen.getID;
+          let req = MemReq { op: Lr, addr: _eInst.addr, data: ?, rid: rid};
+          dCache.req(req);
+        end
+        Sc: begin
+          let rid <- memReqIDGen.getID;
+          let req = MemReq { op: Sc, addr: _eInst.addr, data: _eInst.data,
+            rid:
+            rid};
+          dCache.req(req);
+        end
+        Fence: begin
+          let rid <- memReqIDGen.getID;
+          let req = MemReq { op: Fence, addr: ?, data: ?, rid: rid};
+          dCache.req(req);
+        end
+        default: begin
+        end
       endcase
-      // $display("doMemory: pc: %h", _Exec.pc);
 
       m2wFifo.enq(M2W{pc: _Exec.pc, mInst: tagged Valid _eInst});
     end else begin
@@ -220,17 +210,15 @@ module mkCore#(CoreID id)(
 
     if (isValid(_Mem.mInst)) begin
       let _mInst = fromMaybe(?, _Mem.mInst);
-      if (_mInst.iType == Ld || _mInst.iType == Ll ||
-          _mInst.iType == Sc) begin
-          _mInst.data <- dCache.resp();
+      if (_mInst.iType == Ld || _mInst.iType == Ll || _mInst.iType ==
+        Sc) begin
+        _mInst.data <- dCache.resp();
       end
 
-      // write back
       if (isValid(_mInst.dst)) begin
-          rf.wr(fromMaybe(?, _mInst.dst), _mInst.data);
+        rf.wr(fromMaybe(?, _mInst.dst), _mInst.data);
       end
 
-      // CSR write: for CSRWR, the value to write is in addr field
       Data csrWrData = _mInst.iType == Csrw ? _mInst.addr : _mInst.data;
       csrf.wr(_mInst.iType == Csrw ? _mInst.csr : Invalid, csrWrData);
     end
