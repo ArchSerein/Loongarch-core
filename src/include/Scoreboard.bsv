@@ -11,7 +11,7 @@ interface Scoreboard#(numeric type size);
 endinterface
 
 function Bool isFound(Maybe#(RIndx) x, Maybe#(RIndx) k);
-  if (x matches tagged Valid .xv && & k matches tagged Valid .kv && & kv ==
+  if (x matches tagged Valid .xv &&& k matches tagged Valid .kv &&& kv ==
     xv) begin
     return True;
   end else begin

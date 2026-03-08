@@ -5,7 +5,7 @@ import CacheTypes::*;
 import RefTypes::*;
 import Fifo::*;
 import Vector::*;
-import Autoconf::*;
+`include "Autoconf.bsv"
 
 typedef `CONFIG_DCACHE_SETS       DCacheSets; // number of sets
 typedef `CONFIG_DCACHE_WAYS       DCacheWays; // set associativity

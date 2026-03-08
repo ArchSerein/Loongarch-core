@@ -26,7 +26,7 @@ TEST_BIN := $(BUILD_DIR)/$(TEST).bin
 MEM_IMAGE := $(BUILD_DIR)/mem.bin
 SIM_BIN := $(OBJDIR)/sim
 
-BSV_SEARCH_PATH := +:$(ROOT_DIR):$(ROOT_DIR)/include:$(ROOT_DIR)/../Project/src/includes:$(ROOT_DIR)/../Project/src/ref
+BSV_SEARCH_PATH := +:$(ROOT_DIR)/include
 BSC_FLAGS := -u -verilog -g $(TOP) \
 	-p $(BSV_SEARCH_PATH) \
 	-bdir $(BDIR) \

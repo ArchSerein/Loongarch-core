@@ -3,7 +3,7 @@ import ProcTypes::*;
 import CacheTypes::*;
 import Fifo::*;
 import Vector::*;
-import Autoconf::*;
+`include "Autoconf.bsv"
 
 // ============================================================
 // Configurable parameters (values provided by Kconfig -D flags)

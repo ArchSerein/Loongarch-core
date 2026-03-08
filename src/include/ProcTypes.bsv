@@ -207,11 +207,10 @@ end
 
   6'b001000: begin
     Op_25_24 op24 = inst[25:24];
+    Bit#(32) imm  = signExtend({inst[23:10], 2'b0});
     case (op24)
-      2'b00: ret = $format("ll.w r%0d, [r%0d + 0x%0x]", rd, rj,
-        signExtend({inst[23:10], 2'b0}));
-      2'b01: ret = $format("sc.w r%0d, [r%0d + 0x%0x]", rd, rj,
-        signExtend({inst[23:10], 2'b0}));
+      2'b00: ret = $format("ll.w r%0d, [r%0d + 0x%0x]", rd, rj, imm);
+      2'b01: ret = $format("sc.w r%0d, [r%0d + 0x%0x]", rd, rj, imm);
       default: ret = $format("unsup-llsc 0x%0x", inst);
     endcase
   end

@@ -3,7 +3,7 @@ import ProcTypes::*;
 import Ehr::*;
 import ConfigReg::*;
 import Fifo::*;
-import CsrAddr::*;
+`include "CsrAddr.bsv"
 
 interface CsrFile;
   method Action start;
@@ -85,40 +85,42 @@ module mkCsrFile#(CoreID id)(CsrFile);
   endmethod
 
   method Data rd(CsrIndx idx);
-    return(case (idx)
-      `CSR_CRMD: csr_crmd;
-      `CSR_PRMD: csr_prmd;
-      `CSR_EUEN: csr_euen;
-      `CSR_ECFG: csr_ecfg;
-      `CSR_ESTAT: csr_estat | (timerInt[1] ? 32'h00000800 : 0);
-      `CSR_ERA: csr_era;
-      `CSR_BADV: csr_badv;
-      `CSR_EENTRY: csr_eentry;
-      `CSR_TLBIDX: csr_tlbidx;
-      `CSR_TLBEHI: csr_tlbehi;
-      `CSR_TLBEL0: csr_tlbelo0;
-      `CSR_TLBEL1: csr_tlbelo1;
-      `CSR_ASID: csr_asid;
-      `CSR_PGDL: csr_pgdl;
-      `CSR_PGDH: csr_pgdh;
-      `CSR_PGD: (csr_badv[31] == 1) ? csr_pgdh : csr_pgdl;
-      `CSR_CPUID: zeroExtend(id);
-      `CSR_SAVE0: csr_save0;
-      `CSR_SAVE1: csr_save1;
-      `CSR_SAVE2: csr_save2;
-      `CSR_SAVE3: csr_save3;
-      `CSR_TID: csr_tid;
-      `CSR_TCFG: csr_tcfg;
-      `CSR_TVAL: csr_tval[1];
-      `CSR_TICLR: 0;
-      `CSR_LLBCTL: {29'b0, pack(llbctlKlo), 1'b0, pack(llbit)};
-      `CSR_TLBRENTRY: csr_tlbrentry;
-      `CSR_CTAG: csr_ctag;
-      `CSR_DMW0: csr_dmw0;
-      `CSR_DMW1: csr_dmw1;
-      csrMtohost: 0;
-      default: 0;
-    endcase);
+    Data res = 0;
+    case (idx)
+        `CSR_CRMD: res = csr_crmd; 
+        `CSR_PRMD: res = csr_prmd;
+        `CSR_EUEN: res = csr_euen; 
+        `CSR_ECFG: res = csr_ecfg;
+        `CSR_ESTAT: res = csr_estat | (timerInt[1] ? 32'h00000800 : 0); 
+        `CSR_ERA: res = csr_era;
+        `CSR_BADV: res = csr_badv; 
+        `CSR_EENTRY: res = csr_eentry;
+        `CSR_TLBIDX: res = csr_tlbidx; 
+        `CSR_TLBEHI: res = csr_tlbehi;
+        `CSR_TLBEL0: res = csr_tlbelo0; 
+        `CSR_TLBEL1: res = csr_tlbelo1;
+        `CSR_ASID: res = csr_asid; 
+        `CSR_PGDL: res = csr_pgdl;
+        `CSR_PGDH: res = csr_pgdh; 
+        `CSR_PGD: res = (csr_badv[31] == 1) ? csr_pgdh : csr_pgdl;
+        `CSR_CPUID: res = zeroExtend(id); 
+        `CSR_SAVE0: res = csr_save0;
+        `CSR_SAVE1: res = csr_save1; 
+        `CSR_SAVE2: res = csr_save2;
+        `CSR_SAVE3: res = csr_save3; 
+        `CSR_TID: res = csr_tid;
+        `CSR_TCFG: res = csr_tcfg; 
+        `CSR_TVAL: res = csr_tval[1];
+        `CSR_TICLR: res = 0; 
+        `CSR_LLBCTL: res = {29'b0, pack(llbctlKlo), 1'b0, pack(llbit)};
+        `CSR_TLBRENTRY: res = csr_tlbrentry; 
+        `CSR_CTAG: res = csr_ctag;
+        `CSR_DMW0: res = csr_dmw0; 
+        `CSR_DMW1: res = csr_dmw1;
+        csrMtohost: res = 0;
+        default: res = 0;
+    endcase
+    return res;
   endmethod
 
   method Action wr(Maybe#(CsrIndx) csrIdx, Data val);

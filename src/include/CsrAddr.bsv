@@ -71,8 +71,8 @@
 
 `define CSR_TID_TID     31: 0 // RW timer ID
 
-`define CSR_TCFG_EN     0 // RW timer enable
-`define CSR_TCFG_PERIOD 1 // RW timer periodic mode
+`define CSR_TCFG_EN     0
+`define CSR_TCFG_PERIOD 1
 `define CSR_TCFG_INITV  31: 2 // RW timer initial value
 
 `define CSR_TICLR_CLR   0 // W1 clear timer interrupt

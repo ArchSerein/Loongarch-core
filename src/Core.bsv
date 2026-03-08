@@ -1,7 +1,6 @@
 import Types::*;
 import ProcTypes::*;
 import MemTypes::*;
-import MemReqIDGen::*;
 import RFile::*;
 import Decode::*;
 import Exec::*;
@@ -70,7 +69,6 @@ module mkCore#(CoreID id)(
   Ehr#(2, Addr)         pcReg <- mkEhr(?);
   CsrFile                csrf <- mkCsrFile(id);
   RFile                    rf <- mkRFile;
-  MemReqIDGen     memReqIDGen <- mkMemReqIDGen;
   ICache               iCache <- mkICache(iMem);
   MessageFifo#(8)   toParentQ <- mkMessageFifo;
   MessageFifo#(8) fromParentQ <- mkMessageFifo;
@@ -178,33 +176,28 @@ module mkCore#(CoreID id)(
       let _eInst = fromMaybe(?, _Exec.eInst);
       case (_eInst.iType)
         Ld: begin
-          let rid <- memReqIDGen.getID;
-          let req = MemReq { op: Ld, addr: _eInst.addr, data: ?, rid: rid};
+          let req = MemReq { op: Ld, addr: _eInst.addr, data: ?, rid: 0};
           dCache.req(req);
         end
         St: begin
-          let rid <- memReqIDGen.getID;
           let req = MemReq { op: St, addr: _eInst.addr, data: _eInst.data,
             rid:
-            rid};
+            0};
           scSuccValue <= _eInst.data;
           dCache.req(req);
         end
         Ll: begin
-          let rid <- memReqIDGen.getID;
-          let req = MemReq { op: Lr, addr: _eInst.addr, data: ?, rid: rid};
+          let req = MemReq { op: Lr, addr: _eInst.addr, data: ?, rid: 0};
           dCache.req(req);
         end
         Sc: begin
-          let rid <- memReqIDGen.getID;
           let req = MemReq { op: Sc, addr: _eInst.addr, data: _eInst.data,
             rid:
-            rid};
+            0};
           dCache.req(req);
         end
         Fence: begin
-          let rid <- memReqIDGen.getID;
-          let req = MemReq { op: Fence, addr: ?, data: ?, rid: rid};
+          let req = MemReq { op: Fence, addr: ?, data: ?, rid: 0};
           dCache.req(req);
         end
         default: begin
