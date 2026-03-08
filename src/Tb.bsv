@@ -90,9 +90,9 @@ module mkTb(Empty);
   Reg#(Bit#(16)) printIntLow <- mkReg(0);
   Reg#(Bit#(64)) cycles <- mkReg(0);
   WideMem wideMemWrapper <- mkTbWideMem;
-  Vector#(2, WideMem) wideMems <- mkSplitWideMemRR(started, wideMemWrapper);
+  SplitWideMem2 splitWideMem <- mkSplitWideMem2(started, wideMemWrapper);
   RefMem refMem <- mkRefDummyMem;
-  Core core <- mkCore(0, wideMems[1], refMem.dMem[0]);
+  Core core <- mkCore(splitWideMem.iMem, splitWideMem.dMem, refMem.dMem);
 
   rule boot (!started);
     started <= True;
@@ -128,4 +128,3 @@ module mkTb(Empty);
     endcase
   endrule
 endmodule
-

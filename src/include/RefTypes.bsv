@@ -3,7 +3,6 @@ import Types::*;
 import CacheTypes::*;
 import MemTypes::*;
 import GetPut::*;
-import Vector::*;
 
 // imported C function to handle monolithic memory
 import "BDPI" function ActionValue#(Bit#(64)) c_createMem(Bit#(32) addrWidth);
@@ -24,8 +23,8 @@ interface RefDMem;
 endinterface
 
 interface RefMem;
-	interface Vector#(CoreNum, RefIMem) iMem;
-	interface Vector#(CoreNum, RefDMem) dMem;
+	interface RefIMem iMem;
+	interface RefDMem dMem;
 endinterface
 
 // in debugging, only simulate 4MB memory
@@ -92,5 +91,4 @@ typedef struct {
 } RefCommitReq deriving(Bits, Eq, FShow);
 
 typedef 8 MaxReqNum;
-
 

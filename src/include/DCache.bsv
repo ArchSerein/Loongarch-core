@@ -108,10 +108,9 @@ module mkDCacheReplaceRandom(DCacheReplace);
   endmethod
 endmodule
 
-typedef enum { Ready, StartMiss, WaitResp} DCacheState deriving(Bits, Eq);
+typedef enum { Ready, StartMiss, SendFill, WaitResp} DCacheState deriving(Bits, Eq);
 
-module mkDCache#(CoreID id, MessageGet fromMem, MessagePut toMem,
-  RefDMem refDMem)(DCache);
+module mkDCache#(WideMem mem, RefDMem refDMem)(DCache);
   Vector#(DCacheSets, Vector#(DCacheWays, Reg#(DCacheTag)))   tagStore <- replicateM(replicateM(mkRegU));
   Vector#(DCacheSets, Vector#(DCacheWays, Reg#(DCacheLine)))  dataStore <- replicateM(replicateM(mkRegU));
   Vector#(DCacheSets, Vector#(DCacheWays, Reg#(Bool)))        validStore <- replicateM(replicateM(mkReg(False)));
@@ -214,35 +213,29 @@ module mkDCache#(CoreID id, MessageGet fromMem, MessagePut toMem,
     let way = replacer.replace(idx);
     victimWay <= way;
 
-    // Writeback dirty victim line to memory via coherence protocol
     if (validStore[idx][way] && dirtyStore[idx][way]) begin
       Bit#(DCacheOffsetSz) zeroOff = 0;
       Addr wbAddr = {tagStore[idx][way], idx, zeroOff};
-      toMem.enq_resp(CacheMemResp{
-        child: id,
+      mem.req(WideMemReq{
+        write_en: ~0,
         addr: wbAddr,
-        state: I,
-        data: tagged Valid unpack(pack(dataStore[idx][way]))
+        data: unpack(pack(dataStore[idx][way]))
       });
+      state <= SendFill;
     end
+    else begin
+      mem.req(WideMemReq{write_en: 0, addr: missReq.addr, data: ?});
+      state <= WaitResp;
+    end
+  endrule
 
-    // Request new line from memory
-    toMem.enq_req(CacheMemReq{
-      child: id,
-      addr: missReq.addr,
-      state: M
-    });
+  rule doSendFill (state == SendFill);
+    mem.req(WideMemReq{write_en: 0, addr: missReq.addr, data: ?});
     state <= WaitResp;
   endrule
 
-  rule doWaitResp (state == WaitResp && fromMem.hasResp);
-    let msg = fromMem.first;
-    fromMem.deq;
-
-    CacheLine memLine = replicate(0);
-    if (msg matches tagged Resp .resp)
-      memLine = fromMaybe(replicate(0), resp.data);
-
+  rule doWaitResp (state == WaitResp);
+    let memLine <- mem.resp;
     DCacheLine line = unpack(pack(memLine));
 
     let r = missReq;

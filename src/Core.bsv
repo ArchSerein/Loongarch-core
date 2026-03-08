@@ -13,15 +13,9 @@ import Bht::*;
 import ICache::*;
 import DCache::*;
 import CacheTypes::*;
-import MessageFifo::*;
 import RefTypes::*;
-import Vector::*;
-import FShow::*;
 
-// Core interface with coherence ports for PPP connection
 interface Core;
-  interface MessageGet toParent;
-  interface MessagePut fromParent;
   method ActionValue#(CpuToHostData) cpuToHost;
   method Bool cpuToHostValid;
   method Action hostToCpu(Addr startpc);
@@ -61,19 +55,17 @@ typedef struct {
   Maybe#(ExecInst)    mInst;
 }   M2W deriving(Bits, Eq);
 
-module mkCore#(CoreID id)(
+module mkCore(
     WideMem iMem,
+    WideMem dMem,
     RefDMem refDMem,
     Core ifc
 );
   Ehr#(2, Addr)         pcReg <- mkEhr(?);
-  CsrFile                csrf <- mkCsrFile(id);
+  CsrFile                csrf <- mkCsrFile(0);
   RFile                    rf <- mkRFile;
   ICache               iCache <- mkICache(iMem);
-  MessageFifo#(8)   toParentQ <- mkMessageFifo;
-  MessageFifo#(8) fromParentQ <- mkMessageFifo;
-  DCache               dCache <- mkDCache(id, toMessageGet(fromParentQ),
-    toMessagePut(toParentQ), refDMem);
+  DCache               dCache <- mkDCache(dMem, refDMem);
   Btb#(6)                 btb <- mkBtb; // 64-entry BTB
   Bht#(8)                 bht <- mkBht;
   Scoreboard#(6)           sb <- mkCFScoreboard;
@@ -230,9 +222,6 @@ module mkCore#(CoreID id)(
     end
     sb.remove();
   endrule
-
-  interface MessageGet toParent = toMessageGet(toParentQ);
-  interface MessagePut fromParent = toMessagePut(fromParentQ);
 
   method ActionValue#(CpuToHostData) cpuToHost if (csrf.started);
     let ret <- csrf.cpuToHost;
