@@ -10,6 +10,10 @@ BDIR := $(BUILD_DIR)/bdir
 IDIR := $(BUILD_DIR)/info
 VDIR := $(BUILD_DIR)/verilog
 OBJDIR := $(BUILD_DIR)/obj_dir
+BSIM_DIR := $(BUILD_DIR)/bluesim
+BSIM_BDIR := $(BSIM_DIR)/bdir
+BSIM_IDIR := $(BSIM_DIR)/info
+BSIM_SIMDIR := $(BSIM_DIR)/simdir
 TEST_DIR := $(ROOT_DIR)/tests
 
 BSC ?= bsc
@@ -26,15 +30,30 @@ TEST_LD := $(TEST_DIR)/link.ld
 TEST_ELF := $(BUILD_DIR)/$(TEST).elf
 TEST_BIN := $(BUILD_DIR)/$(TEST).bin
 MEM_IMAGE := $(BUILD_DIR)/mem.bin
+TB_MEM_IMAGE ?= $(MEM_IMAGE)
 SIM_BIN := $(OBJDIR)/sim
+BSIM_BIN := $(BSIM_DIR)/sim
 BSV_DPI_SRCS := $(wildcard $(VDIR)/*.c) $(wildcard $(VDIR)/*.cc) $(wildcard $(VDIR)/*.cpp)
 
-BSV_SEARCH_PATH := +:$(ROOT_DIR)/include
+ifeq ($(abspath $(TB_MEM_IMAGE)),$(abspath $(MEM_IMAGE)))
+SIM_IMAGE_DEPS := $(MEM_IMAGE)
+else
+SIM_IMAGE_DEPS := check-mem-image
+endif
+
+BSV_SEARCH_PATH := +:$(ROOT_DIR):$(ROOT_DIR)/include:$(ROOT_DIR)/../Project/src/includes
 BSC_FLAGS := -u -verilog -vsim $(BSC_VSIM) -g $(TOP) \
 	-p $(BSV_SEARCH_PATH) \
 	-bdir $(BDIR) \
 	-info-dir $(IDIR) \
 	-vdir $(VDIR) \
+	$(BSC_EXTRA_FLAGS)
+
+BSC_SIM_FLAGS := -u -sim -g $(TOP) \
+	-p $(BSV_SEARCH_PATH) \
+	-bdir $(BSIM_BDIR) \
+	-info-dir $(BSIM_IDIR) \
+	-simdir $(BSIM_SIMDIR) \
 	$(BSC_EXTRA_FLAGS)
 
 VERILATOR_FLAGS := --cc --exe --build --trace \
@@ -43,16 +62,12 @@ VERILATOR_FLAGS := --cc --exe --build --trace \
 	-o sim \
 	-CFLAGS "-std=c++17 -O2"
 
-# Connectal host bridge registration (consumed by Connectal make fragments).
-S2H_INTERFACES ?=
-S2H_INTERFACES += MemoryService:ConnectalWrapper.memService
-
 default: sim
 
-$(BUILD_DIR) $(BDIR) $(IDIR) $(VDIR) $(OBJDIR):
+$(BUILD_DIR) $(BDIR) $(IDIR) $(VDIR) $(OBJDIR) $(BSIM_DIR) $(BSIM_BDIR) $(BSIM_IDIR) $(BSIM_SIMDIR):
 	mkdir -p $@
 
-.PHONY: default sim clean image program check-bsc check-verilator check-loongarch-tools
+.PHONY: default sim bsim verilator-sim clean image program check-bsc check-verilator check-loongarch-tools check-mem-image
 
 check-bsc:
 	@command -v $(BSC) >/dev/null || { \
@@ -80,6 +95,12 @@ check-loongarch-tools:
 		exit 1; \
 	}
 
+check-mem-image:
+	@test -f $(TB_MEM_IMAGE) || { \
+		echo "error: TB_MEM_IMAGE does not exist: $(TB_MEM_IMAGE)"; \
+		exit 1; \
+	}
+
 $(TEST_ELF): $(TEST_SRC) $(TEST_LD) | check-loongarch-tools $(BUILD_DIR)
 	$(LA32R_GCC) -nostdlib -nostartfiles -static -Wl,-T,$(TEST_LD) -o $@ $(TEST_SRC)
 
@@ -93,6 +114,20 @@ program: $(TEST_BIN)
 
 image: $(MEM_IMAGE)
 
+$(BSIM_BIN): Tb.bsv csrc/tb_mem.cpp | check-bsc $(BSIM_DIR) $(BSIM_BDIR) $(BSIM_IDIR) $(BSIM_SIMDIR)
+	$(BSC) $(BSC_SIM_FLAGS) $<
+	$(BSC) -sim -e $(TOP) \
+		-p $(BSV_SEARCH_PATH) \
+		-bdir $(BSIM_BDIR) \
+		-info-dir $(BSIM_IDIR) \
+		-simdir $(BSIM_SIMDIR) \
+		-Xc++ -std=c++17 \
+		-o $@ \
+		csrc/tb_mem.cpp
+
+bsim: $(SIM_IMAGE_DEPS) $(BSIM_BIN)
+	TB_MEM_IMAGE=$(TB_MEM_IMAGE) $(BSIM_BIN)
+
 $(VDIR)/$(TOP).v: Tb.bsv | check-bsc $(BUILD_DIR) $(BDIR) $(IDIR) $(VDIR)
 	$(BSC) $(BSC_FLAGS) $<
 
@@ -103,8 +138,10 @@ $(SIM_BIN): $(VDIR)/$(TOP).v csrc/sim_main.cpp csrc/tb_mem.cpp | check-verilator
 		csrc/sim_main.cpp \
 		csrc/tb_mem.cpp
 
-sim: $(MEM_IMAGE) $(SIM_BIN)
-	TB_MEM_IMAGE=$(MEM_IMAGE) $(SIM_BIN) --max-cycles $(MAX_CYCLES)
+verilator-sim: $(SIM_IMAGE_DEPS) $(SIM_BIN)
+	TB_MEM_IMAGE=$(TB_MEM_IMAGE) $(SIM_BIN) --max-cycles $(MAX_CYCLES)
+
+sim: bsim verilator-sim
 
 clean:
-	rm -rf $(BUILD_DIR)
+	rm -rf $(BUILD_DIR) bluesim
