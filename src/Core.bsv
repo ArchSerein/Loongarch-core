@@ -61,7 +61,7 @@ module mkCore(
     RefDMem refDMem,
     Core ifc
 );
-  Ehr#(2, Addr)         pcReg <- mkEhr(?);
+  Ehr#(3, Addr)         pcReg <- mkEhr(?);
   CsrFile                csrf <- mkCsrFile(0);
   RFile                    rf <- mkRFile;
   ICache               iCache <- mkICache(iMem);
@@ -70,8 +70,8 @@ module mkCore(
   Bht#(8)                 bht <- mkBht;
   Scoreboard#(6)           sb <- mkCFScoreboard;
 
-  Reg#(Bool)    exeEpoch <- mkReg(False);
-  Reg#(Bool)    decodeEpoch <- mkReg(False);
+  Ehr#(3, Bool)    exeEpoch <- mkEhr(False);
+  Ehr#(3, Bool) decodeEpoch <- mkEhr(False);
   Reg#(Data)    scSuccValue <- mkRegU;
 
   Fifo#(2, F2D)           f2dFifo <- mkCFFifo;
@@ -84,8 +84,8 @@ module mkCore(
     iCache.req(pcReg[0]);
     Addr predPc = btb.predPc(pcReg[0]);
 
-    f2dFifo.enq(F2D{pc: pcReg[0], predPc: predPc, ifExeEpoch: exeEpoch,
-      ifDecodeEpoch: decodeEpoch});
+    f2dFifo.enq(F2D{pc: pcReg[0], predPc: predPc, ifExeEpoch: exeEpoch[0],
+      ifDecodeEpoch: decodeEpoch[0]});
     pcReg[0] <= predPc;
   endrule
 
@@ -94,7 +94,7 @@ module mkCore(
     DecodedInst dInst = decode(inst);
 
     let _Fetch = f2dFifo.first();
-    if (decodeEpoch == _Fetch.ifDecodeEpoch && exeEpoch ==
+    if (decodeEpoch[1] == _Fetch.ifDecodeEpoch && exeEpoch[1] ==
       _Fetch.ifExeEpoch) begin
       Addr    ppc;
       if (dInst.iType == Br) begin
@@ -105,7 +105,7 @@ module mkCore(
         ppc = _Fetch.predPc;
       end
       if (ppc != _Fetch.predPc) begin
-        decodeEpoch <= !decodeEpoch;
+        decodeEpoch[1] <= !decodeEpoch[1];
         pcReg[1] <= ppc;
       end
 
@@ -136,7 +136,7 @@ module mkCore(
     let _Rrf = r2eFifo.first();
     r2eFifo.deq();
 
-    if (exeEpoch == _Rrf.irExeEpoch) begin
+    if (exeEpoch[2] == _Rrf.irExeEpoch) begin
       ExecInst eInst = exec(_Rrf.rInst, _Rrf.rVal1, _Rrf.rVal2, _Rrf.pc,
         _Rrf.predPc, _Rrf.csrVal);
 
@@ -146,8 +146,8 @@ module mkCore(
         $finish;
       end
       if (eInst.mispredict) begin
-        exeEpoch <= !exeEpoch;
-        pcReg[1] <= eInst.addr;
+        exeEpoch[2] <= !exeEpoch[2];
+        pcReg[2] <= eInst.addr;
         btb.update(_Rrf.pc, eInst.addr);
       end else begin
         btb.update(_Rrf.pc, _Rrf.predPc);
