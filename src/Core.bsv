@@ -1,6 +1,7 @@
 import Types::*;
 import ProcTypes::*;
 import MemTypes::*;
+import MemReqIDGen::*;
 import RFile::*;
 import Decode::*;
 import Exec::*;
@@ -13,8 +14,19 @@ import Bht::*;
 import ICache::*;
 import DCache::*;
 import CacheTypes::*;
+import MessageFifo::*;
+import RefTypes::*;
 import Vector::*;
 import FShow::*;
+
+// Core interface with coherence ports for PPP connection
+interface Core;
+  interface MessageGet toParent;
+  interface MessagePut fromParent;
+  method ActionValue#(CpuToHostData) cpuToHost;
+  method Bool cpuToHostValid;
+  method Action hostToCpu(Addr startpc);
+endinterface
 
 typedef struct {
   Addr        pc;
@@ -150,6 +162,7 @@ module mkCore#(CoreID id)(
       end else begin
         btb.update(_Rrf.pc, _Rrf.predPc);
       end
+      bht.update(_Rrf.pc, eInst.brTaken);
 
       e2mFifo.enq(E2M{pc: _Rrf.pc, eInst: tagged Valid eInst});
     end else begin

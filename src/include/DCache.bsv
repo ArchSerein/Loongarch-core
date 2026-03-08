@@ -1,6 +1,8 @@
 import Types::*;
 import ProcTypes::*;
 import MemTypes::*;
+import CacheTypes::*;
+import RefTypes::*;
 import Fifo::*;
 import Vector::*;
 import Autoconf::*;
@@ -24,10 +26,6 @@ typedef Vector#(DCacheLineWords, Data) DCacheLine;
 function DCacheTag     getDTag(Addr a) = truncateLSB(a);
 function DCacheIndex   getDIndex(Addr a) = truncate(a >> valueOf(DCacheOffsetSz));
 function DCacheWordSel getDWordSel(Addr a) = truncate(a >> 2);
-interface DCache;
-  method Action req(MemReq r);
-  method ActionValue#(Data) resp;
-endinterface
 
 interface DCacheReplace;
   method DCacheWayIdx replace(DCacheIndex setIdx);
@@ -112,7 +110,8 @@ endmodule
 
 typedef enum { Ready, StartMiss, WaitResp} DCacheState deriving(Bits, Eq);
 
-module mkDCache(DCache);
+module mkDCache#(CoreID id, MessageGet fromMem, MessagePut toMem,
+  RefDMem refDMem)(DCache);
   Vector#(DCacheSets, Vector#(DCacheWays, Reg#(DCacheTag)))   tagStore <- replicateM(replicateM(mkRegU));
   Vector#(DCacheSets, Vector#(DCacheWays, Reg#(DCacheLine)))  dataStore <- replicateM(replicateM(mkRegU));
   Vector#(DCacheSets, Vector#(DCacheWays, Reg#(Bool)))        validStore <- replicateM(replicateM(mkReg(False)));
@@ -120,6 +119,7 @@ module mkDCache(DCache);
 
   Reg#(DCacheState) state <- mkReg(Ready);
   Reg#(MemReq)      missReq <- mkRegU;
+  Reg#(DCacheWayIdx) victimWay <- mkRegU;
 
   Reg#(Bool) lrValid <- mkReg(False);
   Reg#(Addr) lrAddr <- mkRegU;
@@ -174,16 +174,16 @@ module mkDCache(DCache);
           end
           Sc: begin
             if (lrValid && lrAddr == r.addr)
-            respQ.enq(scSucc);
+              respQ.enq(scSucc);
             else
-            respQ.enq(scFail);
+              respQ.enq(scFail);
             lrValid <= False;
           end
           default: begin end
         endcase
 
         Bool doWrite = (r.op == St) ||
-        (r.op == Sc && lrValid && lrAddr == r.addr);
+          (r.op == Sc && lrValid && lrAddr == r.addr);
         if (doWrite) begin
           DCacheLine newLine = update(hitLine, wsel, r.data);
           for (Integer w = 0; w < valueOf(DCacheWays); w = w + 1) begin
@@ -195,7 +195,7 @@ module mkDCache(DCache);
         end
 
         if (r.op == St && lrValid && lrAddr == r.addr)
-        lrValid <= False;
+          lrValid <= False;
       end else begin
         if (r.op == Sc) begin
           reqQ.deq;
@@ -210,10 +210,78 @@ module mkDCache(DCache);
   endrule
 
   rule doStartMiss (state == StartMiss);
+    let idx = getDIndex(missReq.addr);
+    let way = replacer.replace(idx);
+    victimWay <= way;
+
+    // Writeback dirty victim line to memory via coherence protocol
+    if (validStore[idx][way] && dirtyStore[idx][way]) begin
+      Bit#(DCacheOffsetSz) zeroOff = 0;
+      Addr wbAddr = {tagStore[idx][way], idx, zeroOff};
+      toMem.enq_resp(CacheMemResp{
+        child: id,
+        addr: wbAddr,
+        state: I,
+        data: tagged Valid unpack(pack(dataStore[idx][way]))
+      });
+    end
+
+    // Request new line from memory
+    toMem.enq_req(CacheMemReq{
+      child: id,
+      addr: missReq.addr,
+      state: M
+    });
     state <= WaitResp;
   endrule
 
-  rule doWaitResp (state == WaitResp);
+  rule doWaitResp (state == WaitResp && fromMem.hasResp);
+    let msg = fromMem.first;
+    fromMem.deq;
+
+    CacheLine memLine = replicate(0);
+    if (msg matches tagged Resp .resp)
+      memLine = fromMaybe(replicate(0), resp.data);
+
+    DCacheLine line = unpack(pack(memLine));
+
+    let r = missReq;
+    let idx = getDIndex(r.addr);
+    let tag = getDTag(r.addr);
+    let wsel = getDWordSel(r.addr);
+    let way = victimWay;
+
+    // Fill cache line
+    tagStore[idx][way] <= tag;
+    validStore[idx][way] <= True;
+
+    case (r.op)
+      Ld: begin
+        respQ.enq(line[wsel]);
+        dataStore[idx][way] <= line;
+        dirtyStore[idx][way] <= False;
+      end
+      St: begin
+        DCacheLine newLine = update(line, wsel, r.data);
+        dataStore[idx][way] <= newLine;
+        dirtyStore[idx][way] <= True;
+      end
+      Lr: begin
+        respQ.enq(line[wsel]);
+        dataStore[idx][way] <= line;
+        dirtyStore[idx][way] <= False;
+        lrValid <= True;
+        lrAddr <= r.addr;
+      end
+      default: begin
+        dataStore[idx][way] <= line;
+        dirtyStore[idx][way] <= False;
+      end
+    endcase
+
+    replacer.access(idx, way);
+    reqQ.deq;
+    state <= Ready;
   endrule
 
   method Action req(MemReq r);

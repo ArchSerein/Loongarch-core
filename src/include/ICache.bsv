@@ -1,7 +1,9 @@
 import Types::*;
 import ProcTypes::*;
+import CacheTypes::*;
 import Fifo::*;
 import Vector::*;
+import Autoconf::*;
 
 // ============================================================
 // Configurable parameters (values provided by Kconfig -D flags)
@@ -28,17 +30,11 @@ typedef Vector#(ICacheLineWords, Data) ICacheLine;
 // ============================================================
 // Address decomposition
 // ============================================================
-function ICacheTag     getTag(Addr a)     = truncateLSB(a);
-function ICacheIndex   getIndex(Addr a)   = truncate(a >> valueOf(ICacheOffsetSz));
-function ICacheWordSel getWordSel(Addr a) = truncate(a >> 2);
+function ICacheTag     getITag(Addr a)     = truncateLSB(a);
+function ICacheIndex   getIIndex(Addr a)   = truncate(a >> valueOf(ICacheOffsetSz));
+function ICacheWordSel getIWordSel(Addr a) = truncate(a >> 2);
 
-// ============================================================
-// ICache interface
-// ============================================================
-interface ICache;
-  method Action req(Addr a);
-  method ActionValue#(Instruction) resp;
-endinterface
+// ICache interface is defined in CacheTypes.bsv
 
 // ============================================================
 // Replacement policy interface
@@ -136,7 +132,7 @@ typedef enum { Ready, StartMiss, WaitResp } ICacheState deriving (Bits, Eq);
 
 // NOTE: Memory interface parameter omitted while memory access is TODO.
 // Restore to  module mkICache#(WideMem mem)(ICache)  when implementing.
-module mkICache(ICache);
+module mkICache#(WideMem mem)(ICache);
   // Tag / data / valid storage
   Vector#(ICacheSets, Vector#(ICacheWays, Reg#(ICacheTag)))   tagStore   <- replicateM(replicateM(mkRegU));
   Vector#(ICacheSets, Vector#(ICacheWays, Reg#(ICacheLine)))  dataStore  <- replicateM(replicateM(mkRegU));
@@ -164,9 +160,9 @@ module mkICache(ICache);
   // ---- Tag lookup ----
   rule doLookup (state == Ready);
     let addr = reqQ.first;
-    let tag  = getTag(addr);
-    let idx  = getIndex(addr);
-    let wsel = getWordSel(addr);
+    let tag  = getITag(addr);
+    let idx  = getIIndex(addr);
+    let wsel = getIWordSel(addr);
 
     Bool         hit     = False;
     Data         hitData = 0;
@@ -192,29 +188,25 @@ module mkICache(ICache);
 
   // ---- Send miss request to memory ----
   rule doStartMiss (state == StartMiss);
-    // TODO: not implemented
-    // Send read request to backing memory for the cache line at missAddr
+    mem.req(WideMemReq{write_en: 0, addr: missAddr, data: ?});
     state <= WaitResp;
   endrule
 
   // ---- Receive line from memory and fill ----
   rule doWaitResp (state == WaitResp);
-    // TODO: not implemented
-    // Receive cache line from memory and fill the selected way:
-    //
-    // let idx  = getIndex(missAddr);
-    // let tag  = getTag(missAddr);
-    // let wsel = getWordSel(missAddr);
-    // let way  = replacer.replace(idx);
-    // let line <- ...;  // memory response
-    //
-    // tagStore[idx][way]   <= tag;
-    // dataStore[idx][way]  <= line;
-    // validStore[idx][way] <= True;
-    // replacer.access(idx, way);
-    // respQ.enq(line[wsel]);
-    // reqQ.deq;
-    // state <= Ready;
+    let line <- mem.resp;
+    let idx  = getIIndex(missAddr);
+    let tag  = getITag(missAddr);
+    let wsel = getIWordSel(missAddr);
+    let way  = replacer.replace(idx);
+
+    tagStore[idx][way]   <= tag;
+    dataStore[idx][way]  <= unpack(pack(line));
+    validStore[idx][way] <= True;
+    replacer.access(idx, way);
+    respQ.enq(line[wsel]);
+    reqQ.deq;
+    state <= Ready;
   endrule
 
   method Action req(Addr a);
