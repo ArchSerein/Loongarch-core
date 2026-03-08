@@ -2,7 +2,6 @@ import Types::*;
 import ProcTypes::*;
 import MemTypes::*;
 import CacheTypes::*;
-import RefTypes::*;
 import Fifo::*;
 import Vector::*;
 `include "Autoconf.bsv"
@@ -110,7 +109,7 @@ endmodule
 
 typedef enum { Ready, StartMiss, SendFill, WaitResp} DCacheState deriving(Bits, Eq);
 
-module mkDCache#(WideMem mem, RefDMem refDMem)(DCache);
+module mkDCache#(WideMem mem)(DCache);
   Vector#(DCacheSets, Vector#(DCacheWays, Reg#(DCacheTag)))   tagStore <- replicateM(replicateM(mkRegU));
   Vector#(DCacheSets, Vector#(DCacheWays, Reg#(DCacheLine)))  dataStore <- replicateM(replicateM(mkRegU));
   Vector#(DCacheSets, Vector#(DCacheWays, Reg#(Bool)))        validStore <- replicateM(replicateM(mkReg(False)));

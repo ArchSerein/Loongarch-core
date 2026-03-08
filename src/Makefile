@@ -43,6 +43,10 @@ VERILATOR_FLAGS := --cc --exe --build --trace \
 	-o sim \
 	-CFLAGS "-std=c++17 -O2"
 
+# Connectal host bridge registration (consumed by Connectal make fragments).
+S2H_INTERFACES ?=
+S2H_INTERFACES += MemoryService:ConnectalWrapper.memService
+
 default: sim
 
 $(BUILD_DIR) $(BDIR) $(IDIR) $(VDIR) $(OBJDIR):

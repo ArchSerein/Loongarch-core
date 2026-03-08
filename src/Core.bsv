@@ -13,7 +13,6 @@ import Bht::*;
 import ICache::*;
 import DCache::*;
 import CacheTypes::*;
-import RefTypes::*;
 
 interface Core;
   method ActionValue#(CpuToHostData) cpuToHost;
@@ -58,14 +57,13 @@ typedef struct {
 module mkCore(
     WideMem iMem,
     WideMem dMem,
-    RefDMem refDMem,
     Core ifc
 );
   Ehr#(3, Addr)         pcReg <- mkEhr(?);
   CsrFile                csrf <- mkCsrFile(0);
   RFile                    rf <- mkRFile;
   ICache               iCache <- mkICache(iMem);
-  DCache               dCache <- mkDCache(dMem, refDMem);
+  DCache               dCache <- mkDCache(dMem);
   Btb#(6)                 btb <- mkBtb; // 64-entry BTB
   Bht#(8)                 bht <- mkBht;
   Scoreboard#(6)           sb <- mkCFScoreboard;
