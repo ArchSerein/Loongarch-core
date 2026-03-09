@@ -13,6 +13,7 @@ import Bht::*;
 import ICache::*;
 import DCache::*;
 import CacheTypes::*;
+import MemUtil::*;
 
 interface Core;
   method ActionValue#(CpuToHostData) cpuToHost;
@@ -55,15 +56,15 @@ typedef struct {
 }   M2W deriving(Bits, Eq);
 
 module mkCore(
-    WideMem iMem,
-    WideMem dMem,
+    WideMem Mem,
     Core ifc
 );
   Ehr#(3, Addr)         pcReg <- mkEhr(?);
   CsrFile                csrf <- mkCsrFile(0);
   RFile                    rf <- mkRFile;
-  ICache               iCache <- mkICache(iMem);
-  DCache               dCache <- mkDCache(dMem);
+  SplitWideMem2 splitWideMem <- mkSplitWideMem2(csrf.started, Mem);
+  ICache               iCache <- mkICache(splitWideMem.iMem);
+  DCache               dCache <- mkDCache(splitWideMem.dMem);
   Btb#(6)                 btb <- mkBtb; // 64-entry BTB
   Bht#(8)                 bht <- mkBht;
   Scoreboard#(6)           sb <- mkCFScoreboard;
@@ -228,7 +229,7 @@ module mkCore(
 
   method Bool cpuToHostValid = csrf.cpuToHostValid;
 
-  method Action hostToCpu(Bit#(32) startpc) if (!csrf.started);
+  method Action hostToCpu(Addr startpc) if (!csrf.started);
     csrf.start;
     pcReg[0] <= startpc;
   endmethod

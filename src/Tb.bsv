@@ -5,9 +5,9 @@ import Types::*;
 import ProcTypes::*;
 import MemTypes::*;
 import CacheTypes::*;
-import MemUtil::*;
 import Core::*;
 import MemoryService::*;
+import SimInterfaces::*;
 
 typedef 20 TbWordAddrSz;
 typedef Bit#(TbWordAddrSz) TbWordAddr;
@@ -19,14 +19,6 @@ typedef enum {
   WideMemWaitReadResp,
   WideMemSendWriteReq
 } TbWideMemState deriving(Bits, Eq);
-
-import "BDPI" function ActionValue#(Bit#(64)) c_createTbMem(Bit#(32)
-  wordAddrWidth);
-import "BDPI" function Action c_loadTbMem(Bit#(64) memPtr);
-import "BDPI" function ActionValue#(Data) c_readTbMem(Bit#(64) memPtr, Bit#(32)
-  wordAddr);
-import "BDPI" function Action c_writeTbMem(Bit#(64) memPtr, Bit#(32) wordAddr,
-  Data d);
 
 function Bool inTbMemRange(Bit#(TSub#(AddrSz, 2)) wordAddr);
   TbWordAddr narrowAddr = truncate(wordAddr);
@@ -46,52 +38,6 @@ function Bit#(TSub#(AddrSz, 2)) getLineBaseWordAddr(Addr addr);
   end
   return baseWordAddr;
 endfunction
-
-module mkBdpiMemoryService(MemoryService);
-  Fifo#(32, Data) readRespQ <- mkCFFifo;
-  Reg#(Bit#(64)) memPtr <- mkReg(0);
-  Reg#(Bool) memReady <- mkReg(False);
-
-  rule initMem (!memReady);
-    let ptr <- c_createTbMem(fromInteger(valueOf(TbWordAddrSz)));
-    if (ptr == 0) begin
-      $fwrite(stderr, "TB: failed to create simulation memory\n");
-      $finish(1);
-    end
-    c_loadTbMem(ptr);
-    memPtr <= ptr;
-    memReady <= True;
-  endrule
-
-  method Action writeReq(Bit#(32) wordAddr, Data d) if (memReady);
-    if (!inTbMemRange32(wordAddr)) begin
-      $fwrite(stderr, "TB: write word address out of range: %08x\n", wordAddr);
-      $finish(1);
-    end
-    else begin
-      c_writeTbMem(memPtr, wordAddr, d);
-    end
-  endmethod
-
-  method Action readReq(Bit#(32) wordAddr) if (memReady);
-    if (!inTbMemRange32(wordAddr)) begin
-      $fwrite(stderr, "TB: read word address out of range: %08x\n", wordAddr);
-      $finish(1);
-    end
-    else begin
-      let d <- c_readTbMem(memPtr, wordAddr);
-      readRespQ.enq(d);
-    end
-  endmethod
-
-  method Bool readRespValid = readRespQ.notEmpty;
-
-  method ActionValue#(Data) readResp if (readRespQ.notEmpty);
-    let d = readRespQ.first;
-    readRespQ.deq;
-    return d;
-  endmethod
-endmodule
 
 module mkTbWideMem#(MemoryService memSvc)(WideMem);
   Fifo#(2, WideMemReq) reqQ <- mkCFFifo;
@@ -182,27 +128,51 @@ module mkTbWideMem#(MemoryService memSvc)(WideMem);
   method Bool respValid = respQ.notEmpty;
 endmodule
 
-(* synthesize *)
-module mkTb(Empty);
+module mkTbCore#(SimIndication indication)(SimRequest);
   Reg#(Bool) started <- mkReg(False);
   Reg#(Bit#(16)) printIntLow <- mkReg(0);
   Reg#(Bit#(64)) cycles <- mkReg(0);
 
-  MemoryService memSvc <- mkBdpiMemoryService;
-  WideMem wideMemWrapper <- mkTbWideMem(memSvc);
-  SplitWideMem2 splitWideMem <- mkSplitWideMem2(started, wideMemWrapper);
-  Core core <- mkCore(splitWideMem.iMem, splitWideMem.dMem);
+  Fifo#(32, Data) readRespQ <- mkCFFifo;
 
-  rule boot (!started);
-    started <= True;
-    core.hostToCpu(0);
-  endrule
+  MemoryService memSvc = interface MemoryService;
+    method Action writeReq(Bit#(32) wordAddr, Data d);
+      if (!inTbMemRange32(wordAddr)) begin
+        $fwrite(stderr, "TB: write word address out of range: %08x\n", wordAddr);
+        indication.halt(32'h00000001);
+      end
+      else begin
+        indication.write_mem_req(wordAddr, d);
+      end
+    endmethod
+
+    method Action readReq(Bit#(32) wordAddr);
+      if (!inTbMemRange32(wordAddr)) begin
+        $fwrite(stderr, "TB: read word address out of range: %08x\n", wordAddr);
+        indication.halt(32'h00000001);
+      end
+      else begin
+        indication.read_mem_req(wordAddr);
+      end
+    endmethod
+
+    method Bool readRespValid = readRespQ.notEmpty;
+
+    method ActionValue#(Data) readResp if (readRespQ.notEmpty);
+      let d = readRespQ.first;
+      readRespQ.deq;
+      return d;
+    endmethod
+  endinterface;
+
+  WideMem wideMemWrapper <- mkTbWideMem(memSvc);
+  Core core <- mkCore(wideMemWrapper);
 
   rule countCycles (started);
     cycles <= cycles + 1;
     if (cycles == fromInteger(valueOf(TbMaxCycles) - 1)) begin
-      $fwrite(stderr, "TB: timeout after %0d cycles\n", valueOf(TbMaxCycles));
-      $finish(1);
+      indication.halt(32'h00000002);
+      started <= False;
     end
   endrule
 
@@ -210,13 +180,11 @@ module mkTb(Empty);
     let msg <- core.cpuToHost;
     case (msg.c2hType)
       ExitCode: begin
-        Bit#(32) code = zeroExtend(msg.data);
-        $display("TB: exit code %0d after %0d cycles", code, cycles);
-        $finish(0);
+        indication.halt(zeroExtend(msg.data));
+        started <= False;
       end
       PrintChar: begin
-        Bit#(8) char = truncate(msg.data);
-        $write("%c", char);
+        indication.putc(truncate(msg.data));
       end
       PrintIntLow: begin
         printIntLow <= msg.data;
@@ -226,4 +194,76 @@ module mkTb(Empty);
       end
     endcase
   endrule
+
+  method Action hostToCpu(Bit#(32) startpc) if (!started);
+    started <= True;
+    cycles <= 0;
+    core.hostToCpu(zeroExtend(startpc));
+  endmethod
+
+  method Action read_mem_resp(Data data);
+    readRespQ.enq(data);
+  endmethod
+endmodule
+
+(* synthesize *)
+module mkSimConnectalWrapper#(SimIndication indication)(SimConnectalWrapper);
+  SimRequest coreReq <- mkTbCore(indication);
+  interface request = coreReq;
+endmodule
+
+(* synthesize *)
+module mkTb(SimTop);
+  Fifo#(8, Bit#(32)) haltQ <- mkCFFifo;
+  Fifo#(32, Bit#(8)) putcQ <- mkCFFifo;
+  Fifo#(64, Bit#(32)) readMemReqQ <- mkCFFifo;
+  Fifo#(64, Bit#(64)) writeMemReqQ <- mkCFFifo;
+
+  SimIndication indicationSink = interface SimIndication;
+    method Action halt(Bit#(32) code);
+      haltQ.enq(code);
+    endmethod
+
+    method Action putc(Bit#(8) c);
+      putcQ.enq(c);
+    endmethod
+
+    method Action read_mem_req(Bit#(32) addr);
+      readMemReqQ.enq(addr);
+    endmethod
+
+    method Action write_mem_req(Bit#(32) addr, Data data);
+      writeMemReqQ.enq({addr, data});
+    endmethod
+  endinterface;
+
+  SimRequest coreReq <- mkTbCore(indicationSink);
+
+  interface request = coreReq;
+
+  interface SimPollIndication indication;
+    method ActionValue#(Bit#(32)) halt if (haltQ.notEmpty);
+      let code = haltQ.first;
+      haltQ.deq;
+      return code;
+    endmethod
+
+    method ActionValue#(Bit#(8)) putc if (putcQ.notEmpty);
+      let c = putcQ.first;
+      putcQ.deq;
+      return c;
+    endmethod
+
+    method ActionValue#(Bit#(32)) read_mem_req if (readMemReqQ.notEmpty);
+      let addr = readMemReqQ.first;
+      readMemReqQ.deq;
+      return addr;
+    endmethod
+
+    method ActionValue#(Bit#(64)) write_mem_req if (writeMemReqQ.notEmpty);
+      let req = writeMemReqQ.first;
+      writeMemReqQ.deq;
+      return req;
+    endmethod
+  endinterface
 endmodule
