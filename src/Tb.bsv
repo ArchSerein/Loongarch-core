@@ -207,12 +207,6 @@ module mkTbCore#(SimIndication indication)(SimRequest);
 endmodule
 
 (* synthesize *)
-module mkSimConnectalWrapper#(SimIndication indication)(SimConnectalWrapper);
-  SimRequest coreReq <- mkTbCore(indication);
-  interface request = coreReq;
-endmodule
-
-(* synthesize *)
 module mkTb(SimTop);
   Fifo#(8, Bit#(32)) haltQ <- mkCFFifo;
   Fifo#(32, Bit#(8)) putcQ <- mkCFFifo;

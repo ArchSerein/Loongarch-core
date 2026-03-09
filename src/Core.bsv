@@ -56,13 +56,13 @@ typedef struct {
 }   M2W deriving(Bits, Eq);
 
 module mkCore(
-    WideMem Mem,
+    WideMem wideMem,
     Core ifc
 );
   Ehr#(3, Addr)         pcReg <- mkEhr(?);
   CsrFile                csrf <- mkCsrFile(0);
   RFile                    rf <- mkRFile;
-  SplitWideMem2 splitWideMem <- mkSplitWideMem2(csrf.started, Mem);
+  SplitWideMem2 splitWideMem <- mkSplitWideMem2(csrf.started, wideMem);
   ICache               iCache <- mkICache(splitWideMem.iMem);
   DCache               dCache <- mkDCache(splitWideMem.dMem);
   Btb#(6)                 btb <- mkBtb; // 64-entry BTB

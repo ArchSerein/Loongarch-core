@@ -88,9 +88,9 @@ void load_mem_image(TbMemory& mem, const std::string& path) {
   }
 }
 
-class SimIndicationCb final : public SimIndicationWrapper {
+class MySimIndicationCb final : public SimIndicationWrapper {
  public:
-  SimIndicationCb(unsigned int id, TbMemory& mem_ref)
+  MySimIndicationCb(unsigned int id, TbMemory& mem_ref)
       : SimIndicationWrapper(id), mem(mem_ref) {}
 
   void halt(std::uint32_t code) override {
@@ -134,7 +134,7 @@ int main(int argc, char** argv) {
   std::cout.flush();
 
   g_request = new SimRequestProxy(IfcNames_SimRequestS2H);
-  auto* indication = new SimIndicationCb(IfcNames_SimIndicationH2S, mem);
+  auto* indication = new MySimIndicationCb(IfcNames_SimIndicationH2S, mem);
   (void)indication;
 
   g_request->hostToCpu(opts.start_pc);
