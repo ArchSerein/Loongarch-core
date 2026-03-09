@@ -89,9 +89,11 @@ void load_mem_image(TbMemory& mem, const std::string& path) {
 }
 
 class MySimIndicationCb final : public SimIndicationWrapper {
- public:
-  MySimIndicationCb(unsigned int id, TbMemory& mem_ref)
-      : SimIndicationWrapper(id), mem(mem_ref) {}
+public:
+  MySimIndicationCb(unsigned int id, TbMemory& mem_ref, std::uint32_t start_pc)
+      : SimIndicationWrapper(id), mem(mem_ref) {
+    _mem_base = start_pc;
+  }
 
   void halt(std::uint32_t code) override {
     g_exit_code = code;
@@ -103,23 +105,30 @@ class MySimIndicationCb final : public SimIndicationWrapper {
   }
 
   void read_mem_req(std::uint32_t addr) override {
-    check_word_addr(addr, mem.words.size(), "read");
+    std::uint32_t paddr = guest_to_host(addr);
+    check_word_addr(paddr, mem.words.size(), "read");
     if (!g_run) {
       return;
     }
-    g_request->read_mem_resp(mem.words[addr]);
+    g_request->read_mem_resp(mem.words[paddr]);
   }
 
   void write_mem_req(std::uint32_t addr, std::uint32_t data) override {
-    check_word_addr(addr, mem.words.size(), "write");
+    std::uint32_t paddr = guest_to_host(addr);
+    check_word_addr(paddr, mem.words.size(), "write");
     if (!g_run) {
       return;
     }
-    mem.words[addr] = data;
+    mem.words[paddr] = data;
   }
 
- private:
+private:
   TbMemory& mem;
+  std::uint32_t _mem_base;
+
+  std::uint32_t guest_to_host(std::uint32_t addr) {
+    return addr - _mem_base;
+  }
 };
 
 }  // namespace
@@ -134,7 +143,7 @@ int main(int argc, char** argv) {
   std::cout.flush();
 
   g_request = new SimRequestProxy(IfcNames_SimRequestS2H);
-  auto* indication = new MySimIndicationCb(IfcNames_SimIndicationH2S, mem);
+  auto* indication = new MySimIndicationCb(IfcNames_SimIndicationH2S, mem, opts.start_pc);
   (void)indication;
 
   g_request->hostToCpu(opts.start_pc);
