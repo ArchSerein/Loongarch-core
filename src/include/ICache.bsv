@@ -1,6 +1,6 @@
 import Types::*;
 import ProcTypes::*;
-import CacheTypes::*;
+import AxiTypes::*;
 import Fifo::*;
 import Vector::*;
 `include "Autoconf.bsv"
@@ -27,14 +27,6 @@ typedef Bit#(TLog#(ICacheWays)) ICacheWayIdx;
 
 typedef Vector#(ICacheLineWords, Data) ICacheLine;
 
-function ICacheLine wideRespToILine(WideMemResp line);
-  ICacheLine ret = ?;
-  for (Integer i = 0; i < valueOf(ICacheLineWords); i = i + 1) begin
-    ret[i] = line[i];
-  end
-  return ret;
-endfunction
-
 // ============================================================
 // Address decomposition
 // ============================================================
@@ -42,7 +34,11 @@ function ICacheTag     getITag(Addr a)     = truncateLSB(a);
 function ICacheIndex   getIIndex(Addr a)   = truncate(a >> valueOf(ICacheOffsetSz));
 function ICacheWordSel getIWordSel(Addr a) = truncate(a >> 2);
 
-// ICache interface is defined in CacheTypes.bsv
+interface ICache;
+  method Action req(Addr a);
+  method ActionValue#(Instruction) resp;
+  interface AxiMemMaster axiMem;
+endinterface
 
 // ============================================================
 // Replacement policy interface
@@ -82,7 +78,6 @@ endmodule
 // -------- Pseudo-LRU (tree-based) replacement --------
 // Requires ICacheWays to be a power of two and >= 2
 module mkICacheReplacePLRU(ICacheReplace);
-  // (ways - 1) tree bits per set, packed into a single register
   Vector#(ICacheSets, Reg#(Bit#(TSub#(ICacheWays, 1))))
     treeBits <- replicateM(mkReg(0));
 
@@ -138,21 +133,22 @@ endmodule
 // ============================================================
 typedef enum { Ready, StartMiss, WaitResp } ICacheState deriving (Bits, Eq);
 
-module mkICache#(WideMem mem)(ICache);
-  // Tag / data / valid storage
+module mkICache(ICache);
   Vector#(ICacheSets, Vector#(ICacheWays, Reg#(ICacheTag)))   tagStore   <- replicateM(replicateM(mkRegU));
   Vector#(ICacheSets, Vector#(ICacheWays, Reg#(ICacheLine)))  dataStore  <- replicateM(replicateM(mkRegU));
   Vector#(ICacheSets, Vector#(ICacheWays, Reg#(Bool)))        validStore <- replicateM(replicateM(mkReg(False)));
 
-  // FSM state
   Reg#(ICacheState) state    <- mkReg(Ready);
   Reg#(Addr)        missAddr <- mkRegU;
+  Reg#(Bit#(8))     beatIdx  <- mkReg(0);
+  Reg#(ICacheLine)  refillLine <- mkReg(replicate(0));
 
-  // Request / response FIFOs (from include/Fifo.bsv)
   Fifo#(2, Addr)        reqQ  <- mkCFFifo;
   Fifo#(2, Instruction) respQ <- mkCFFifo;
 
-  // Replacement policy (selected by Kconfig macro)
+  Fifo#(2, AxiReadAddr) arQ <- mkCFFifo;
+  Fifo#(4, AxiReadData) rQ  <- mkCFFifo;
+
 `ifdef ICACHE_REPLACE_RANDOM
   ICacheReplace replacer <- mkICacheReplaceRandom;
 `else
@@ -163,7 +159,6 @@ module mkICache#(WideMem mem)(ICache);
 `endif
 `endif
 
-  // ---- Tag lookup ----
   rule doLookup (state == Ready);
     let addr = reqQ.first;
     let tag  = getITag(addr);
@@ -192,33 +187,43 @@ module mkICache#(WideMem mem)(ICache);
     end
   endrule
 
-  // ---- Send miss request to memory ----
   rule doStartMiss (state == StartMiss);
-    mem.req(WideMemReq{
-      write_en: 0,
+    arQ.enq(AxiReadAddr{
       addr: missAddr,
-      data: replicate(0),
-      burst_len: fromInteger(valueOf(ICacheLineWords))
+      len: fromInteger(valueOf(ICacheLineWords) - 1),
+      size: 3'd2,
+      burst: AxiBurstIncr
     });
+    beatIdx <= 0;
+    refillLine <= replicate(0);
     state <= WaitResp;
   endrule
 
-  // ---- Receive line from memory and fill ----
-  rule doWaitResp (state == WaitResp);
-    let wideLine <- mem.resp;
-    let line = wideRespToILine(wideLine);
+  rule doRefill (state == WaitResp && rQ.notEmpty);
+    let beat = rQ.first;
+    rQ.deq;
+
     let idx  = getIIndex(missAddr);
     let tag  = getITag(missAddr);
     let wsel = getIWordSel(missAddr);
     let way  = replacer.replace(idx);
 
-    tagStore[idx][way]   <= tag;
-    dataStore[idx][way]  <= line;
-    validStore[idx][way] <= True;
-    replacer.access(idx, way);
-    respQ.enq(line[wsel]);
-    reqQ.deq;
-    state <= Ready;
+    Bit#(ICacheWordSelSz) lineIdx = truncate(beatIdx);
+    ICacheLine nextLine = update(refillLine, lineIdx, beat.data);
+    Bit#(8) nextBeat = beatIdx + 1;
+
+    refillLine <= nextLine;
+    beatIdx <= nextBeat;
+
+    if (beat.last || nextBeat == fromInteger(valueOf(ICacheLineWords))) begin
+      tagStore[idx][way]   <= tag;
+      dataStore[idx][way]  <= nextLine;
+      validStore[idx][way] <= True;
+      replacer.access(idx, way);
+      respQ.enq(nextLine[wsel]);
+      reqQ.deq;
+      state <= Ready;
+    end
   endrule
 
   method Action req(Addr a);
@@ -230,4 +235,34 @@ module mkICache#(WideMem mem)(ICache);
     respQ.deq;
     return d;
   endmethod
+
+  interface AxiMemMaster axiMem;
+    method Bool rdAddrValid = arQ.notEmpty;
+
+    method ActionValue#(AxiReadAddr) rdAddr;
+      let x = arQ.first;
+      arQ.deq;
+      return x;
+    endmethod
+
+    method Action rdData(AxiReadData d);
+      rQ.enq(d);
+    endmethod
+
+    method Bool wrAddrValid = False;
+
+    method ActionValue#(AxiWriteAddr) wrAddr if (False);
+      return ?;
+    endmethod
+
+    method Bool wrDataValid = False;
+
+    method ActionValue#(AxiWriteData) wrData if (False);
+      return ?;
+    endmethod
+
+    method Action wrResp(AxiWriteResp r);
+      noAction;
+    endmethod
+  endinterface
 endmodule

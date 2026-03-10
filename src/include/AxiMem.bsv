@@ -1,216 +1,120 @@
 import Types::*;
-import CacheTypes::*;
+import AxiTypes::*;
 import MemoryService::*;
 import Fifo::*;
 
 typedef enum {
-  AxiRespOkay  = 2'b00,
-  AxiRespExOkay = 2'b01,
-  AxiRespSlvErr = 2'b10,
-  AxiRespDecErr = 2'b11
-} AxiResp deriving(Bits, Eq);
+  AxiOwnerI,
+  AxiOwnerD
+} AxiOwner deriving(Bits, Eq);
 
 typedef enum {
-  AxiBurstFixed = 2'b00,
-  AxiBurstIncr  = 2'b01,
-  AxiBurstWrap  = 2'b10
-} AxiBurst deriving(Bits, Eq);
+  ArbIdle,
+  ArbReadResp,
+  ArbWriteData,
+  ArbWriteResp
+} AxiArbState deriving(Bits, Eq);
 
-typedef struct {
-  Addr      addr;
-  Bit#(8)   len;   // AXI: beats-1
-  Bit#(3)   size;  // bytes per beat = 2^size
-  AxiBurst  burst;
-} AxiReadAddr deriving(Bits, Eq);
-
-typedef struct {
-  Data      data;
-  AxiResp   resp;
-  Bool      last;
-} AxiReadData deriving(Bits, Eq);
-
-typedef struct {
-  Addr      addr;
-  Bit#(8)   len;   // AXI: beats-1
-  Bit#(3)   size;  // bytes per beat = 2^size
-  AxiBurst  burst;
-} AxiWriteAddr deriving(Bits, Eq);
-
-typedef struct {
-  Data          data;
-  Bit#(WordSz)  strb;
-  Bool          last;
-} AxiWriteData deriving(Bits, Eq);
-
-typedef struct {
-  AxiResp resp;
-} AxiWriteResp deriving(Bits, Eq);
-
-// Queue-style AXI master view.
-// - *_Valid + ActionValue methods expose requests from core to memory.
-// - rdData/wrResp methods push memory responses back into core.
-interface AxiMemMaster;
-  method Bool rdAddrValid;
-  method ActionValue#(AxiReadAddr) rdAddr;
-  method Action rdData(AxiReadData d);
-
-  method Bool wrAddrValid;
-  method ActionValue#(AxiWriteAddr) wrAddr;
-  method Bool wrDataValid;
-  method ActionValue#(AxiWriteData) wrData;
-  method Action wrResp(AxiWriteResp r);
-endinterface
-
-interface WideMemAxiBridge;
-  interface WideMem wideMem;
-  interface AxiMemMaster axi;
-endinterface
-
-typedef enum {
-  BridgeIdle,
-  BridgeReadWait,
-  BridgeWriteSend,
-  BridgeWriteWaitResp
-} WideMemAxiState deriving(Bits, Eq);
-
-// Converts cache-line style WideMem traffic into AXI bursts.
-module mkWideMemToAxiBridge(WideMemAxiBridge);
-  Fifo#(2, WideMemReq)    reqQ  <- mkCFFifo;
-  Fifo#(2, WideMemResp)   respQ <- mkCFFifo;
-
+// Merge I/D AXI masters into a single memory-facing AXI master.
+// At most one outstanding transaction is supported (no ID interleave).
+module mkAxiArbiter2#(AxiMemMaster iMem, AxiMemMaster dMem)(AxiMemMaster);
   Fifo#(2, AxiReadAddr)   arQ <- mkCFFifo;
-  Fifo#(4, AxiReadData)   rQ  <- mkCFFifo;
   Fifo#(2, AxiWriteAddr)  awQ <- mkCFFifo;
   Fifo#(4, AxiWriteData)  wQ  <- mkCFFifo;
-  Fifo#(2, AxiWriteResp)  bQ  <- mkCFFifo;
 
-  Reg#(WideMemAxiState) state <- mkReg(BridgeIdle);
-  Reg#(WideMemReq)      activeReq <- mkRegU;
-  Reg#(Bit#(8))         beatIdx <- mkReg(0);
-  Reg#(WideMemResp)     readLine <- mkReg(replicate(0));
+  Reg#(AxiArbState) state <- mkReg(ArbIdle);
+  Reg#(AxiOwner) owner <- mkReg(AxiOwnerI);
 
-  rule startReq (state == BridgeIdle && reqQ.notEmpty);
-    let req = reqQ.first;
-    activeReq <= req;
-    beatIdx <= 0;
-
-    if (req.write_en == 0) begin
-      arQ.enq(AxiReadAddr{
-        addr: req.addr,
-        len: req.burst_len - 1,
-        size: 3'd2,
-        burst: AxiBurstIncr
-      });
-      readLine <= replicate(0);
-      state <= BridgeReadWait;
-    end
-    else begin
-      awQ.enq(AxiWriteAddr{
-        addr: req.addr,
-        len: req.burst_len - 1,
-        size: 3'd2,
-        burst: AxiBurstIncr
-      });
-      state <= BridgeWriteSend;
+  rule startTxn (state == ArbIdle);
+    if (dMem.wrAddrValid) begin
+      let aw <- dMem.wrAddr;
+      awQ.enq(aw);
+      owner <= AxiOwnerD;
+      state <= ArbWriteData;
+    end else if (dMem.rdAddrValid) begin
+      let ar <- dMem.rdAddr;
+      arQ.enq(ar);
+      owner <= AxiOwnerD;
+      state <= ArbReadResp;
+    end else if (iMem.wrAddrValid) begin
+      let aw <- iMem.wrAddr;
+      awQ.enq(aw);
+      owner <= AxiOwnerI;
+      state <= ArbWriteData;
+    end else if (iMem.rdAddrValid) begin
+      let ar <- iMem.rdAddr;
+      arQ.enq(ar);
+      owner <= AxiOwnerI;
+      state <= ArbReadResp;
     end
   endrule
 
-  rule collectReadData (state == BridgeReadWait && rQ.notEmpty);
-    let beat = rQ.first;
-    rQ.deq;
-
-    Bit#(TLog#(MemBurstWords)) idx = truncate(beatIdx);
-    WideMemResp nextLine = update(readLine, idx, beat.data);
-    Bit#(8) nextBeat = beatIdx + 1;
-
-    readLine <= nextLine;
-    beatIdx <= nextBeat;
-
-    if (beat.last || nextBeat == activeReq.burst_len) begin
-      respQ.enq(nextLine);
-      reqQ.deq;
-      state <= BridgeIdle;
+  rule drainWriteDataD (state == ArbWriteData && owner == AxiOwnerD && dMem.wrDataValid);
+    let wd <- dMem.wrData;
+    wQ.enq(wd);
+    if (wd.last) begin
+      state <= ArbWriteResp;
     end
   endrule
 
-  rule sendWriteData (state == BridgeWriteSend && wQ.notFull);
-    Bit#(TLog#(MemBurstWords)) idx = truncate(beatIdx);
-    Bit#(8) nextBeat = beatIdx + 1;
-    Bool isLast = (nextBeat == activeReq.burst_len);
-
-    Bit#(WordSz) strb = activeReq.write_en[idx] == 1 ? '1 : 0;
-    wQ.enq(AxiWriteData{
-      data: activeReq.data[idx],
-      strb: strb,
-      last: isLast
-    });
-
-    if (isLast) begin
-      state <= BridgeWriteWaitResp;
+  rule drainWriteDataI (state == ArbWriteData && owner == AxiOwnerI && iMem.wrDataValid);
+    let wd <- iMem.wrData;
+    wQ.enq(wd);
+    if (wd.last) begin
+      state <= ArbWriteResp;
     end
-    beatIdx <= nextBeat;
   endrule
 
-  rule recvWriteResp (state == BridgeWriteWaitResp && bQ.notEmpty);
-    bQ.deq;
-    reqQ.deq;
-    state <= BridgeIdle;
-  endrule
+  method Bool rdAddrValid = arQ.notEmpty;
 
-  interface WideMem wideMem;
-    method Action req(WideMemReq r);
-      reqQ.enq(r);
-    endmethod
+  method ActionValue#(AxiReadAddr) rdAddr;
+    let x = arQ.first;
+    arQ.deq;
+    return x;
+  endmethod
 
-    method ActionValue#(WideMemResp) resp;
-      let x = respQ.first;
-      respQ.deq;
-      return x;
-    endmethod
+  method Action rdData(AxiReadData d) if (state == ArbReadResp);
+    if (owner == AxiOwnerD) begin
+      dMem.rdData(d);
+    end else begin
+      iMem.rdData(d);
+    end
+    if (d.last) begin
+      state <= ArbIdle;
+    end
+  endmethod
 
-    method Bool respValid = respQ.notEmpty;
-  endinterface
+  method Bool wrAddrValid = awQ.notEmpty;
 
-  interface AxiMemMaster axi;
-    method Bool rdAddrValid = arQ.notEmpty;
+  method ActionValue#(AxiWriteAddr) wrAddr;
+    let x = awQ.first;
+    awQ.deq;
+    return x;
+  endmethod
 
-    method ActionValue#(AxiReadAddr) rdAddr;
-      let x = arQ.first;
-      arQ.deq;
-      return x;
-    endmethod
+  method Bool wrDataValid = wQ.notEmpty;
 
-    method Action rdData(AxiReadData d);
-      rQ.enq(d);
-    endmethod
+  method ActionValue#(AxiWriteData) wrData;
+    let x = wQ.first;
+    wQ.deq;
+    return x;
+  endmethod
 
-    method Bool wrAddrValid = awQ.notEmpty;
-
-    method ActionValue#(AxiWriteAddr) wrAddr;
-      let x = awQ.first;
-      awQ.deq;
-      return x;
-    endmethod
-
-    method Bool wrDataValid = wQ.notEmpty;
-
-    method ActionValue#(AxiWriteData) wrData;
-      let x = wQ.first;
-      wQ.deq;
-      return x;
-    endmethod
-
-    method Action wrResp(AxiWriteResp r);
-      bQ.enq(r);
-    endmethod
-  endinterface
+  method Action wrResp(AxiWriteResp r) if (state == ArbWriteResp);
+    if (owner == AxiOwnerD) begin
+      dMem.wrResp(r);
+    end else begin
+      iMem.wrResp(r);
+    end
+    state <= ArbIdle;
+  endmethod
 endmodule
 
 typedef enum { SimRdIdle, SimRdRun } SimReadState deriving(Bits, Eq);
 typedef enum { SimWrIdle, SimWrRun } SimWriteState deriving(Bits, Eq);
 
 // Simulation-side adapter:
-// consume AXI bursts and issue one word MemoryService transaction per beat.
+// consume AXI traffic and issue one word MemoryService request per beat.
 module mkAxiMemSimBridge#(AxiMemMaster axi, MemoryService memSvc)(Empty);
   Reg#(SimReadState) rdState <- mkReg(SimRdIdle);
   Reg#(AxiReadAddr)  rdReq <- mkRegU;

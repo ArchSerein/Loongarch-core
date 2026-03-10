@@ -4,8 +4,6 @@ import Fifo::*;
 import Types::*;
 import ProcTypes::*;
 import MemTypes::*;
-import CacheTypes::*;
-import Core::*;
 import MemoryService::*;
 import SimInterfaces::*;
 import AxiMem::*;

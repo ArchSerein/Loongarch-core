@@ -1,7 +1,7 @@
 import Types::*;
 import ProcTypes::*;
 import MemTypes::*;
-import CacheTypes::*;
+import AxiTypes::*;
 import Fifo::*;
 import Vector::*;
 `include "Autoconf.bsv"
@@ -22,33 +22,15 @@ typedef Bit#(TLog#(DCacheWays)) DCacheWayIdx;
 
 typedef Vector#(DCacheLineWords, Data) DCacheLine;
 
-function WideMemResp dLineToWideResp(DCacheLine line);
-  WideMemResp ret = replicate(0);
-  for (Integer i = 0; i < valueOf(DCacheLineWords); i = i + 1) begin
-    ret[i] = line[i];
-  end
-  return ret;
-endfunction
-
-function DCacheLine wideRespToDLine(WideMemResp line);
-  DCacheLine ret = ?;
-  for (Integer i = 0; i < valueOf(DCacheLineWords); i = i + 1) begin
-    ret[i] = line[i];
-  end
-  return ret;
-endfunction
-
-function MemWriteEn dcacheWriteMask();
-  MemWriteEn ret = 0;
-  for (Integer i = 0; i < valueOf(DCacheLineWords); i = i + 1) begin
-    ret[i] = 1;
-  end
-  return ret;
-endfunction
-
 function DCacheTag     getDTag(Addr a) = truncateLSB(a);
 function DCacheIndex   getDIndex(Addr a) = truncate(a >> valueOf(DCacheOffsetSz));
 function DCacheWordSel getDWordSel(Addr a) = truncate(a >> 2);
+
+interface DCache;
+  method Action req(MemReq r);
+  method ActionValue#(Data) resp;
+  interface AxiMemMaster axiMem;
+endinterface
 
 interface DCacheReplace;
   method DCacheWayIdx replace(DCacheIndex setIdx);
@@ -131,9 +113,16 @@ module mkDCacheReplaceRandom(DCacheReplace);
   endmethod
 endmodule
 
-typedef enum { Ready, StartMiss, SendFill, WaitResp} DCacheState deriving(Bits, Eq);
+typedef enum {
+  Ready,
+  StartMiss,
+  SendWbData,
+  WaitWbResp,
+  SendFillAddr,
+  WaitFillResp
+} DCacheState deriving(Bits, Eq);
 
-module mkDCache#(WideMem mem)(DCache);
+module mkDCache(DCache);
   Vector#(DCacheSets, Vector#(DCacheWays, Reg#(DCacheTag)))   tagStore <- replicateM(replicateM(mkRegU));
   Vector#(DCacheSets, Vector#(DCacheWays, Reg#(DCacheLine)))  dataStore <- replicateM(replicateM(mkRegU));
   Vector#(DCacheSets, Vector#(DCacheWays, Reg#(Bool)))        validStore <- replicateM(replicateM(mkReg(False)));
@@ -142,12 +131,21 @@ module mkDCache#(WideMem mem)(DCache);
   Reg#(DCacheState) state <- mkReg(Ready);
   Reg#(MemReq)      missReq <- mkRegU;
   Reg#(DCacheWayIdx) victimWay <- mkRegU;
+  Reg#(DCacheLine)   wbLine <- mkReg(replicate(0));
+  Reg#(Bit#(8))      beatIdx <- mkReg(0);
+  Reg#(DCacheLine)   fillLine <- mkReg(replicate(0));
 
   Reg#(Bool) lrValid <- mkReg(False);
   Reg#(Addr) lrAddr <- mkRegU;
 
   Fifo#(2, MemReq) reqQ <- mkCFFifo;
   Fifo#(2, Data)   respQ <- mkCFFifo;
+
+  Fifo#(2, AxiReadAddr)   arQ <- mkCFFifo;
+  Fifo#(4, AxiReadData)   rQ  <- mkCFFifo;
+  Fifo#(2, AxiWriteAddr)  awQ <- mkCFFifo;
+  Fifo#(4, AxiWriteData)  wQ  <- mkCFFifo;
+  Fifo#(2, AxiWriteResp)  bQ  <- mkCFFifo;
 
   `ifdef DCACHE_REPLACE_RANDOM
   DCacheReplace replacer <- mkDCacheReplaceRandom;
@@ -238,39 +236,56 @@ module mkDCache#(WideMem mem)(DCache);
 
     if (validStore[idx][way] && dirtyStore[idx][way]) begin
       Bit#(DCacheOffsetSz) zeroOff = 0;
-      Addr wbAddr = {tagStore[idx][way], idx, zeroOff};
-      mem.req(WideMemReq{
-        write_en: dcacheWriteMask(),
-        addr: wbAddr,
-        data: dLineToWideResp(dataStore[idx][way]),
-        burst_len: fromInteger(valueOf(DCacheLineWords))
+      wbLine <= dataStore[idx][way];
+      awQ.enq(AxiWriteAddr{
+        addr: {tagStore[idx][way], idx, zeroOff},
+        len: fromInteger(valueOf(DCacheLineWords) - 1),
+        size: 3'd2,
+        burst: AxiBurstIncr
       });
-      state <= SendFill;
+      beatIdx <= 0;
+      state <= SendWbData;
     end
     else begin
-      mem.req(WideMemReq{
-        write_en: 0,
-        addr: missReq.addr,
-        data: replicate(0),
-        burst_len: fromInteger(valueOf(DCacheLineWords))
-      });
-      state <= WaitResp;
+      state <= SendFillAddr;
     end
   endrule
 
-  rule doSendFill (state == SendFill);
-    mem.req(WideMemReq{
-      write_en: 0,
-      addr: missReq.addr,
-      data: replicate(0),
-      burst_len: fromInteger(valueOf(DCacheLineWords))
+  rule doSendWbData (state == SendWbData && wQ.notFull);
+    Bit#(DCacheWordSelSz) widx = truncate(beatIdx);
+    Bit#(8) nextBeat = beatIdx + 1;
+    Bool last = (nextBeat == fromInteger(valueOf(DCacheLineWords)));
+    wQ.enq(AxiWriteData{
+      data: wbLine[widx],
+      strb: '1,
+      last: last
     });
-    state <= WaitResp;
+    beatIdx <= nextBeat;
+    if (last) begin
+      state <= WaitWbResp;
+    end
   endrule
 
-  rule doWaitResp (state == WaitResp);
-    let memLine <- mem.resp;
-    DCacheLine line = wideRespToDLine(memLine);
+  rule doWaitWbResp (state == WaitWbResp && bQ.notEmpty);
+    bQ.deq;
+    state <= SendFillAddr;
+  endrule
+
+  rule doSendFillAddr (state == SendFillAddr);
+    arQ.enq(AxiReadAddr{
+      addr: missReq.addr,
+      len: fromInteger(valueOf(DCacheLineWords) - 1),
+      size: 3'd2,
+      burst: AxiBurstIncr
+    });
+    beatIdx <= 0;
+    fillLine <= replicate(0);
+    state <= WaitFillResp;
+  endrule
+
+  rule doWaitFillResp (state == WaitFillResp && rQ.notEmpty);
+    let beat = rQ.first;
+    rQ.deq;
 
     let r = missReq;
     let idx = getDIndex(r.addr);
@@ -278,37 +293,44 @@ module mkDCache#(WideMem mem)(DCache);
     let wsel = getDWordSel(r.addr);
     let way = victimWay;
 
-    // Fill cache line
-    tagStore[idx][way] <= tag;
-    validStore[idx][way] <= True;
+    Bit#(DCacheWordSelSz) lineIdx = truncate(beatIdx);
+    DCacheLine nextLine = update(fillLine, lineIdx, beat.data);
+    Bit#(8) nextBeat = beatIdx + 1;
+    fillLine <= nextLine;
+    beatIdx <= nextBeat;
 
-    case (r.op)
-      Ld: begin
-        respQ.enq(line[wsel]);
-        dataStore[idx][way] <= line;
-        dirtyStore[idx][way] <= False;
-      end
-      St: begin
-        DCacheLine newLine = update(line, wsel, r.data);
-        dataStore[idx][way] <= newLine;
-        dirtyStore[idx][way] <= True;
-      end
-      Lr: begin
-        respQ.enq(line[wsel]);
-        dataStore[idx][way] <= line;
-        dirtyStore[idx][way] <= False;
-        lrValid <= True;
-        lrAddr <= r.addr;
-      end
-      default: begin
-        dataStore[idx][way] <= line;
-        dirtyStore[idx][way] <= False;
-      end
-    endcase
+    if (beat.last || nextBeat == fromInteger(valueOf(DCacheLineWords))) begin
+      tagStore[idx][way] <= tag;
+      validStore[idx][way] <= True;
 
-    replacer.access(idx, way);
-    reqQ.deq;
-    state <= Ready;
+      case (r.op)
+        Ld: begin
+          respQ.enq(nextLine[wsel]);
+          dataStore[idx][way] <= nextLine;
+          dirtyStore[idx][way] <= False;
+        end
+        St: begin
+          DCacheLine newLine = update(nextLine, wsel, r.data);
+          dataStore[idx][way] <= newLine;
+          dirtyStore[idx][way] <= True;
+        end
+        Lr: begin
+          respQ.enq(nextLine[wsel]);
+          dataStore[idx][way] <= nextLine;
+          dirtyStore[idx][way] <= False;
+          lrValid <= True;
+          lrAddr <= r.addr;
+        end
+        default: begin
+          dataStore[idx][way] <= nextLine;
+          dirtyStore[idx][way] <= False;
+        end
+      endcase
+
+      replacer.access(idx, way);
+      reqQ.deq;
+      state <= Ready;
+    end
   endrule
 
   method Action req(MemReq r);
@@ -320,4 +342,38 @@ module mkDCache#(WideMem mem)(DCache);
     respQ.deq;
     return d;
   endmethod
+
+  interface AxiMemMaster axiMem;
+    method Bool rdAddrValid = arQ.notEmpty;
+
+    method ActionValue#(AxiReadAddr) rdAddr;
+      let x = arQ.first;
+      arQ.deq;
+      return x;
+    endmethod
+
+    method Action rdData(AxiReadData d);
+      rQ.enq(d);
+    endmethod
+
+    method Bool wrAddrValid = awQ.notEmpty;
+
+    method ActionValue#(AxiWriteAddr) wrAddr;
+      let x = awQ.first;
+      awQ.deq;
+      return x;
+    endmethod
+
+    method Bool wrDataValid = wQ.notEmpty;
+
+    method ActionValue#(AxiWriteData) wrData;
+      let x = wQ.first;
+      wQ.deq;
+      return x;
+    endmethod
+
+    method Action wrResp(AxiWriteResp r);
+      bQ.enq(r);
+    endmethod
+  endinterface
 endmodule

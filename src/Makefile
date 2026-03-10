@@ -25,6 +25,7 @@ H2S_INTERFACES = SimConnectalWrapper:SimIndication
 BSVFILES += \
     $(ROOT_DIR)/include/Types.bsv \
     $(ROOT_DIR)/include/SimInterfaces.bsv \
+    $(ROOT_DIR)/include/AxiTypes.bsv \
     $(ROOT_DIR)/include/AxiMem.bsv \
     $(ROOT_DIR)/include/CoreAxiTop.bsv \
     $(ROOT_DIR)/Tb.bsv \

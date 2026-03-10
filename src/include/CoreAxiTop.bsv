@@ -1,7 +1,7 @@
 import Types::*;
 import ProcTypes::*;
 import Core::*;
-import AxiMem::*;
+import AxiTypes::*;
 
 interface CoreAxiTop;
   method ActionValue#(CpuToHostData) cpuToHost;
@@ -12,8 +12,7 @@ endinterface
 
 (* synthesize *)
 module mkCoreAxiTop(CoreAxiTop);
-  WideMemAxiBridge memBridge <- mkWideMemToAxiBridge;
-  Core core <- mkCore(memBridge.wideMem);
+  Core core <- mkCore;
 
   method ActionValue#(CpuToHostData) cpuToHost;
     let x <- core.cpuToHost;
@@ -26,5 +25,5 @@ module mkCoreAxiTop(CoreAxiTop);
     core.hostToCpu(startpc);
   endmethod
 
-  interface axiMem = memBridge.axi;
+  interface axiMem = core.axiMem;
 endmodule

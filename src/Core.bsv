@@ -12,13 +12,14 @@ import Scoreboard::*;
 import Bht::*;
 import ICache::*;
 import DCache::*;
-import CacheTypes::*;
-import MemUtil::*;
+import AxiTypes::*;
+import AxiMem::*;
 
 interface Core;
   method ActionValue#(CpuToHostData) cpuToHost;
   method Bool cpuToHostValid;
   method Action hostToCpu(Addr startpc);
+  interface AxiMemMaster axiMem;
 endinterface
 
 typedef struct {
@@ -55,16 +56,13 @@ typedef struct {
   Maybe#(ExecInst)    mInst;
 }   M2W deriving(Bits, Eq);
 
-module mkCore(
-    WideMem wideMem,
-    Core ifc
-);
+module mkCore(Core);
   Ehr#(3, Addr)         pcReg <- mkEhr(?);
   CsrFile                csrf <- mkCsrFile(0);
   RFile                    rf <- mkRFile;
-  SplitWideMem2 splitWideMem <- mkSplitWideMem2(csrf.started, wideMem);
-  ICache               iCache <- mkICache(splitWideMem.iMem);
-  DCache               dCache <- mkDCache(splitWideMem.dMem);
+  ICache               iCache <- mkICache;
+  DCache               dCache <- mkDCache;
+  AxiMemMaster        axiMux <- mkAxiArbiter2(iCache.axiMem, dCache.axiMem);
   Btb#(6)                 btb <- mkBtb; // 64-entry BTB
   Bht#(8)                 bht <- mkBht;
   Scoreboard#(6)           sb <- mkCFScoreboard;
@@ -229,4 +227,6 @@ module mkCore(
     csrf.start;
     pcReg[0] <= startpc;
   endmethod
+
+  interface axiMem = axiMux;
 endmodule
