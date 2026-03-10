@@ -7,4 +7,4 @@ typedef Bit#(DataSz) Data;
 typedef 32 InstSz;
 typedef Bit#(InstSz) Instruction;
 
-typedef Bit#(1) CoreID;
+typedef 4  WordSz;

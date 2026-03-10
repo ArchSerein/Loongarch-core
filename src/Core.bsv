@@ -167,28 +167,24 @@ module mkCore(
       let _eInst = fromMaybe(?, _Exec.eInst);
       case (_eInst.iType)
         Ld: begin
-          let req = MemReq { op: Ld, addr: _eInst.addr, data: ?, rid: 0};
+          let req = MemReq { op: Ld, addr: _eInst.addr, data: ? };
           dCache.req(req);
         end
         St: begin
-          let req = MemReq { op: St, addr: _eInst.addr, data: _eInst.data,
-            rid:
-            0};
+          let req = MemReq { op: St, addr: _eInst.addr, data: _eInst.data };
           scSuccValue <= _eInst.data;
           dCache.req(req);
         end
         Ll: begin
-          let req = MemReq { op: Lr, addr: _eInst.addr, data: ?, rid: 0};
+          let req = MemReq { op: Lr, addr: _eInst.addr, data: ? };
           dCache.req(req);
         end
         Sc: begin
-          let req = MemReq { op: Sc, addr: _eInst.addr, data: _eInst.data,
-            rid:
-            0};
+          let req = MemReq { op: Sc, addr: _eInst.addr, data: _eInst.data };
           dCache.req(req);
         end
         Fence: begin
-          let req = MemReq { op: Fence, addr: ?, data: ?, rid: 0};
+          let req = MemReq { op: Fence, addr: ?, data: ? };
           dCache.req(req);
         end
         default: begin

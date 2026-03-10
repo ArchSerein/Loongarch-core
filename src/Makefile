@@ -12,6 +12,7 @@ OBJDIR         := $(BUILD_DIR)/obj_dir
 # 2. Connectal Configuration
 # ==========================================
 CONNECTALDIR   ?= /opt/connectal
+CONNECTAL_MAKEFILE := $(CONNECTALDIR)/Makefile.connectal
 BOARD          ?= bluesim
 PROJECTDIR     ?= $(BOARD)
 
@@ -24,6 +25,8 @@ H2S_INTERFACES = SimConnectalWrapper:SimIndication
 BSVFILES += \
     $(ROOT_DIR)/include/Types.bsv \
     $(ROOT_DIR)/include/SimInterfaces.bsv \
+    $(ROOT_DIR)/include/AxiMem.bsv \
+    $(ROOT_DIR)/include/CoreAxiTop.bsv \
     $(ROOT_DIR)/Tb.bsv \
     $(ROOT_DIR)/include/SimConnectalWrapper.bsv
 
@@ -47,6 +50,7 @@ CONNECTALFLAGS += --bscflags " -show-schedule"
 # 3. Verilator Configuration
 # ==========================================
 VERILATOR_TOP  := mkTb
+CORE_AXI_TOP   := mkCoreAxiTop
 BSC            := bsc
 VERILATOR      := verilator
 SIM_BIN        := $(OBJDIR)/sim
@@ -62,11 +66,17 @@ BSC_FLAGS := -u -verilog -vsim $(VERILATOR) -g $(VERILATOR_TOP) \
              -info-dir $(IDIR) \
              -vdir $(VDIR)
 
+BSC_CORE_FLAGS := -u -verilog -vsim $(VERILATOR) -g $(CORE_AXI_TOP) \
+                  -p +:$(ROOT_DIR)/include \
+                  -bdir $(BDIR) \
+                  -info-dir $(IDIR) \
+                  -vdir $(VDIR)
+
 VERILATOR_FLAGS := --cc --exe --build --trace \
                    --top-module $(VERILATOR_TOP) \
                    -Mdir $(OBJDIR) \
                    -o sim \
-                   -CFLAGS "-std=c++17 -O2"
+                   -CFLAGS "-std=c++11 -O2"
 
 # ==========================================
 # 4. Build Targets
@@ -75,17 +85,25 @@ VERILATOR_FLAGS := --cc --exe --build --trace \
 # Default target must be first
 default: sim
 
-.PHONY: default sim bsim verilator-sim clean
+.PHONY: default sim bsim verilator-sim core-verilog clean
 
 # Run both Connectal-Bluesim and Verilator builds
+ifneq ($(wildcard $(CONNECTAL_MAKEFILE)),)
 sim: bsim verilator-sim
-
-# Trigger Connectal standard build flow
 bsim: build.$(BOARD)
+else
+sim: verilator-sim
+bsim:
+	@echo "Connectal is not available at $(CONNECTAL_MAKEFILE)"
+	@exit 1
+endif
 
 # Verilator execution
 verilator-sim: $(SIM_BIN)
 	TB_MEM_IMAGE=$(TB_MEM_IMAGE) $(SIM_BIN) --max-cycles $(MAX_CYCLES) --start-pc $(START_PC)
+
+# Generate core RTL with AXI top-level wrapper.
+core-verilog: $(VDIR)/$(CORE_AXI_TOP).v
 
 # ==========================================
 # 5. Compilation Rules
@@ -98,6 +116,9 @@ $(BUILD_DIR) $(BDIR) $(IDIR) $(VDIR) $(OBJDIR):
 $(VDIR)/$(VERILATOR_TOP).v: $(ROOT_DIR)/Tb.bsv $(BUILD_DIR) $(BDIR) $(IDIR) $(VDIR)
 	$(BSC) $(BSC_FLAGS) $<
 
+$(VDIR)/$(CORE_AXI_TOP).v: $(ROOT_DIR)/include/CoreAxiTop.bsv $(ROOT_DIR)/Core.bsv $(BUILD_DIR) $(BDIR) $(IDIR) $(VDIR)
+	$(BSC) $(BSC_CORE_FLAGS) $<
+
 # Compile Verilator binary
 $(SIM_BIN): $(VDIR)/$(VERILATOR_TOP).v $(ROOT_DIR)/csrc/sim_main.cpp $(OBJDIR)
 	$(VERILATOR) $(VERILATOR_FLAGS) \
@@ -109,9 +130,11 @@ $(SIM_BIN): $(VDIR)/$(VERILATOR_TOP).v $(ROOT_DIR)/csrc/sim_main.cpp $(OBJDIR)
 # 6. Cleaning
 # ==========================================
 clean:
-	rm -rf $(BUILD_DIR) $(BOARD)
+	rm -rf $(BOARD)
 
 # ==========================================
 # 7. Connectal Core Logic
 # ==========================================
-include $(CONNECTALDIR)/Makefile.connectal
+ifneq ($(wildcard $(CONNECTAL_MAKEFILE)),)
+include $(CONNECTAL_MAKEFILE)
+endif

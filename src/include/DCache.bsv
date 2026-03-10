@@ -22,6 +22,30 @@ typedef Bit#(TLog#(DCacheWays)) DCacheWayIdx;
 
 typedef Vector#(DCacheLineWords, Data) DCacheLine;
 
+function WideMemResp dLineToWideResp(DCacheLine line);
+  WideMemResp ret = replicate(0);
+  for (Integer i = 0; i < valueOf(DCacheLineWords); i = i + 1) begin
+    ret[i] = line[i];
+  end
+  return ret;
+endfunction
+
+function DCacheLine wideRespToDLine(WideMemResp line);
+  DCacheLine ret = ?;
+  for (Integer i = 0; i < valueOf(DCacheLineWords); i = i + 1) begin
+    ret[i] = line[i];
+  end
+  return ret;
+endfunction
+
+function MemWriteEn dcacheWriteMask();
+  MemWriteEn ret = 0;
+  for (Integer i = 0; i < valueOf(DCacheLineWords); i = i + 1) begin
+    ret[i] = 1;
+  end
+  return ret;
+endfunction
+
 function DCacheTag     getDTag(Addr a) = truncateLSB(a);
 function DCacheIndex   getDIndex(Addr a) = truncate(a >> valueOf(DCacheOffsetSz));
 function DCacheWordSel getDWordSel(Addr a) = truncate(a >> 2);
@@ -216,26 +240,37 @@ module mkDCache#(WideMem mem)(DCache);
       Bit#(DCacheOffsetSz) zeroOff = 0;
       Addr wbAddr = {tagStore[idx][way], idx, zeroOff};
       mem.req(WideMemReq{
-        write_en: ~0,
+        write_en: dcacheWriteMask(),
         addr: wbAddr,
-        data: unpack(pack(dataStore[idx][way]))
+        data: dLineToWideResp(dataStore[idx][way]),
+        burst_len: fromInteger(valueOf(DCacheLineWords))
       });
       state <= SendFill;
     end
     else begin
-      mem.req(WideMemReq{write_en: 0, addr: missReq.addr, data: ?});
+      mem.req(WideMemReq{
+        write_en: 0,
+        addr: missReq.addr,
+        data: replicate(0),
+        burst_len: fromInteger(valueOf(DCacheLineWords))
+      });
       state <= WaitResp;
     end
   endrule
 
   rule doSendFill (state == SendFill);
-    mem.req(WideMemReq{write_en: 0, addr: missReq.addr, data: ?});
+    mem.req(WideMemReq{
+      write_en: 0,
+      addr: missReq.addr,
+      data: replicate(0),
+      burst_len: fromInteger(valueOf(DCacheLineWords))
+    });
     state <= WaitResp;
   endrule
 
   rule doWaitResp (state == WaitResp);
     let memLine <- mem.resp;
-    DCacheLine line = unpack(pack(memLine));
+    DCacheLine line = wideRespToDLine(memLine);
 
     let r = missReq;
     let idx = getDIndex(r.addr);

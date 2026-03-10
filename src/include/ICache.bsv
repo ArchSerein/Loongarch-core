@@ -27,6 +27,14 @@ typedef Bit#(TLog#(ICacheWays)) ICacheWayIdx;
 
 typedef Vector#(ICacheLineWords, Data) ICacheLine;
 
+function ICacheLine wideRespToILine(WideMemResp line);
+  ICacheLine ret = ?;
+  for (Integer i = 0; i < valueOf(ICacheLineWords); i = i + 1) begin
+    ret[i] = line[i];
+  end
+  return ret;
+endfunction
+
 // ============================================================
 // Address decomposition
 // ============================================================
@@ -130,8 +138,6 @@ endmodule
 // ============================================================
 typedef enum { Ready, StartMiss, WaitResp } ICacheState deriving (Bits, Eq);
 
-// NOTE: Memory interface parameter omitted while memory access is TODO.
-// Restore to  module mkICache#(WideMem mem)(ICache)  when implementing.
 module mkICache#(WideMem mem)(ICache);
   // Tag / data / valid storage
   Vector#(ICacheSets, Vector#(ICacheWays, Reg#(ICacheTag)))   tagStore   <- replicateM(replicateM(mkRegU));
@@ -188,20 +194,26 @@ module mkICache#(WideMem mem)(ICache);
 
   // ---- Send miss request to memory ----
   rule doStartMiss (state == StartMiss);
-    mem.req(WideMemReq{write_en: 0, addr: missAddr, data: ?});
+    mem.req(WideMemReq{
+      write_en: 0,
+      addr: missAddr,
+      data: replicate(0),
+      burst_len: fromInteger(valueOf(ICacheLineWords))
+    });
     state <= WaitResp;
   endrule
 
   // ---- Receive line from memory and fill ----
   rule doWaitResp (state == WaitResp);
-    let line <- mem.resp;
+    let wideLine <- mem.resp;
+    let line = wideRespToILine(wideLine);
     let idx  = getIIndex(missAddr);
     let tag  = getITag(missAddr);
     let wsel = getIWordSel(missAddr);
     let way  = replacer.replace(idx);
 
     tagStore[idx][way]   <= tag;
-    dataStore[idx][way]  <= unpack(pack(line));
+    dataStore[idx][way]  <= line;
     validStore[idx][way] <= True;
     replacer.access(idx, way);
     respQ.enq(line[wsel]);

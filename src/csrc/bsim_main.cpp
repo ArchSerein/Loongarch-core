@@ -106,6 +106,8 @@ public:
 
   void read_mem_req(std::uint32_t addr) override {
     std::uint32_t paddr = guest_to_host(addr);
+    printf("read addr 0x%08x data 0x%08x\n", addr, mem.words[paddr]);
+
     check_word_addr(paddr, mem.words.size(), "read");
     if (!g_run) {
       return;
@@ -114,6 +116,7 @@ public:
   }
 
   void write_mem_req(std::uint32_t addr, std::uint32_t data) override {
+    printf("write addr 0x%08x data 0x%08x\n", addr, data);
     std::uint32_t paddr = guest_to_host(addr);
     check_word_addr(paddr, mem.words.size(), "write");
     if (!g_run) {
@@ -127,7 +130,9 @@ private:
   std::uint32_t _mem_base;
 
   std::uint32_t guest_to_host(std::uint32_t addr) {
-    return addr - _mem_base;
+    std::uint32_t pa = addr - _mem_base;
+    printf("vaddr 0x%08x tranlate to pa 0x%08x\n", addr, pa);
+    return pa;
   }
 };
 
