@@ -1,0 +1,122 @@
+menu "LoongArch-core configuration menu"
+
+config WATCHPOINT
+  bool "Enable watchpoints"
+  default n
+
+config MTRACE
+  bool "Enable mtrace"
+  default n
+
+config FTRACE
+  bool "Enable ftrace"
+  default n
+
+config DTRACE
+  bool "Enable dtrace"
+  default n
+
+config ETRACE
+  bool "Enable etrace"
+  default n
+
+config ITRACE
+  bool "Enable itrace"
+  default n
+
+config CC_ASAN
+  bool "Enable address sanitizer"
+  default n
+
+menu "TRACE_WAVE switch"
+  config TRACE_WAVE
+    bool "Enable trace wave"
+    default n
+  config WAVE_PC_START
+    hex "wave pc start"
+    default 0x30000000
+  config WAVE_PC_END
+    hex "wave pc end"
+    default 0x30000000
+endmenu
+
+endmenu
+
+menu "NPC difftest config"
+  config DIFFTEST
+    bool "Enable difftest"
+    default n
+endmenu
+
+menu "NPC delayed calibration config"
+  config Delayed_Calibration
+    bool "Enable delayed calibration"
+    default y
+endmenu
+
+menu "NPC performance trace config"
+  config TRACE_PERFORMANCE
+    bool "Enable performance tracer"
+    default y
+endmenu
+
+menu "ISA Config"
+config RV64
+    bool "Enable RV64 (SV39 virtual memory)"
+    default n
+endmenu
+
+menu "TLB Config"
+config TLB_ENTRIES
+    hex "Number of TLB entries (power of 2)"
+    default 0x8
+endmenu
+
+menu "RTL MTRACE config"
+  config RTL_MTRACE
+    bool "Enable rtl mtrace"
+    default n
+
+  config READ
+    bool "Enable rtl mtrace for read operations"
+    default n
+    depends on RTL_MTRACE
+
+  config WRITE
+    bool "Enable rtl mtrace for write operations"
+    default n
+    depends on RTL_MTRACE
+endmenu
+
+menu "Cache Config"
+
+menu "DCACHE"
+config DCACHE_SETS
+    hex "SETS"
+    default 0x8
+
+config DCACHE_ASSOCIATIVITYS
+    hex "ASSOCIATIVITYS"
+    default 0x4
+
+config DCACHE_BLOCKS
+    hex "BLOCKS"
+    default 0x4
+endmenu
+
+
+menu "ICACHE"
+config ICACHE_SETS
+    hex "SETS"
+    default 0x10
+
+config ICACHE_ASSOCIATIVITYS
+    hex "ASSOCIATIVITYS"
+    default 0x1
+
+config ICACHE_BLOCKS
+    hex "BLOCKS"
+    default 0x4
+endmenu
+
+endmenu

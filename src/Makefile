@@ -7,6 +7,8 @@ BDIR           := $(BUILD_DIR)/bdir
 IDIR           := $(BUILD_DIR)/info
 VDIR           := $(BUILD_DIR)/verilog
 OBJDIR         := $(BUILD_DIR)/obj_dir
+-include $(ROOT_DIR)/include/config/auto.conf    
+-include $(ROOT_DIR)/include/config/auto.conf.cmd
 
 # ==========================================
 # 2. Connectal Configuration
@@ -140,3 +142,5 @@ clean:
 ifneq ($(wildcard $(CONNECTAL_MAKEFILE)),)
 include $(CONNECTAL_MAKEFILE)
 endif
+
+include $(ROOT_DIR)/scripts/config.mk
