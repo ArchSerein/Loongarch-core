@@ -38,7 +38,8 @@ BSVPATH += \
     $(CONNECTALDIR)/bsv
 
 # C++ Sources for Connectal simulation
-CPPFILES += $(ROOT_DIR)/csrc/bsim_main.cpp
+CPPFILES += $(ROOT_DIR)/csrc/bsim_main.cpp  \
+            $(ROOT_DIR)/csrc/tb_memory.cpp
 
 # Connectal Compilation Flags
 SOFTWARE_SOCKET_NAME = /tmp/connectal$(USER)
@@ -131,7 +132,7 @@ $(SIM_BIN): $(VDIR)/$(VERILATOR_TOP).v $(ROOT_DIR)/csrc/sim_main.cpp $(OBJDIR)
 # 6. Cleaning
 # ==========================================
 clean:
-	rm -rf $(BOARD)
+	rm -rf $(BOARD) SWSOCK0
 
 # ==========================================
 # 7. Connectal Core Logic

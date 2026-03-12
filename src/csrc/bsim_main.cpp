@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -8,17 +9,12 @@
 
 #include <unistd.h>
 
+#include "tb_memory.hpp"
+#include "mmio.hpp"
 #include "SimIndication.h"
 #include "SimRequest.h"
 
 namespace {
-
-constexpr std::uint32_t kTbWordAddrWidth = 20;
-
-struct TbMemory {
-  TbMemory() : words(std::size_t{1} << kTbWordAddrWidth, 0) {}
-  std::vector<std::uint32_t> words;
-};
 
 struct Options {
   std::string mem_image = "build/mem.bin";
@@ -51,48 +47,42 @@ Options parse_args(int argc, char** argv) {
   return opts;
 }
 
-void check_word_addr(std::uint32_t addr, std::size_t words, const char* op) {
-  if (addr >= words) {
-    std::cerr << "bsim: " << op << " out of range at word address 0x"
-              << std::hex << addr << std::dec << '\n';
-    g_exit_code = 1;
-    g_run = 0;
-  }
-}
-
-void load_mem_image(TbMemory& mem, const std::string& path) {
-  std::ifstream input(path, std::ios::binary);
+void load_mem_image(Memory& mem, const struct Options& opts) {
+  std::ifstream input(opts.mem_image, std::ios::binary | std::ios::ate);
   if (!input.is_open()) {
-    std::cerr << "bsim: no memory image at " << path
-              << ", starting from zeroed memory\n";
-    return;
+      std::cerr << "bsim: no memory image at " << opts.mem_image
+                << ", starting from zeroed memory\n";
+      return;
   }
 
-  input.seekg(0, std::ios::end);
-  const std::size_t file_size = static_cast<std::size_t>(input.tellg());
+  const std::streamsize file_size = input.tellg();
   input.seekg(0, std::ios::beg);
 
-  const std::size_t word_count = (file_size + 3) / 4;
-  if (word_count > mem.words.size()) {
-    std::cerr << "bsim: memory image too large (" << file_size << " bytes)\n";
-    std::exit(1);
+  if (file_size <= 0) {
+      std::cout << "load " << opts.mem_image << " 0 bytes\n";
+      return;
   }
 
-  for (std::size_t i = 0; i < word_count; ++i) {
-    std::uint8_t bytes[4] = {0, 0, 0, 0};
-    input.read(reinterpret_cast<char*>(bytes), 4);
-    mem.words[i] = static_cast<std::uint32_t>(bytes[0]) |
-                   (static_cast<std::uint32_t>(bytes[1]) << 8) |
-                   (static_cast<std::uint32_t>(bytes[2]) << 16) |
-                   (static_cast<std::uint32_t>(bytes[3]) << 24);
+  const std::size_t word_count = (file_size + 3) / 4;
+  if (word_count > mem.get_words_size()) {
+      std::cerr << "bsim: memory image too large (" << file_size << " bytes)\n";
+      std::exit(EXIT_FAILURE);
   }
+
+  std::vector<std::uint8_t> buffer(word_count * 4, 0);
+  input.read(reinterpret_cast<char*>(buffer.data()), file_size);
+
+  mem.init(buffer);
+
+  std::cout << "load " << opts.mem_image << " " << file_size << " bytes (" 
+            << word_count << " words)\n";
 }
 
 class MySimIndicationCb final : public SimIndicationWrapper {
 public:
-  MySimIndicationCb(unsigned int id, TbMemory& mem_ref, std::uint32_t start_pc)
+  MySimIndicationCb(unsigned int id, Memory& mem_ref, std::uint32_t start_pc)
       : SimIndicationWrapper(id), mem(mem_ref) {
-    _mem_base = start_pc;
+        mem.set_base_addr(start_pc);
   }
 
   void halt(std::uint32_t code) override {
@@ -105,34 +95,31 @@ public:
   }
 
   void read_mem_req(std::uint32_t addr) override {
-    std::uint32_t paddr = guest_to_host(addr);
-    printf("read addr 0x%08x data 0x%08x\n", addr, mem.words[paddr]);
-
-    check_word_addr(paddr, mem.words.size(), "read");
+    check_memory_bound(addr, false);
     if (!g_run) {
       return;
     }
-    g_request->read_mem_resp(mem.words[paddr]);
+    g_request->read_mem_resp(mem.read(addr));
   }
 
-  void write_mem_req(std::uint32_t addr, std::uint32_t data) override {
-    printf("write addr 0x%08x data 0x%08x\n", addr, data);
-    std::uint32_t paddr = guest_to_host(addr);
-    check_word_addr(paddr, mem.words.size(), "write");
+  void write_mem_req(std::uint32_t addr, std::uint32_t data, std::uint8_t mask) override {
+    check_memory_bound(addr, true);
     if (!g_run) {
       return;
     }
-    mem.words[paddr] = data;
+    mem.write(addr, data, mask);
   }
 
 private:
-  TbMemory& mem;
-  std::uint32_t _mem_base;
-
-  std::uint32_t guest_to_host(std::uint32_t addr) {
-    std::uint32_t pa = addr - _mem_base;
-    printf("vaddr 0x%08x tranlate to pa 0x%08x\n", addr, pa);
-    return pa;
+  Memory& mem;
+  void check_memory_bound(std::uint32_t addr, bool is_write) {
+    if ((addr >> 16) == 0xbfaf) {
+      auto ret = mem.isDeviceAddress(addr & 0xffff);
+      if (!ret) halt(1);
+    } else if ((addr >> 24) == 0x1c)
+      return;
+    fprintf(stderr, "%s is out of bound at addr 0x%08x\n", is_write ? "write" : "read", addr);
+    halt(1);
   }
 };
 
@@ -141,8 +128,9 @@ private:
 int main(int argc, char** argv) {
   const Options opts = parse_args(argc, argv);
 
-  TbMemory mem;
-  load_mem_image(mem, opts.mem_image);
+  MMIOMap mmio;
+  Memory mem(mmio);
+  load_mem_image(mem, opts);
 
   std::cout << "Start BSC Connectal simulation\n";
   std::cout.flush();

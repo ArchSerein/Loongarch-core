@@ -14,7 +14,7 @@ interface CsrFile;
   method Bool cpuToHostValid;
 endinterface
 
-module mkCsrFile#(CoreID id)(CsrFile);
+module mkCsrFile(CsrFile);
   Reg#(Bool) startReg <- mkReg(False);
 
   Reg#(Data) numInsts <- mkReg(0);
@@ -103,7 +103,7 @@ module mkCsrFile#(CoreID id)(CsrFile);
         `CSR_PGDL: res = csr_pgdl;
         `CSR_PGDH: res = csr_pgdh; 
         `CSR_PGD: res = (csr_badv[31] == 1) ? csr_pgdh : csr_pgdl;
-        `CSR_CPUID: res = zeroExtend(id); 
+        `CSR_CPUID: res = 0; 
         `CSR_SAVE0: res = csr_save0;
         `CSR_SAVE1: res = csr_save1; 
         `CSR_SAVE2: res = csr_save2;

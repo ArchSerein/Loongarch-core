@@ -58,7 +58,7 @@ typedef struct {
 
 module mkCore(Core);
   Ehr#(3, Addr)         pcReg <- mkEhr(?);
-  CsrFile                csrf <- mkCsrFile(0);
+  CsrFile                csrf <- mkCsrFile;
   RFile                    rf <- mkRFile;
   ICache               iCache <- mkICache;
   DCache               dCache <- mkDCache;

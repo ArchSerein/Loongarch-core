@@ -4,8 +4,8 @@ import Types::*;
 interface SimIndication;
   method Action halt(Bit#(32) code);
   method Action putc(Bit#(8) c);
-  method Action read_mem_req(Bit#(32) addr);
-  method Action write_mem_req(Bit#(32) addr, Data data);
+  method Action read_mem_req(Addr addr);
+  method Action write_mem_req(Addr addr, Data data, Bit#(8) mask);
 endinterface
 
 // Host -> hardware request interface (Connectal request).
@@ -24,7 +24,7 @@ interface SimPollIndication;
   method ActionValue#(Bit#(32)) halt();
   method ActionValue#(Bit#(8)) putc();
   method ActionValue#(Bit#(32)) read_mem_req();
-  method ActionValue#(Bit#(64)) write_mem_req();
+  method ActionValue#(Bit#(72)) write_mem_req();
 endinterface
 
 interface SimTop;

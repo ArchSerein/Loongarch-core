@@ -36,11 +36,6 @@ module mkAxiArbiter2#(AxiMemMaster iMem, AxiMemMaster dMem)(AxiMemMaster);
       arQ.enq(ar);
       owner <= AxiOwnerD;
       state <= ArbReadResp;
-    end else if (iMem.wrAddrValid) begin
-      let aw <- iMem.wrAddr;
-      awQ.enq(aw);
-      owner <= AxiOwnerI;
-      state <= ArbWriteData;
     end else if (iMem.rdAddrValid) begin
       let ar <- iMem.rdAddr;
       arQ.enq(ar);
@@ -135,7 +130,7 @@ module mkAxiMemSimBridge#(AxiMemMaster axi, MemoryService memSvc)(Empty);
 
   rule issueReadReq (rdState == SimRdRun && rdSent <= rdReq.len);
     Bit#(TSub#(AddrSz, 2)) baseWordAddr = truncateLSB(rdReq.addr);
-    Addr wordAddr = zeroExtend(baseWordAddr) + zeroExtend(rdSent);
+    Addr wordAddr = { baseWordAddr + zeroExtend(rdSent), 2'b0 };
     memSvc.readReq(wordAddr);
     rdSent <= rdSent + 1;
   endrule
@@ -162,7 +157,7 @@ module mkAxiMemSimBridge#(AxiMemMaster axi, MemoryService memSvc)(Empty);
     Bit#(TSub#(AddrSz, 2)) baseWordAddr = truncateLSB(wrReq.addr);
     Addr wordAddr = zeroExtend(baseWordAddr) + zeroExtend(wrBeat);
     if (wd.strb != 0) begin
-      memSvc.writeReq(wordAddr, wd.data);
+      memSvc.writeReq(wordAddr, wd.data, {'b0, wd.strb});
     end
 
     Bool last = wd.last || (wrBeat == wrReq.len);

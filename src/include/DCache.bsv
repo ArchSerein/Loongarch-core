@@ -4,6 +4,8 @@ import MemTypes::*;
 import AxiTypes::*;
 import Fifo::*;
 import Vector::*;
+import Param::*;
+import Assert::*;
 `include "Autoconf.bsv"
 
 typedef `CONFIG_DCACHE_SETS       DCacheSets; // number of sets
@@ -25,6 +27,9 @@ typedef Vector#(DCacheLineWords, Data) DCacheLine;
 function DCacheTag     getDTag(Addr a) = truncateLSB(a);
 function DCacheIndex   getDIndex(Addr a) = truncate(a >> valueOf(DCacheOffsetSz));
 function DCacheWordSel getDWordSel(Addr a) = truncate(a >> 2);
+function Bool isUncacheAddr(Addr a);
+  return (truncateLSB(a) == uncached_base);
+endfunction
 
 interface DCache;
   method Action req(MemReq r);
@@ -119,7 +124,9 @@ typedef enum {
   SendWbData,
   WaitWbResp,
   SendFillAddr,
-  WaitFillResp
+  WaitFillResp,
+  SendUncacheReq,
+  WaitUncacheResp
 } DCacheState deriving(Bits, Eq);
 
 module mkDCache(DCache);
@@ -159,9 +166,10 @@ module mkDCache(DCache);
 
   rule doLookup (state == Ready);
     let r = reqQ.first;
+    reqQ.deq;
 
     if (r.op == Fence) begin
-      reqQ.deq;
+      // Writeback all dirty data
     end else begin
       let tag = getDTag(r.addr);
       let idx = getDIndex(r.addr);
@@ -181,8 +189,10 @@ module mkDCache(DCache);
         end
       end
 
-      if (hit) begin
-        reqQ.deq;
+      if (isUncacheAddr(r.addr)) begin
+        missReq <= r;
+        state <= SendUncacheReq;
+      end else if (hit) begin
         replacer.access(idx, hitWay);
 
         case (r.op)
@@ -218,7 +228,6 @@ module mkDCache(DCache);
           lrValid <= False;
       end else begin
         if (r.op == Sc) begin
-          reqQ.deq;
           respQ.enq(scFail);
           lrValid <= False;
         end else begin
@@ -328,9 +337,52 @@ module mkDCache(DCache);
       endcase
 
       replacer.access(idx, way);
-      reqQ.deq;
       state <= Ready;
     end
+  endrule
+
+  rule doSendUncacheReq (state == SendUncacheReq);
+    let r = missReq;
+    if (r.op == Ld) begin
+      arQ.enq(AxiReadAddr{
+        addr: r.addr,
+        len: 'b0,
+        size: 3'd2,
+        burst: AxiBurstFixed
+      });
+    end else if (r.op == St) begin
+      awQ.enq(AxiWriteAddr{
+        addr: r.addr,
+        len: 'b0,
+        size: 3'd2,
+        burst: AxiBurstFixed
+      });
+      wQ.enq(AxiWriteData{
+        data: r.data,
+        strb: '1,
+        last: True
+      });
+    end
+    state <= WaitUncacheResp;
+  endrule
+
+  rule doWaitUncacheResp (state == WaitUncacheResp && (
+    ((missReq.op == Ld) && rQ.notEmpty) || 
+    ((missReq.op == St) && bQ.notEmpty)));
+    let r = missReq;
+    if (r.op == Ld) begin
+      let beat = rQ.first;
+      rQ.deq;
+      dynamicAssert(beat.resp == AxiRespOkay ||
+                    beat.resp == AxiRespExOkay, "read resp has fault");
+      respQ.enq(beat.data);
+    end else if (r.op == St) begin
+      let beat = bQ.first;
+      bQ.deq;
+      dynamicAssert(beat.resp == AxiRespOkay ||
+                    beat.resp == AxiRespExOkay, "write resp has fault");
+    end
+    state <= Ready;
   endrule
 
   method Action req(MemReq r);

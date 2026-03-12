@@ -21,11 +21,11 @@ module mkTbCore#(SimIndication indication)(SimRequest);
   Fifo#(32, Data) readRespQ <- mkCFFifo;
 
   MemoryService memSvc = interface MemoryService;
-  method Action writeReq(Bit#(32) wordAddr, Data d);
-    indication.write_mem_req(wordAddr, d);
+  method Action writeReq(Addr wordAddr, Data d, Bit#(8) mask);
+    indication.write_mem_req(wordAddr, d,mask);
   endmethod
 
-  method Action readReq(Bit#(32) wordAddr);
+  method Action readReq(Addr wordAddr);
     indication.read_mem_req(wordAddr);
   endmethod
 
@@ -84,7 +84,7 @@ module mkTb(SimTop);
   Fifo#(8, Bit#(32)) haltQ <- mkCFFifo;
   Fifo#(32, Bit#(8)) putcQ <- mkCFFifo;
   Fifo#(64, Bit#(32)) readMemReqQ <- mkCFFifo;
-  Fifo#(64, Bit#(64)) writeMemReqQ <- mkCFFifo;
+  Fifo#(64, Bit#(72)) writeMemReqQ <- mkCFFifo;
 
   SimIndication indicationSink = interface SimIndication;
   method Action halt(Bit#(32) code);
@@ -95,12 +95,12 @@ module mkTb(SimTop);
     putcQ.enq(c);
   endmethod
 
-  method Action read_mem_req(Bit#(32) addr);
+  method Action read_mem_req(Addr addr);
     readMemReqQ.enq(addr);
   endmethod
 
-  method Action write_mem_req(Bit#(32) addr, Data data);
-    writeMemReqQ.enq({addr, data});
+  method Action write_mem_req(Addr addr, Data data, Bit#(8) mask);
+    writeMemReqQ.enq({addr, data, mask});
   endmethod
 endinterface;
 
@@ -127,7 +127,7 @@ interface SimPollIndication indication;
     return addr;
   endmethod
 
-  method ActionValue#(Bit#(64)) write_mem_req if (writeMemReqQ.notEmpty);
+  method ActionValue#(Bit#(72)) write_mem_req if (writeMemReqQ.notEmpty);
     let req = writeMemReqQ.first;
     writeMemReqQ.deq;
     return req;

@@ -25,15 +25,3 @@ interface MemInitIfc;
     interface Put#(MemInit) request;
     method Bool done();
 endinterface
-
-typedef union tagged {
-    WideMemInitLoad InitLoad;
-    void InitDone;
-} WideMemInit deriving(Eq, Bits, FShow);
-
-interface WideMemInitIfc;
-    interface Put#(WideMemInit) request;
-    method Bool done();
-endinterface
-
-
