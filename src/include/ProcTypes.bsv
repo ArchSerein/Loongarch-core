@@ -13,6 +13,14 @@ typedef struct {
   Bit#(16) data;
 } CpuToHostData deriving(Bits, Eq, FShow);
 
+typedef struct {
+  Addr pc;
+  Instruction inst;
+  Bool wen;
+  Bit#(5) wdest;
+  Data wdata;
+} DiffCommit deriving(Bits, Eq, FShow);
+
 typedef Bit#(5) RIndx;
 
 typedef Bit#(6)  Op_31_26;

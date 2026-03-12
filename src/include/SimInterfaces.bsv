@@ -6,6 +6,13 @@ interface SimIndication;
   method Action putc(Bit#(8) c);
   method Action read_mem_req(Addr addr);
   method Action write_mem_req(Addr addr, Data data, Bit#(8) mask);
+  method Action difftest_instr_commit(
+    Bit#(32) pc,
+    Instruction inst,
+    Bit#(1) wen,
+    Bit#(5) wdest,
+    Data wdata
+  );
 endinterface
 
 // Host -> hardware request interface (Connectal request).

@@ -68,6 +68,11 @@ rule drainCpuToHost (started && core.cpuToHostValid);
   endcase
 endrule
 
+rule drainDiffCommit (started && core.diffCommitValid);
+  let c <- core.diffCommit;
+  indication.difftest_instr_commit(c.pc, c.inst, pack(c.wen), c.wdest, c.wdata);
+endrule
+
 method Action hostToCpu(Bit#(32) startpc) if (!started);
   started <= True;
   cycles <= 0;
@@ -101,6 +106,15 @@ module mkTb(SimTop);
 
   method Action write_mem_req(Addr addr, Data data, Bit#(8) mask);
     writeMemReqQ.enq({addr, data, mask});
+  endmethod
+
+  method Action difftest_instr_commit(
+      Bit#(32) pc,
+      Instruction inst,
+      Bit#(1) wen,
+      Bit#(5) wdest,
+      Data wdata);
+    noAction;
   endmethod
 endinterface;
 

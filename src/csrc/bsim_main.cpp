@@ -4,6 +4,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -11,6 +12,7 @@
 
 #include "tb_memory.hpp"
 #include "mmio.hpp"
+#include "difftest.hpp"
 #include "SimIndication.h"
 #include "SimRequest.h"
 
@@ -19,6 +21,8 @@ namespace {
 struct Options {
   std::string mem_image = "build/mem.bin";
   std::uint32_t start_pc = 0;
+  bool enable_difftest = false;
+  std::string diff_ref_so;
 };
 
 static SimRequestProxy* g_request = nullptr;
@@ -27,9 +31,25 @@ static std::uint32_t g_exit_code = 1;
 
 Options parse_args(int argc, char** argv) {
   Options opts;
+#ifdef CONFIG_DIFFTEST
+  opts.enable_difftest = true;
+#endif
   const char* from_env = std::getenv("TB_MEM_IMAGE");
   if (from_env != nullptr && *from_env != '\0') {
     opts.mem_image = from_env;
+  }
+  const char* diff_from_env = std::getenv("DIFFTEST_REF_SO");
+  if (diff_from_env != nullptr && *diff_from_env != '\0') {
+    opts.diff_ref_so = diff_from_env;
+  }
+  const char* enable_diff_from_env = std::getenv("ENABLE_DIFFTEST");
+  if (enable_diff_from_env != nullptr &&
+      (std::strcmp(enable_diff_from_env, "1") == 0 ||
+       std::strcmp(enable_diff_from_env, "y") == 0 ||
+       std::strcmp(enable_diff_from_env, "Y") == 0 ||
+       std::strcmp(enable_diff_from_env, "true") == 0 ||
+       std::strcmp(enable_diff_from_env, "TRUE") == 0)) {
+    opts.enable_difftest = true;
   }
 
   for (int i = 1; i < argc; ++i) {
@@ -39,6 +59,14 @@ Options parse_args(int argc, char** argv) {
     }
     if (std::strcmp(argv[i], "--start-pc") == 0 && (i + 1) < argc) {
       opts.start_pc = static_cast<std::uint32_t>(std::strtoul(argv[++i], nullptr, 0));
+      continue;
+    }
+    if (std::strcmp(argv[i], "--difftest") == 0) {
+      opts.enable_difftest = true;
+      continue;
+    }
+    if (std::strcmp(argv[i], "--diff-ref-so") == 0 && (i + 1) < argc) {
+      opts.diff_ref_so = argv[++i];
       continue;
     }
     std::cerr << "unknown argument: " << argv[i] << '\n';
@@ -80,8 +108,8 @@ void load_mem_image(Memory& mem, const struct Options& opts) {
 
 class MySimIndicationCb final : public SimIndicationWrapper {
 public:
-  MySimIndicationCb(unsigned int id, Memory& mem_ref, std::uint32_t start_pc)
-      : SimIndicationWrapper(id), mem(mem_ref) {
+  MySimIndicationCb(unsigned int id, Memory& mem_ref, std::uint32_t start_pc, Difftest* difftest_ref)
+      : SimIndicationWrapper(id), mem(mem_ref), difftest(difftest_ref) {
         mem.set_base_addr(start_pc);
   }
 
@@ -110,8 +138,34 @@ public:
     mem.write(addr, data, mask);
   }
 
+  void difftest_instr_commit(std::uint32_t pc, std::uint32_t inst, std::uint8_t wen,
+                             std::uint8_t wdest, std::uint32_t wdata) override {
+    if (!g_run || difftest == nullptr || !difftest->enabled()) {
+      return;
+    }
+
+    instr_commit_t* commit = difftest->get_instr_commit(0);
+    commit->valid = 1;
+    commit->pc = pc;
+    commit->inst = inst;
+    commit->wen = (wen != 0) ? 1 : 0;
+    commit->wdest = wdest;
+    commit->wdata = wdata;
+
+    const int state = difftest->step(diff_main_time);
+    ++diff_main_time;
+    if (state == STATE_ABORT) {
+      std::cerr << "\nbsim: DIFFTEST MISMATCH\n";
+      difftest->display();
+      g_exit_code = 3;
+      g_run = 0;
+    }
+  }
+
 private:
   Memory& mem;
+  Difftest* difftest = nullptr;
+  std::uint64_t diff_main_time = 0;
   void check_memory_bound(std::uint32_t addr, bool is_write) {
     if ((addr >> 16) == 0xbfaf) {
       auto ret = mem.isDeviceAddress(addr & 0xffff);
@@ -132,11 +186,22 @@ int main(int argc, char** argv) {
   Memory mem(mmio);
   load_mem_image(mem, opts);
 
+  std::unique_ptr<Difftest> difftest;
+  if (opts.enable_difftest) {
+    difftest.reset(new Difftest(0, opts.diff_ref_so, opts.start_pc));
+    if (!difftest->enabled()) {
+      std::cerr << "bsim: difftest requested but failed to initialize reference model\n";
+      return 1;
+    }
+    difftest->load_memory_image(mem.raw_data(), mem.raw_size());
+  }
+
   std::cout << "Start BSC Connectal simulation\n";
   std::cout.flush();
 
   g_request = new SimRequestProxy(IfcNames_SimRequestS2H);
-  auto* indication = new MySimIndicationCb(IfcNames_SimIndicationH2S, mem, opts.start_pc);
+  auto* indication =
+      new MySimIndicationCb(IfcNames_SimIndicationH2S, mem, opts.start_pc, difftest.get());
   (void)indication;
 
   g_request->hostToCpu(opts.start_pc);

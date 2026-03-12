@@ -41,7 +41,10 @@ BSVPATH += \
 
 # C++ Sources for Connectal simulation
 CPPFILES += $(ROOT_DIR)/csrc/bsim_main.cpp  \
-            $(ROOT_DIR)/csrc/tb_memory.cpp
+            $(ROOT_DIR)/csrc/tb_memory.cpp   \
+            $(ROOT_DIR)/csrc/difftest.cpp
+
+LDLIBS += -ldl
 
 # Connectal Compilation Flags
 SOFTWARE_SOCKET_NAME = /tmp/connectal$(USER)

@@ -1,4 +1,6 @@
 #pragma once
+#include <algorithm>
+#include <cstddef>
 #include <vector>
 #include <cstdint>
 #include "mmio.hpp"
@@ -27,6 +29,15 @@ public:
     void init(std::vector<std::uint8_t>& buffer) {
         std::copy(buffer.begin(), buffer.end(), Memory::words_.begin());
     }
+
+    const std::uint8_t* raw_data() const {
+        return words_.data();
+    }
+
+    std::size_t raw_size() const {
+        return words_.size();
+    }
+
      bool isDeviceAddress(std::uint32_t addr) {
         return mmio.isDeviceAddress(addr);
      }

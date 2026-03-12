@@ -1,28 +1,57 @@
 #pragma once
+
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <string>
+
+#ifndef DIFFTEST_COMMIT_WIDTH
+#define DIFFTEST_COMMIT_WIDTH 1
+#endif
+
+#ifndef DEBUG_INST_TRACE_SIZE
+#define DEBUG_INST_TRACE_SIZE 32
+#endif
+
+#ifndef DEBUG_GROUP_TRACE_SIZE
+#define DEBUG_GROUP_TRACE_SIZE 16
+#endif
+
+#define DIFF_PROXY NemuProxy
 
 class NemuProxy {
 private:
-    void* handle = NULL;
+    void* handle_ = nullptr;
+    bool initialized_ = false;
+    std::string ref_so_path_;
+
+    void* load_symbol(const char* symbol_name, bool required = true);
+
 public:
-    /* coreid is be used to distinguish multi-core */
-    NemuProxy(int coreid);
+    NemuProxy(int coreid, const std::string& ref_so_path = "");
     ~NemuProxy();
 
-    void (*memcpy)(std::uint32_t nemu_addr, void* dut_buf, size_t n, bool direction);
-    void (*regcpy)(void* dut, bool direction, bool do_csr);
-    void (*csrcpy)(void* dut, bool direction);
-    void (*uarchstatus_cpy)(void* dut, bool direction);
-    int (*store_commit)(uint64_t saddr, uint64_t sdata);
-    void (*exec)(uint64_t n);
-    std::uint32_t (*guided_exec)(void* disambiguate_para);
-    void (*raise_intr)(uint64_t no);
-    void (*isa_reg_display)();
-    void (*tlbfill_index_set)(uint32_t index);
-    void (*timercpy)(void* dut);
-    void (*estat_sync)(uint32_t index, uint32_t mask);
-    int  (*check_end)();
+    bool ready() const {
+        return initialized_;
+    }
+
+    const std::string& ref_so_path() const {
+        return ref_so_path_;
+    }
+
+    void (*memcpy)(std::uint64_t nemu_addr, void* dut_buf, std::size_t n, bool direction) = nullptr;
+    void (*regcpy)(void* dut, bool direction, bool do_csr) = nullptr;
+    void (*csrcpy)(void* dut, bool direction) = nullptr;
+    void (*uarchstatus_cpy)(void* dut, bool direction) = nullptr;
+    int (*store_commit)(std::uint64_t saddr, std::uint64_t sdata) = nullptr;
+    void (*exec)(std::uint64_t n) = nullptr;
+    std::uint64_t (*guided_exec)(void* disambiguate_para) = nullptr;
+    void (*raise_intr)(std::uint64_t no) = nullptr;
+    void (*isa_reg_display)() = nullptr;
+    void (*tlbfill_index_set)(std::uint32_t index) = nullptr;
+    void (*timercpy)(void* dut) = nullptr;
+    void (*estat_sync)(std::uint32_t index, std::uint32_t mask) = nullptr;
+    int (*check_end)() = nullptr;
 };
 
 enum {
@@ -35,74 +64,89 @@ enum {
 enum { DIFFTEST_TO_DUT, DIFFTEST_TO_REF };
 enum { REF_TO_DUT, DUT_TO_REF };
 enum { REF_TO_DIFFTEST, DUT_TO_DIFFTEST };
-enum { DIFF_TO_REF_GR = 0, DIFF_TO_REF_ALL};
-enum { REF_TO_DIFF_GR = 0, REF_TO_DIFF_ALL};
+enum { DIFF_TO_REF_GR = 0, DIFF_TO_REF_ALL };
+enum { REF_TO_DIFF_GR = 0, REF_TO_DIFF_ALL };
 
 enum retire_inst_type { RET_NORMAL = 0, RET_INT, RET_EXC };
 
 typedef struct {
-    uint8_t valid = 0;
-    uint8_t code;
-    uint32_t pc;
-    uint64_t cycleCnt = 0;
-    uint64_t instrCnt = 0;
+    std::uint8_t valid = 0;
+    std::uint8_t code = 0;
+    std::uint32_t pc = 0;
+    std::uint64_t cycleCnt = 0;
+    std::uint64_t instrCnt = 0;
 } trap_event_t;
 
 typedef struct {
-    uint8_t excp_valid = 0;
-    uint8_t eret       = 0;
-    uint32_t interrupt = 0;
-    uint32_t exception = 0;
-    uint32_t exceptionPC = 0;
-    uint32_t exceptionIst = 0;
+    std::uint8_t excp_valid = 0;
+    std::uint8_t eret = 0;
+    std::uint32_t interrupt = 0;
+    std::uint32_t exception = 0;
+    std::uint32_t exceptionPC = 0;
+    std::uint32_t exceptionIst = 0;
 } excp_event_t;
 
 typedef struct {
-    uint8_t valid = 0;
-    uint32_t pc;
-    uint32_t inst;
-    uint8_t skip;
-    uint8_t is_TLBFILL;
-    uint8_t TLBFILL_index;
-    uint8_t is_CNTinst;
-    uint64_t timer_64_value;
-    uint8_t wen;
-    uint8_t wdest;
-    uint32_t wdata;
-    uint8_t csr_rstat;
-    uint32_t csr_data;
+    std::uint8_t valid = 0;
+    std::uint32_t pc = 0;
+    std::uint32_t inst = 0;
+    std::uint8_t skip = 0;
+    std::uint8_t is_TLBFILL = 0;
+    std::uint8_t TLBFILL_index = 0;
+    std::uint8_t is_CNTinst = 0;
+    std::uint64_t timer_64_value = 0;
+    std::uint8_t wen = 0;
+    std::uint8_t wdest = 0;
+    std::uint32_t wdata = 0;
+    std::uint8_t csr_rstat = 0;
+    std::uint32_t csr_data = 0;
 } instr_commit_t;
 
 typedef struct {
-    uint32_t gpr[32];
+    std::uint32_t gpr[32] = {0};
 } arch_greg_state_t;
 
 typedef struct __attribute__((packed)) {
-    uint32_t crmd;
-    uint32_t prmd;
-    uint32_t euen;
-    uint32_t ecfg;
-    uint32_t era, badv, eentry;
-    uint32_t tlbidx, tlbehi, tlbelo0, tlbelo1;
-    uint32_t asid, pgdl, pgdh;
-    uint32_t save0, save1, save2, save3;
-    uint32_t tid, tcfg, tval; // ticlr;
-    uint32_t llbctl, tlbrentry, dmw0, dmw1;
-    uint32_t estat;
-    uint32_t this_pc;
+    std::uint32_t crmd = 0;
+    std::uint32_t prmd = 0;
+    std::uint32_t euen = 0;
+    std::uint32_t ecfg = 0;
+    std::uint32_t era = 0;
+    std::uint32_t badv = 0;
+    std::uint32_t eentry = 0;
+    std::uint32_t tlbidx = 0;
+    std::uint32_t tlbehi = 0;
+    std::uint32_t tlbelo0 = 0;
+    std::uint32_t tlbelo1 = 0;
+    std::uint32_t asid = 0;
+    std::uint32_t pgdl = 0;
+    std::uint32_t pgdh = 0;
+    std::uint32_t save0 = 0;
+    std::uint32_t save1 = 0;
+    std::uint32_t save2 = 0;
+    std::uint32_t save3 = 0;
+    std::uint32_t tid = 0;
+    std::uint32_t tcfg = 0;
+    std::uint32_t tval = 0;
+    std::uint32_t llbctl = 0;
+    std::uint32_t tlbrentry = 0;
+    std::uint32_t dmw0 = 0;
+    std::uint32_t dmw1 = 0;
+    std::uint32_t estat = 0;
+    std::uint32_t this_pc = 0;
 } arch_csr_state_t;
 
 typedef struct {
-    uint8_t  valid = 0;
-    uint32_t paddr;
-    uint32_t vaddr;
-    uint32_t data;
+    std::uint8_t valid = 0;
+    std::uint64_t paddr = 0;
+    std::uint64_t vaddr = 0;
+    std::uint64_t data = 0;
 } store_event_t;
 
 typedef struct {
-    uint8_t valid = 0;
-    uint64_t paddr;
-    uint64_t vaddr;
+    std::uint8_t valid = 0;
+    std::uint64_t paddr = 0;
+    std::uint64_t vaddr = 0;
 } load_event_t;
 
 typedef struct {
@@ -117,13 +161,14 @@ typedef struct {
 
 class DiffState {
 public:
-    void record_group(uint64_t pc, uint64_t count) {
+    void record_group(std::uint64_t pc, std::uint64_t count) {
         retire_group_pc_queue[retire_group_pointer] = pc;
         retire_group_cnt_queue[retire_group_pointer] = count;
         retire_group_pointer = (retire_group_pointer + 1) % DEBUG_GROUP_TRACE_SIZE;
     }
 
-    void record_inst(uint64_t pc, uint32_t inst, uint8_t wen, uint8_t wdest, uint64_t wdata, bool skip) {
+    void record_inst(std::uint64_t pc, std::uint32_t inst, std::uint8_t wen,
+                     std::uint8_t wdest, std::uint64_t wdata, bool skip) {
         retire_inst_pc_queue[retire_inst_pointer] = pc;
         retire_inst_inst_queue[retire_inst_pointer] = inst;
         retire_inst_wen_queue[retire_inst_pointer] = wen;
@@ -136,80 +181,74 @@ public:
 
 private:
     int retire_inst_pointer = 0;
-    uint64_t retire_inst_pc_queue[DEBUG_INST_TRACE_SIZE] = {0};
-    uint32_t retire_inst_inst_queue[DEBUG_INST_TRACE_SIZE] = {0};
-    uint64_t retire_inst_wen_queue[DEBUG_INST_TRACE_SIZE] = {0};
-    uint32_t retire_inst_wdst_queue[DEBUG_INST_TRACE_SIZE] = {0};
-    uint64_t retire_inst_wdata_queue[DEBUG_INST_TRACE_SIZE] = {0};
-    uint32_t retire_inst_type_queue[DEBUG_INST_TRACE_SIZE] = {0};
+    std::uint64_t retire_inst_pc_queue[DEBUG_INST_TRACE_SIZE] = {0};
+    std::uint32_t retire_inst_inst_queue[DEBUG_INST_TRACE_SIZE] = {0};
+    std::uint64_t retire_inst_wen_queue[DEBUG_INST_TRACE_SIZE] = {0};
+    std::uint32_t retire_inst_wdst_queue[DEBUG_INST_TRACE_SIZE] = {0};
+    std::uint64_t retire_inst_wdata_queue[DEBUG_INST_TRACE_SIZE] = {0};
+    std::uint32_t retire_inst_type_queue[DEBUG_INST_TRACE_SIZE] = {0};
     bool retire_inst_skip_queue[DEBUG_INST_TRACE_SIZE] = {0};
 
     int retire_group_pointer = 0;
-    uint64_t retire_group_pc_queue[DEBUG_GROUP_TRACE_SIZE] = {0};
-    uint32_t retire_group_cnt_queue[DEBUG_GROUP_TRACE_SIZE] = {0};
+    std::uint64_t retire_group_pc_queue[DEBUG_GROUP_TRACE_SIZE] = {0};
+    std::uint32_t retire_group_cnt_queue[DEBUG_GROUP_TRACE_SIZE] = {0};
 };
 
 class Difftest {
 private:
-    /* coreid is be used to distinguish multi-core */
-    int coreid;
+    int coreid_;
+    std::uint32_t first_inst_pc_;
+    bool started_ = false;
+    bool sim_over_ = false;
+    bool mem_synced_ = false;
 
-    /* dut/ref core info */
-    difftest_core_state_t dut;
-    difftest_core_state_t ref;
-    uint32_t *dut_regs_ptr = (uint32_t *)&dut.regs;
-    uint32_t *ref_regs_ptr = (uint32_t *)&ref.regs;
+    difftest_core_state_t dut = {};
+    difftest_core_state_t ref = {};
+    std::uint32_t* dut_regs_ptr_ = reinterpret_cast<std::uint32_t*>(&dut.regs);
+    std::uint32_t* ref_regs_ptr_ = reinterpret_cast<std::uint32_t*>(&ref.regs);
 
-    DiffState *state = NULL;
-    /* reference */
-    DIFF_PROXY *proxy = NULL;
+    DiffState* state = nullptr;
+    DIFF_PROXY* proxy = nullptr;
 
-    /* the index of instructions per commit */
-    uint32_t idx_commit = 0;
+    std::uint32_t idx_commit_ = 0;
+    bool progress_ = false;
 
-    /* indicate whether simulation is ended */
-    bool sim_over = false;
-
-    /* control whether to compare between duf and ref */
-    bool progress = false;
-
-    /* copy dut initialized state to ref when instruction is the first instruction */
     void do_first_instr_commit();
-
-    /* nemu execute one instruction */
     void do_instr_commit(int index);
 
 public:
+    Difftest(int coreid, const std::string& ref_so_path = "", std::uint32_t first_inst_pc = 0);
+    ~Difftest();
 
-    /* Trigger a difftest checking produre */
-    int step(vluint64_t& main_time);
+    bool enabled() const {
+        return proxy != nullptr && proxy->ready();
+    }
 
-    /* Print dut core state info */
+    void load_memory_image(const void* image, std::size_t nbytes, std::uint32_t nemu_addr = 0);
+
+    int step(std::uint64_t main_time);
     void display();
 
-    /* Difftest public APIs for dut: called from DPI-C functions (or testbench)
-     * These functions generally do nothing but copy the information to core_state.
-     */
-    inline trap_event_t *get_trap_event() {
+    inline trap_event_t* get_trap_event() {
         return &(dut.trap);
     }
-    inline excp_event_t *get_excp_event() {
+    inline excp_event_t* get_excp_event() {
         return &(dut.excp);
     }
-    inline instr_commit_t *get_instr_commit(uint8_t index) {
+    inline instr_commit_t* get_instr_commit(std::uint8_t index) {
         return &(dut.commit[index]);
     }
-    inline arch_csr_state_t *get_csr_state() {
+    inline arch_csr_state_t* get_csr_state() {
         return &(dut.csr);
     }
-    inline arch_greg_state_t *get_greg_state() {
+    inline arch_greg_state_t* get_greg_state() {
         return &(dut.regs);
     }
 
-    inline store_event_t *get_store_event(uint8_t index) {
+    inline store_event_t* get_store_event(std::uint8_t index) {
         return &(dut.store[index]);
     }
-    inline load_event_t *get_load_event(uint8_t index) {
+    inline load_event_t* get_load_event(std::uint8_t index) {
         return &(dut.load[index]);
     }
 
@@ -220,9 +259,9 @@ public:
         return dut.trap.code;
     }
     inline int get_proxy_check_end() const {
+        if (proxy == nullptr || proxy->check_end == nullptr) {
+            return 0;
+        }
         return proxy->check_end();
     }
-
-    Difftest(int coreid);
-    ~Difftest();
 };
