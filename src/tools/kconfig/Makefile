@@ -1,5 +1,5 @@
 NAME = conf
-obj := target
+obj := build
 SRCS += confdata.c expr.c preprocess.c symbol.c util.c
 SRCS += $(obj)/lexer.lex.c $(obj)/parser.tab.c
 CC = gcc
@@ -19,6 +19,8 @@ LIBS += -lncurses
 else
 $(error bad target=$(NAME))
 endif
+
+include $(ROOT_DIR)/scripts/build.mk
 
 $(obj)/lexer.lex.o: $(obj)/parser.tab.h
 $(obj)/lexer.lex.c: lexer.l $(obj)/parser.tab.h

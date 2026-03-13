@@ -7,7 +7,7 @@ BDIR           := $(BUILD_DIR)/bdir
 IDIR           := $(BUILD_DIR)/info
 VDIR           := $(BUILD_DIR)/verilog
 OBJDIR         := $(BUILD_DIR)/obj_dir
--include $(ROOT_DIR)/include/config/auto.conf    
+-include $(ROOT_DIR)/include/config/auto.conf
 -include $(ROOT_DIR)/include/config/auto.conf.cmd
 
 # ==========================================

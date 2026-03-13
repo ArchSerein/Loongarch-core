@@ -1,3 +1,3 @@
 NAME = fixdep
 SRCS = fixdep.c
-include $(NEMU_HOME)/scripts/build.mk
+include $(ROOT_DIR)/scripts/build.mk
