@@ -1,33 +1,5 @@
 menu "LoongArch-core configuration menu"
 
-config WATCHPOINT
-  bool "Enable watchpoints"
-  default n
-
-config MTRACE
-  bool "Enable mtrace"
-  default n
-
-config FTRACE
-  bool "Enable ftrace"
-  default n
-
-config DTRACE
-  bool "Enable dtrace"
-  default n
-
-config ETRACE
-  bool "Enable etrace"
-  default n
-
-config ITRACE
-  bool "Enable itrace"
-  default n
-
-config CC_ASAN
-  bool "Enable address sanitizer"
-  default n
-
 menu "TRACE_WAVE switch"
   config TRACE_WAVE
     bool "Enable trace wave"
@@ -42,50 +14,22 @@ endmenu
 
 endmenu
 
-menu "NPC difftest config"
+menu "LoongArch-core difftest config"
   config DIFFTEST
     bool "Enable difftest"
     default n
 endmenu
 
-menu "NPC delayed calibration config"
-  config Delayed_Calibration
-    bool "Enable delayed calibration"
-    default y
-endmenu
-
-menu "NPC performance trace config"
+menu "LoongArch-core performance trace config"
   config TRACE_PERFORMANCE
     bool "Enable performance tracer"
     default y
-endmenu
-
-menu "ISA Config"
-config RV64
-    bool "Enable RV64 (SV39 virtual memory)"
-    default n
 endmenu
 
 menu "TLB Config"
 config TLB_ENTRIES
     hex "Number of TLB entries (power of 2)"
     default 0x8
-endmenu
-
-menu "RTL MTRACE config"
-  config RTL_MTRACE
-    bool "Enable rtl mtrace"
-    default n
-
-  config READ
-    bool "Enable rtl mtrace for read operations"
-    default n
-    depends on RTL_MTRACE
-
-  config WRITE
-    bool "Enable rtl mtrace for write operations"
-    default n
-    depends on RTL_MTRACE
 endmenu
 
 menu "Cache Config"
@@ -102,6 +46,18 @@ config DCACHE_ASSOCIATIVITYS
 config DCACHE_BLOCKS
     hex "BLOCKS"
     default 0x4
+
+config DCACHE_REPLACE_RANDOM
+    bool "cache replace random"
+    default n
+
+config DCACHE_REPLACE_PLRU
+    bool "cache replace plru"
+    default n
+
+config DCACHE_REPLACE_LRU
+    bool "cache replace lru"
+    default y
 endmenu
 
 
@@ -117,6 +73,19 @@ config ICACHE_ASSOCIATIVITYS
 config ICACHE_BLOCKS
     hex "BLOCKS"
     default 0x4
+
+config ICACHE_REPLACE_RANDOM
+    bool "cache replace random"
+    default n
+
+config ICACHE_REPLACE_PLRU
+    bool "cache replace plru"
+    default n
+
+config ICACHE_REPLACE_LRU
+    bool "cache replace lru"
+    default y
+
 endmenu
 
 endmenu
