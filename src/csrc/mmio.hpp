@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <array>
 
+#include "debug.hpp"
+
 namespace MemoryMap {
     enum class DeviceAddr : uint16_t {
         CR0 = 0x8000, CR1 = 0x8010, CR2 = 0x8020, CR3 = 0x8030,
@@ -49,7 +51,9 @@ public:
     bool isDeviceAddress(uint16_t rawAddr) const {
         // Cast the raw uint16_t to the enum to safely look it up in the map
         auto addrEnum = static_cast<MemoryMap::DeviceAddr>(rawAddr);
-        return isDeviceAddress(addrEnum);
+        bool is_device = isDeviceAddress(addrEnum);
+        ASSERT_INFO(is_device, "rawAddr %x", rawAddr);
+        return is_device;
     }
 
     // ----------------------------------------------------

@@ -39,11 +39,11 @@ config DCACHE_SETS
     hex "SETS"
     default 0x8
 
-config DCACHE_ASSOCIATIVITYS
+config DCACHE_WAYS
     hex "ASSOCIATIVITYS"
     default 0x4
 
-config DCACHE_BLOCKS
+config DCACHE_LINE_WORDS
     hex "BLOCKS"
     default 0x4
 
@@ -66,11 +66,11 @@ config ICACHE_SETS
     hex "SETS"
     default 0x10
 
-config ICACHE_ASSOCIATIVITYS
+config ICACHE_WAYS
     hex "ASSOCIATIVITYS"
     default 0x1
 
-config ICACHE_BLOCKS
+config ICACHE_LINE_WORDS
     hex "BLOCKS"
     default 0x4
 

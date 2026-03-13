@@ -7,9 +7,9 @@ $(warning $(COLOR_RED)To build the project, first run 'make menuconfig'.$(COLOR_
 endif
 
 Q            := @
-KCONFIG_PATH := $(ROOT_DIR)/tools/kconfig
-FIXDEP_PATH  := $(ROOT_DIR)/tools/fixdep
-Kconfig      := $(ROOT_DIR)/Kconfig
+KCONFIG_PATH := $(LOONGARCH_CORE)/tools/kconfig
+FIXDEP_PATH  := $(LOONGARCH_CORE)/tools/fixdep
+Kconfig      := $(LOONGARCH_CORE)/Kconfig
 rm-distclean += include/generated include/config .config .config.old
 silent := -s
 
@@ -29,6 +29,7 @@ $(FIXDEP):
 menuconfig: $(MCONF) $(CONF) $(FIXDEP)
 	$(Q)$(MCONF) $(Kconfig)
 	$(Q)$(CONF) $(silent) --syncconfig $(Kconfig)
+	@python3 $(LOONGARCH_CORE)/scripts/c_to_bsv_macro.py $(LOONGARCH_CORE)/include/generated/autoconf.h -o $(LOONGARCH_CORE)/include/Autoconf.bsv
 
 savedefconfig: $(CONF)
 	$(Q)$< $(silent) --$@=configs/defconfig $(Kconfig)

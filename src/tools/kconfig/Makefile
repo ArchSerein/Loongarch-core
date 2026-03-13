@@ -20,7 +20,7 @@ else
 $(error bad target=$(NAME))
 endif
 
-include $(ROOT_DIR)/scripts/build.mk
+include $(LOONGARCH_CORE)/scripts/build.mk
 
 $(obj)/lexer.lex.o: $(obj)/parser.tab.h
 $(obj)/lexer.lex.c: lexer.l $(obj)/parser.tab.h

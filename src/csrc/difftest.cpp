@@ -12,7 +12,7 @@
 namespace {
 
 static const char* kDefaultRefSoPath =
-    "/home/serein/loong-arch/LoongArch/chiplab/sims/verilator/testbench/la32r-nemu-interpreter-so";
+    "/root/Loongarch-core/chiplab/toolchains/nemu/la32r-nemu-interpreter-so";
 
 static const char* kGregName[32] = {
     "r0", "ra", "tp", "sp", "a0", "a1", "a2", "a3",
@@ -38,11 +38,8 @@ void* NemuProxy::load_symbol(const char* symbol_name, bool required) {
 
 NemuProxy::NemuProxy(int coreid, const std::string& ref_so_path) {
     (void)coreid;
-    const char* from_env = std::getenv("DIFFTEST_REF_SO");
     if (!ref_so_path.empty()) {
         ref_so_path_ = ref_so_path;
-    } else if (from_env != nullptr && *from_env != '\0') {
-        ref_so_path_ = from_env;
     } else {
         ref_so_path_ = kDefaultRefSoPath;
     }
@@ -107,9 +104,7 @@ NemuProxy::~NemuProxy() {
 }
 
 Difftest::Difftest(int coreid, const std::string& ref_so_path, std::uint32_t first_inst_pc)
-    : coreid_(coreid), first_inst_pc_(first_inst_pc) {
-    std::memset(&dut, 0, sizeof(dut));
-    std::memset(&ref, 0, sizeof(ref));
+    : coreid_(coreid), first_inst_pc_(first_inst_pc), dut(), ref() {
     state = new DiffState();
     proxy = new DIFF_PROXY(coreid, ref_so_path);
     if (!proxy->ready()) {

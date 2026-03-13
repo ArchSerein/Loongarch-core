@@ -146,4 +146,9 @@ ifneq ($(wildcard $(CONNECTAL_MAKEFILE)),)
 include $(CONNECTAL_MAKEFILE)
 endif
 
-include $(ROOT_DIR)/scripts/config.mk
+CONFIG_MK := $(ROOT_DIR)/scripts/config.mk
+
+.PHONY: menuconfig savedefconfig defconfig
+
+menuconfig savedefconfig defconfig:
+	$(MAKE) -f $(CONFIG_MK) $@

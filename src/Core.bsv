@@ -14,12 +14,15 @@ import ICache::*;
 import DCache::*;
 import AxiTypes::*;
 import AxiMem::*;
+`include "Autoconf.bsv"
 
 interface Core;
   method ActionValue#(CpuToHostData) cpuToHost;
   method Bool cpuToHostValid;
+  `ifdef CONFIG_DIFFTEST
   method ActionValue#(DiffCommit) diffCommit;
   method Bool diffCommitValid;
+  `endif
   method Action hostToCpu(Addr startpc);
   interface AxiMemMaster axiMem;
 endinterface
@@ -34,7 +37,9 @@ typedef struct {
 typedef struct {
   Addr        pc;
   Addr        predPc;
+  `ifdef CONFIG_DIFFTEST
   Instruction inst;
+  `endif
   DecodedInst dInst;
   Bool        idExeEpoch;
 }   D2R deriving(Bits, Eq);
@@ -42,7 +47,9 @@ typedef struct {
 typedef struct {
   Addr        pc;
   Addr        predPc;
+  `ifdef CONFIG_DIFFTEST
   Instruction inst;
+  `endif
   Data        rVal1;
   Data        rVal2;
   Data        csrVal;
@@ -52,13 +59,17 @@ typedef struct {
 
 typedef struct {
   Addr                pc;
+  `ifdef CONFIG_DIFFTEST
   Instruction         inst;
+  `endif
   Maybe#(ExecInst)    eInst;
 }   E2M deriving(Bits, Eq);
 
 typedef struct {
   Addr                pc;
+  `ifdef CONFIG_DIFFTEST
   Instruction         inst;
+  `endif
   Maybe#(ExecInst)    mInst;
 }   M2W deriving(Bits, Eq);
 
@@ -114,7 +125,9 @@ module mkCore(Core);
       end
 
       d2rFifo.enq(D2R{pc: _Fetch.pc, predPc: ppc, dInst: dInst,
+        `ifdef CONFIG_DIFFTEST
         inst: inst,
+        `endif
         idExeEpoch: _Fetch.ifExeEpoch});
     end
     f2dFifo.deq();
@@ -129,7 +142,11 @@ module mkCore(Core);
       Data    rVal2 = rf.rd2(fromMaybe(?, rInst.src2));
       Data    csrVal = csrf.rd(fromMaybe(?, rInst.csr));
 
-      r2eFifo.enq(R2E{pc: _Decode.pc, predPc: _Decode.predPc, inst: _Decode.inst, rVal1: rVal1,
+      r2eFifo.enq(R2E{pc: _Decode.pc, predPc: _Decode.predPc,
+        `ifdef CONFIG_DIFFTEST
+        inst: _Decode.inst,
+        `endif
+        rVal1: rVal1,
         rVal2: rVal2, csrVal: csrVal,
         rInst: rInst, irExeEpoch: _Decode.idExeEpoch});
       sb.insert(rInst.dst);
@@ -159,9 +176,17 @@ module mkCore(Core);
       end
       bht.update(_Rrf.pc, eInst.brTaken);
 
-      e2mFifo.enq(E2M{pc: _Rrf.pc, inst: _Rrf.inst, eInst: tagged Valid eInst});
+      e2mFifo.enq(E2M{pc: _Rrf.pc, 
+      `ifdef CONFIG_DIFFTEST
+      inst: _Rrf.inst,
+      `endif
+      eInst: tagged Valid eInst});
     end else begin
-      e2mFifo.enq(E2M{pc: _Rrf.pc, inst: _Rrf.inst, eInst: tagged Invalid});
+      e2mFifo.enq(E2M{pc: _Rrf.pc,
+      `ifdef CONFIG_DIFFTEST
+      inst: _Rrf.inst,
+      `endif
+      eInst: tagged Invalid});
     end
   endrule
 
@@ -197,9 +222,17 @@ module mkCore(Core);
         end
       endcase
 
-      m2wFifo.enq(M2W{pc: _Exec.pc, inst: _Exec.inst, mInst: tagged Valid _eInst});
+      m2wFifo.enq(M2W{pc: _Exec.pc, 
+      `ifdef CONFIG_DIFFTEST
+      inst: _Exec.inst,
+      `endif
+      mInst: tagged Valid _eInst});
     end else begin
-      m2wFifo.enq(M2W{pc: _Exec.pc, inst: _Exec.inst, mInst: tagged Invalid});
+      m2wFifo.enq(M2W{pc: _Exec.pc,
+      `ifdef CONFIG_DIFFTEST
+      inst: _Exec.inst,
+      `endif
+      mInst: tagged Invalid});
     end
   endrule
 
@@ -222,6 +255,8 @@ module mkCore(Core);
       csrf.wr(_mInst.iType == Csrw ? _mInst.csr : Invalid, csrWrData);
 
       Bool wen = isValid(_mInst.dst) && fromMaybe(0, _mInst.dst) != 0;
+      // $fwrite(stdout, "commit: pc->%x, inst->%x\n", _Mem.pc, _Mem.inst);
+      `ifdef CONFIG_DIFFTEST
       diffCommitFifo.enq(DiffCommit{
         pc: _Mem.pc,
         inst: _Mem.inst,
@@ -229,6 +264,7 @@ module mkCore(Core);
         wdest: fromMaybe(0, _mInst.dst),
         wdata: _mInst.data
       });
+      `endif
     end
     sb.remove();
   endrule
@@ -240,6 +276,7 @@ module mkCore(Core);
 
   method Bool cpuToHostValid = csrf.cpuToHostValid;
 
+  `ifdef CONFIG_DIFFTEST
   method ActionValue#(DiffCommit) diffCommit if (diffCommitFifo.notEmpty);
     let ret = diffCommitFifo.first;
     diffCommitFifo.deq;
@@ -247,6 +284,7 @@ module mkCore(Core);
   endmethod
 
   method Bool diffCommitValid = diffCommitFifo.notEmpty;
+  `endif
 
   method Action hostToCpu(Addr startpc) if (!csrf.started);
     csrf.start;

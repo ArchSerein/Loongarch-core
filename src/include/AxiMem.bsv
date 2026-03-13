@@ -155,7 +155,7 @@ module mkAxiMemSimBridge#(AxiMemMaster axi, MemoryService memSvc)(Empty);
   rule issueWriteData (wrState == SimWrRun && axi.wrDataValid);
     let wd <- axi.wrData;
     Bit#(TSub#(AddrSz, 2)) baseWordAddr = truncateLSB(wrReq.addr);
-    Addr wordAddr = zeroExtend(baseWordAddr) + zeroExtend(wrBeat);
+    Addr wordAddr = { baseWordAddr + zeroExtend(wrBeat), 2'b0 };
     if (wd.strb != 0) begin
       memSvc.writeReq(wordAddr, wd.data, {'b0, wd.strb});
     end

@@ -29,7 +29,9 @@ std::uint32_t Memory::memory_dispatch_read(std::size_t addr) const {
                                 Memory::words_[pa+1],
                                 Memory::words_[pa+2],
                                 Memory::words_[pa+3]);
+            #ifdef CONFIG_MTRACE
             printf("read: addr->0x%08lx data->0x%08x\n", addr, data);
+            #endif
             return data;
     }
 }
@@ -41,7 +43,9 @@ void Memory::memory_dispatch_write(std::size_t addr, std::uint32_t data, std::ui
         case 0xbfaf:
             Memory::mmio.write(addr&0xffff, data);
         default:
+            #ifdef CONFIG_MTRACE
             printf("write: addr->0x%08lx data 0x%08x\n", addr, data);
+            #endif
             append_uint32(vec, data);
             for (std::uint32_t i = 0; i < 4; i++)
                 Memory::words_[paddr+i] = vec[i];

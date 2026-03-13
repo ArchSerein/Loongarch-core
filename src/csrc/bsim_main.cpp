@@ -15,6 +15,7 @@
 #include "difftest.hpp"
 #include "SimIndication.h"
 #include "SimRequest.h"
+#include "../include/generated/autoconf.h"
 
 namespace {
 
@@ -34,23 +35,6 @@ Options parse_args(int argc, char** argv) {
 #ifdef CONFIG_DIFFTEST
   opts.enable_difftest = true;
 #endif
-  const char* from_env = std::getenv("TB_MEM_IMAGE");
-  if (from_env != nullptr && *from_env != '\0') {
-    opts.mem_image = from_env;
-  }
-  const char* diff_from_env = std::getenv("DIFFTEST_REF_SO");
-  if (diff_from_env != nullptr && *diff_from_env != '\0') {
-    opts.diff_ref_so = diff_from_env;
-  }
-  const char* enable_diff_from_env = std::getenv("ENABLE_DIFFTEST");
-  if (enable_diff_from_env != nullptr &&
-      (std::strcmp(enable_diff_from_env, "1") == 0 ||
-       std::strcmp(enable_diff_from_env, "y") == 0 ||
-       std::strcmp(enable_diff_from_env, "Y") == 0 ||
-       std::strcmp(enable_diff_from_env, "true") == 0 ||
-       std::strcmp(enable_diff_from_env, "TRUE") == 0)) {
-    opts.enable_difftest = true;
-  }
 
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--mem-image") == 0 && (i + 1) < argc) {
@@ -59,10 +43,6 @@ Options parse_args(int argc, char** argv) {
     }
     if (std::strcmp(argv[i], "--start-pc") == 0 && (i + 1) < argc) {
       opts.start_pc = static_cast<std::uint32_t>(std::strtoul(argv[++i], nullptr, 0));
-      continue;
-    }
-    if (std::strcmp(argv[i], "--difftest") == 0) {
-      opts.enable_difftest = true;
       continue;
     }
     if (std::strcmp(argv[i], "--diff-ref-so") == 0 && (i + 1) < argc) {
@@ -148,6 +128,7 @@ public:
     commit->valid = 1;
     commit->pc = pc;
     commit->inst = inst;
+    commit->skip = is_skip_difftest;
     commit->wen = (wen != 0) ? 1 : 0;
     commit->wdest = wdest;
     commit->wdata = wdata;
@@ -160,19 +141,25 @@ public:
       g_exit_code = 3;
       g_run = 0;
     }
+    is_skip_difftest = false;
   }
 
 private:
   Memory& mem;
   Difftest* difftest = nullptr;
   std::uint64_t diff_main_time = 0;
+  std::uint8_t  is_skip_difftest = false;
   void check_memory_bound(std::uint32_t addr, bool is_write) {
     if ((addr >> 16) == 0xbfaf) {
       auto ret = mem.isDeviceAddress(addr & 0xffff);
-      if (!ret) halt(1);
-    } else if ((addr >> 24) == 0x1c)
-      return;
+      if (!ret) goto bad;
+      else is_skip_difftest = 1;
+    } else if ((addr >> 24) != 0x1c)
+      goto bad;
+    return;
+  bad:
     fprintf(stderr, "%s is out of bound at addr 0x%08x\n", is_write ? "write" : "read", addr);
+    difftest->display();
     halt(1);
   }
 };
@@ -193,7 +180,7 @@ int main(int argc, char** argv) {
       std::cerr << "bsim: difftest requested but failed to initialize reference model\n";
       return 1;
     }
-    difftest->load_memory_image(mem.raw_data(), mem.raw_size());
+    difftest->load_memory_image(mem.raw_data(), mem.raw_size(), opts.start_pc);
   }
 
   std::cout << "Start BSC Connectal simulation\n";

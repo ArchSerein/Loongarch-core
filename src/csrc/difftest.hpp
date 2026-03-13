@@ -69,7 +69,7 @@ enum { REF_TO_DIFF_GR = 0, REF_TO_DIFF_ALL };
 
 enum retire_inst_type { RET_NORMAL = 0, RET_INT, RET_EXC };
 
-typedef struct {
+typedef struct trap_event_t{
     std::uint8_t valid = 0;
     std::uint8_t code = 0;
     std::uint32_t pc = 0;
@@ -77,7 +77,7 @@ typedef struct {
     std::uint64_t instrCnt = 0;
 } trap_event_t;
 
-typedef struct {
+typedef struct excp_event_t{
     std::uint8_t excp_valid = 0;
     std::uint8_t eret = 0;
     std::uint32_t interrupt = 0;
@@ -86,7 +86,7 @@ typedef struct {
     std::uint32_t exceptionIst = 0;
 } excp_event_t;
 
-typedef struct {
+typedef struct instr_commit_t{
     std::uint8_t valid = 0;
     std::uint32_t pc = 0;
     std::uint32_t inst = 0;
@@ -102,11 +102,11 @@ typedef struct {
     std::uint32_t csr_data = 0;
 } instr_commit_t;
 
-typedef struct {
+typedef struct arch_greg_state_t{
     std::uint32_t gpr[32] = {0};
 } arch_greg_state_t;
 
-typedef struct __attribute__((packed)) {
+typedef struct __attribute__((packed)) arch_csr_state_t {
     std::uint32_t crmd = 0;
     std::uint32_t prmd = 0;
     std::uint32_t euen = 0;
@@ -136,14 +136,14 @@ typedef struct __attribute__((packed)) {
     std::uint32_t this_pc = 0;
 } arch_csr_state_t;
 
-typedef struct {
+typedef struct store_event_t{
     std::uint8_t valid = 0;
     std::uint64_t paddr = 0;
     std::uint64_t vaddr = 0;
     std::uint64_t data = 0;
 } store_event_t;
 
-typedef struct {
+typedef struct load_event_t{
     std::uint8_t valid = 0;
     std::uint64_t paddr = 0;
     std::uint64_t vaddr = 0;
