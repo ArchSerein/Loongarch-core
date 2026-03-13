@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <dlfcn.h>
+#include <memory>
 #include <unistd.h>
 
 #include <string>
@@ -105,19 +106,14 @@ NemuProxy::~NemuProxy() {
 
 Difftest::Difftest(int coreid, const std::string& ref_so_path, std::uint32_t first_inst_pc)
     : coreid_(coreid), first_inst_pc_(first_inst_pc), dut(), ref() {
-    state = new DiffState();
-    proxy = new DIFF_PROXY(coreid, ref_so_path);
+    state = std::make_unique<DiffState>();
+    proxy = std::make_unique<DIFF_PROXY>(coreid, ref_so_path);
     if (!proxy->ready()) {
-        delete proxy;
-        proxy = nullptr;
+        proxy.reset();
     }
 }
 
 Difftest::~Difftest() {
-    delete state;
-    state = nullptr;
-    delete proxy;
-    proxy = nullptr;
 }
 
 void Difftest::load_memory_image(const void* image, std::size_t nbytes, std::uint32_t nemu_addr) {

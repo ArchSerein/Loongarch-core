@@ -26,7 +26,7 @@ struct Options {
   std::string diff_ref_so;
 };
 
-static SimRequestProxy* g_request = nullptr;
+static std::unique_ptr<SimRequestProxy> g_request = nullptr;
 static volatile int g_run = 1;
 static std::uint32_t g_exit_code = 1;
 
@@ -186,9 +186,9 @@ int main(int argc, char** argv) {
   std::cout << "Start BSC Connectal simulation\n";
   std::cout.flush();
 
-  g_request = new SimRequestProxy(IfcNames_SimRequestS2H);
-  auto* indication =
-      new MySimIndicationCb(IfcNames_SimIndicationH2S, mem, opts.start_pc, difftest.get());
+  g_request = std::make_unique<SimRequestProxy>(IfcNames_SimRequestS2H);
+  auto indication =
+      std::make_unique<MySimIndicationCb>(IfcNames_SimIndicationH2S, mem, opts.start_pc, difftest.get());
   (void)indication;
 
   g_request->hostToCpu(opts.start_pc);

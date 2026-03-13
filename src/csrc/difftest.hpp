@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <string>
 
 #ifndef DIFFTEST_COMMIT_WIDTH
@@ -207,8 +208,8 @@ private:
     std::uint32_t* dut_regs_ptr_ = reinterpret_cast<std::uint32_t*>(&dut.regs);
     std::uint32_t* ref_regs_ptr_ = reinterpret_cast<std::uint32_t*>(&ref.regs);
 
-    DiffState* state = nullptr;
-    DIFF_PROXY* proxy = nullptr;
+    std::unique_ptr<DiffState> state;
+    std::unique_ptr<DIFF_PROXY> proxy;
 
     std::uint32_t idx_commit_ = 0;
     bool progress_ = false;
