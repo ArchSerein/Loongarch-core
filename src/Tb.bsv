@@ -9,6 +9,8 @@ import SimInterfaces::*;
 import AxiMem::*;
 import CoreAxiTop::*;
 
+`include "Autoconf.bsv"
+
 typedef 20 TbWordAddrSz;
 typedef Bit#(TbWordAddrSz) TbWordAddr;
 typedef 100000000 TbMaxCycles;
