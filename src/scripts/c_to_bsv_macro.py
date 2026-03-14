@@ -18,6 +18,28 @@ import sys
 from pathlib import Path
 
 
+def load_config_values(config_path: str) -> dict:
+    """
+    Load config values from .config file.
+    Returns a dict mapping config name to its value (or 'y' for boolean enabled).
+    """
+    config_values = {}
+    if not config_path or not Path(config_path).exists():
+        return config_values
+
+    with open(config_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            # Skip comments and empty lines
+            if not line or line.startswith("#"):
+                continue
+            # Parse CONFIG_NAME=value
+            if "=" in line:
+                key, value = line.split("=", 1)
+                config_values[key] = value
+    return config_values
+
+
 def convert_hex_value(value: str) -> str:
     """Convert C hex literal (0x...) to Verilog hex literal (32'h...)."""
     # Match hex patterns like 0x1, 0xa04d5838, etc.
@@ -58,8 +80,10 @@ def convert_decimal_value(value: str) -> str:
     return value
 
 
-def convert_define_line(line: str, default_width: int = 32) -> str:
+def convert_define_line(line: str, default_width: int = 32, config_values: dict = None) -> str:
     """Convert a #define line to `define line."""
+    if config_values is None:
+        config_values = {}
     # Preserve trailing newline/whitespace
     stripped_line = line.rstrip()
     trailing = line[len(stripped_line) :]
@@ -76,7 +100,7 @@ def convert_define_line(line: str, default_width: int = 32) -> str:
         macro_name = func_match.group(1)
         args = func_match.group(2)
         value = func_match.group(3)
-        converted_value = convert_value(value, default_width)
+        converted_value = convert_value(value, default_width, config_values, macro_name)
         return f"`define {macro_name}({args}) {converted_value}{trailing}"
 
     # Try simple macro
@@ -84,7 +108,9 @@ def convert_define_line(line: str, default_width: int = 32) -> str:
     if simple_match:
         macro_name = simple_match.group(1)
         value = simple_match.group(2)
-        converted_value = convert_value(value, default_width)
+        converted_value = convert_value(value, default_width, config_values, macro_name)
+        if converted_value == "":
+            return f"`define {macro_name}{trailing}"
         return f"`define {macro_name} {converted_value}{trailing}"
 
     # Handle empty #define (just defined, no value)
@@ -97,9 +123,17 @@ def convert_define_line(line: str, default_width: int = 32) -> str:
     return line
 
 
-def convert_value(value: str, default_width: int = 32) -> str:
+def convert_value(value: str, default_width: int = 32, config_values: dict = None, macro_name: str = None) -> str:
     """Convert a value from C to Verilog format."""
+    if config_values is None:
+        config_values = {}
     value = value.strip()
+
+    # Check if this macro is set to y/n in .config
+    if macro_name and macro_name in config_values:
+        config_val = config_values[macro_name]
+        if config_val == "y" or config_val == "n":
+            return ""
 
     # Hex literal
     if value.startswith("0x") or value.startswith("0X"):
@@ -122,8 +156,10 @@ def convert_value(value: str, default_width: int = 32) -> str:
     return value
 
 
-def convert_line(line: str, default_width: int = 32) -> str:
+def convert_line(line: str, default_width: int = 32, config_values: dict = None) -> str:
     """Convert a single line from C to Bluespec format."""
+    if config_values is None:
+        config_values = {}
     stripped = line.strip()
 
     # Skip empty lines and comments
@@ -150,7 +186,7 @@ def convert_line(line: str, default_width: int = 32) -> str:
 
     # #define -> `define
     if stripped.startswith("#define"):
-        result = convert_define_line(rstripped, default_width)
+        result = convert_define_line(rstripped, default_width, config_values)
         return result + trailing_newlines
 
     # For other directives, preserve the line structure
@@ -191,7 +227,7 @@ def convert_line(line: str, default_width: int = 32) -> str:
 
 
 def convert_file(
-    input_path: str, output_path: str = None, default_width: int = 32
+    input_path: str, output_path: str = None, default_width: int = 32, config_path: str = None
 ) -> str:
     """
     Convert a C header file to Bluespec macro file.
@@ -200,10 +236,13 @@ def convert_file(
         input_path: Path to input C header file
         output_path: Path to output file (optional, prints to stdout if not provided)
         default_width: Default bit width for numeric values
+        config_path: Path to .config file for y/n value handling
 
     Returns:
         Converted content as string
     """
+    config_values = load_config_values(config_path)
+
     with open(input_path, "r") as f:
         lines = f.readlines()
 
@@ -222,7 +261,7 @@ def convert_file(
             converted_lines.append(line)
             continue
 
-        converted_lines.append(convert_line(line, default_width))
+        converted_lines.append(convert_line(line, default_width, config_values))
 
     content = "".join(converted_lines)
 
@@ -259,6 +298,11 @@ def main():
         help="Default bit width for hex values (default: 32)",
     )
     parser.add_argument(
+        "-c",
+        "--config",
+        help="Path to .config file for y/n value handling",
+    )
+    parser.add_argument(
         "-p",
         "--print",
         action="store_true",
@@ -281,7 +325,7 @@ def main():
     else:
         output_path = get_output_path(args.input)
 
-    content = convert_file(args.input, output_path, args.width)
+    content = convert_file(args.input, output_path, args.width, args.config)
 
     if args.print_output:
         print(content)

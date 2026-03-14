@@ -29,7 +29,9 @@ $(FIXDEP):
 menuconfig: $(MCONF) $(CONF) $(FIXDEP)
 	$(Q)$(MCONF) $(Kconfig)
 	$(Q)$(CONF) $(silent) --syncconfig $(Kconfig)
-	@python3 $(LOONGARCH_CORE)/scripts/c_to_bsv_macro.py $(LOONGARCH_CORE)/include/generated/autoconf.h -o $(LOONGARCH_CORE)/include/Autoconf.bsv
+	@python3 $(LOONGARCH_CORE)/scripts/c_to_bsv_macro.py \
+	$(LOONGARCH_CORE)/include/generated/autoconf.h -o \
+	$(LOONGARCH_CORE)/include/Autoconf.bsv -c $(LOONGARCH_CORE)/.config
 
 savedefconfig: $(CONF)
 	$(Q)$< $(silent) --$@=configs/defconfig $(Kconfig)
