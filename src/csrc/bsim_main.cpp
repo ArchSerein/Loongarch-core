@@ -98,10 +98,6 @@ public:
     g_run = 0;
   }
 
-  void putc(std::uint8_t c) override {
-    std::cout << static_cast<char>(c) << std::flush;
-  }
-
   void read_mem_req(std::uint32_t addr) override {
     check_memory_bound(addr, false);
     if (!g_run) {
@@ -154,8 +150,13 @@ private:
       auto ret = mem.isDeviceAddress(addr & 0xffff);
       if (!ret) goto bad;
       else is_skip_difftest = 1;
-    } else if ((addr >> 24) != 0x1c)
-      goto bad;
+      goto good;
+    } else if ((addr >> 24) == 0x1c) {
+      goto good;
+    } else if ((addr >> 20) == 0x000) {
+        goto good;
+    } else goto bad;
+  good:
     return;
   bad:
     fprintf(stderr, "%s is out of bound at addr 0x%08x\n", is_write ? "write" : "read", addr);

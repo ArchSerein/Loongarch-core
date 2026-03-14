@@ -93,7 +93,7 @@ module mkCore(Core);
   Fifo#(2, R2E)           r2eFifo <- mkCFFifo;
   Fifo#(2, E2M)           e2mFifo <- mkCFFifo;
   Fifo#(2, M2W)           m2wFifo <- mkCFFifo;
-  Fifo#(8, DiffCommit) diffCommitFifo <- mkCFFifo;
+  Fifo#(2, DiffCommit) diffCommitFifo <- mkCFFifo;
 
   rule doFetch (csrf.started);
     iCache.req(pcReg[0]);
@@ -162,6 +162,9 @@ module mkCore(Core);
       ExecInst eInst = exec(_Rrf.rInst, _Rrf.rVal1, _Rrf.rVal2, _Rrf.pc,
         _Rrf.predPc, _Rrf.csrVal);
 
+      if (eInst.iType == Break) begin
+        csrf.finish;
+      end
       if (eInst.iType == Unsupported) begin
         $fwrite(stderr, "ERROR: Executing unsupported instruction at pc: %x. \
           Exiting\n", _Rrf.pc);
@@ -198,10 +201,12 @@ module mkCore(Core);
       let _eInst = fromMaybe(?, _Exec.eInst);
       case (_eInst.iType)
         Ld: begin
+          // $fwrite(stdout, "pc-> %x read addr->%x\n", _Exec.pc, _eInst.addr);
           let req = MemReq { op: Ld, addr: _eInst.addr, data: ? };
           dCache.req(req);
         end
         St: begin
+          // $fwrite(stdout, "pc-> %x write addr->%x, data->%x\n", _Exec.pc, _eInst.addr, _eInst.data);
           let req = MemReq { op: St, addr: _eInst.addr, data: _eInst.data };
           scSuccValue <= _eInst.data;
           dCache.req(req);

@@ -3,7 +3,6 @@ import Types::*;
 // Hardware -> software callback interface (Connectal indication).
 interface SimIndication;
   method Action halt(Bit#(32) code);
-  method Action putc(Bit#(8) c);
   method Action read_mem_req(Addr addr);
   method Action write_mem_req(Addr addr, Data data, Bit#(8) mask);
   method Action difftest_instr_commit(
@@ -29,7 +28,6 @@ endinterface
 // Verilator-side polling interface for indications.
 interface SimPollIndication;
   method ActionValue#(Bit#(32)) halt();
-  method ActionValue#(Bit#(8)) putc();
   method ActionValue#(Bit#(32)) read_mem_req();
   method ActionValue#(Bit#(72)) write_mem_req();
 endinterface

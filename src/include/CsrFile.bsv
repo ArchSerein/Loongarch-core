@@ -7,6 +7,7 @@ import Fifo::*;
 
 interface CsrFile;
   method Action start;
+  method Action finish;
   method Bool started;
   method Data rd(CsrIndx idx);
   method Action wr(Maybe#(CsrIndx) idx, Data val);
@@ -80,6 +81,13 @@ module mkCsrFile(CsrFile);
     cycles <= 0;
   endmethod
 
+  method Action finish;
+    startReg <= False;
+    toHostFifo.enq(CpuToHostData{
+      c2hType: ExitCode,
+      data: 16'b0});
+  endmethod
+
   method Bool started;
     return startReg;
   endmethod
@@ -117,7 +125,6 @@ module mkCsrFile(CsrFile);
         `CSR_CTAG: res = csr_ctag;
         `CSR_DMW0: res = csr_dmw0; 
         `CSR_DMW1: res = csr_dmw1;
-        csrMtohost: res = 0;
         default: res = 0;
     endcase
     return res;
@@ -198,15 +205,6 @@ module mkCsrFile(CsrFile);
           32'h11FFFFC6);
         `CSR_DMW1: csr_dmw1 <= (val & 32'hEE000039) | (csr_dmw1 &
           32'h11FFFFC6);
-
-        csrMtohost: begin
-          Bit#(16) hi = truncateLSB(val);
-          Bit#(16) lo = truncate(val);
-          toHostFifo.enq(CpuToHostData {
-            c2hType: unpack(truncate(hi)),
-            data: lo
-        });
-          end
         endcase
       end
       numInsts <= numInsts + 1;

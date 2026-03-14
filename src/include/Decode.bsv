@@ -62,6 +62,15 @@ function DecodedInst decode(Instruction inst);
             op_19_15 != 5'b10000)
           dInst.iType = Unsupported;
       end
+      else if (op_25_22 == 4'b0000 && op_21_20 == 2'b10) begin
+        case (op_19_15)
+          5'h14: begin
+            dInst.iType = Break;
+            dInst.brFunc = NT;
+          end
+          default: dInst.iType = Unsupported;
+        endcase
+      end
       else if (op_25_22 == 4'b0001 && op_21_20 == 2'b00) begin
         // 2RI5 shift immediate: SLLI.W / SRLI.W / SRAI.W
         dInst.iType  = Alu;

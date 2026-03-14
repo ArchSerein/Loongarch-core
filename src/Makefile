@@ -1,7 +1,7 @@
 # ==========================================
 # 1. Project Paths
 # ==========================================
-ROOT_DIR       := $(shell pwd)
+ROOT_DIR	:= $(shell pwd)
 BUILD_DIR      := $(ROOT_DIR)/build
 BDIR           := $(BUILD_DIR)/bdir
 IDIR           := $(BUILD_DIR)/info
@@ -62,7 +62,7 @@ BSC            := bsc
 VERILATOR      := verilator
 SIM_BIN        := $(OBJDIR)/sim
 
-MAX_CYCLES     ?= 1000000
+MAX_CYCLES     ?= 100000000
 START_PC       ?= 0
 
 BSV_DPI_SRCS   := $(wildcard $(VDIR)/*.c) $(wildcard $(VDIR)/*.cc) $(wildcard $(VDIR)/*.cpp)
@@ -111,6 +111,7 @@ verilator-sim: $(SIM_BIN)
 
 # Generate core RTL with AXI top-level wrapper.
 core-verilog: $(VDIR)/$(CORE_AXI_TOP).v
+	python3 $(ROOT_DIR)/scripts/gen_axi_wrapper.py
 
 # ==========================================
 # 5. Compilation Rules
@@ -137,7 +138,7 @@ $(SIM_BIN): $(VDIR)/$(VERILATOR_TOP).v $(ROOT_DIR)/csrc/sim_main.cpp $(OBJDIR)
 # 6. Cleaning
 # ==========================================
 clean:
-	rm -rf $(BOARD) SWSOCK0
+	rm -rf $(BOARD) SWSOCK0 $(BDIR) $(IDIR) $(VDIR)
 
 # ==========================================
 # 7. Connectal Core Logic

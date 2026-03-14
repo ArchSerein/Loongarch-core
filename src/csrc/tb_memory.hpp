@@ -8,8 +8,10 @@
 class Memory {
 public:
     static constexpr std::size_t kTbWordAddrWidth = 22;
+    static constexpr std::size_t kTbPmemAddrWidth = 20;
 
-    Memory(MMIOMap& mmio_ref) : words_(std::size_t{1} << kTbWordAddrWidth, 0), mmio(mmio_ref) {}
+    Memory(MMIOMap& mmio_ref) : words_(std::size_t{1} << kTbWordAddrWidth, 0),
+        pmem_(std::size_t{1} << kTbPmemAddrWidth), mmio(mmio_ref) {}
 
     void write(std::size_t addr, std::uint32_t value, std::uint8_t mask) {
         memory_dispatch_write(addr, value, mask);
@@ -44,6 +46,7 @@ public:
 
 private:
     std::vector<std::uint8_t> words_;
+    std::vector<std::uint8_t> pmem_;
     MMIOMap& mmio;
     std::uint32_t _mem_base;
     std::uint32_t memory_dispatch_read(std::size_t) const;

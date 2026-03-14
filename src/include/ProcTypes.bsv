@@ -56,7 +56,9 @@ typedef enum {
   Csrr, // CSRRD
   Csrw, // CSRWR
 
-  Fence // DBAR / IBAR
+  Fence, // DBAR / IBAR
+
+  Break // debug
 } IType deriving(Bits, Eq, FShow);
 
 typedef enum {

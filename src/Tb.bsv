@@ -11,7 +11,7 @@ import CoreAxiTop::*;
 
 typedef 20 TbWordAddrSz;
 typedef Bit#(TbWordAddrSz) TbWordAddr;
-typedef 1000000 TbMaxCycles;
+typedef 100000000 TbMaxCycles;
 
 module mkTbCore#(SimIndication indication)(SimRequest);
   Reg#(Bool) started <- mkReg(False);
@@ -56,9 +56,6 @@ rule drainCpuToHost (started && core.cpuToHostValid);
       indication.halt(zeroExtend(msg.data));
       started <= False;
     end
-    PrintChar: begin
-      indication.putc(truncate(msg.data));
-    end
     PrintIntLow: begin
       printIntLow <= msg.data;
     end
@@ -68,10 +65,12 @@ rule drainCpuToHost (started && core.cpuToHostValid);
   endcase
 endrule
 
+`ifdef CONFIG_DIFFTEST
 rule drainDiffCommit (started && core.diffCommitValid);
   let c <- core.diffCommit;
   indication.difftest_instr_commit(c.pc, c.inst, pack(c.wen), c.wdest, c.wdata);
 endrule
+`endif
 
 method Action hostToCpu(Bit#(32) startpc) if (!started);
   started <= True;
@@ -87,17 +86,12 @@ endmodule
 (* synthesize *)
 module mkTb(SimTop);
   Fifo#(8, Bit#(32)) haltQ <- mkCFFifo;
-  Fifo#(32, Bit#(8)) putcQ <- mkCFFifo;
   Fifo#(64, Bit#(32)) readMemReqQ <- mkCFFifo;
   Fifo#(64, Bit#(72)) writeMemReqQ <- mkCFFifo;
 
   SimIndication indicationSink = interface SimIndication;
   method Action halt(Bit#(32) code);
     haltQ.enq(code);
-  endmethod
-
-  method Action putc(Bit#(8) c);
-    putcQ.enq(c);
   endmethod
 
   method Action read_mem_req(Addr addr);
@@ -127,12 +121,6 @@ interface SimPollIndication indication;
     let code = haltQ.first;
     haltQ.deq;
     return code;
-  endmethod
-
-  method ActionValue#(Bit#(8)) putc if (putcQ.notEmpty);
-    let c = putcQ.first;
-    putcQ.deq;
-    return c;
   endmethod
 
   method ActionValue#(Bit#(32)) read_mem_req if (readMemReqQ.notEmpty);
