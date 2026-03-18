@@ -1,0 +1,11 @@
+.config
+.config.old
+*bluesim
+
+build/
+tools/fixdep/build/
+tools/kconfig/target/
+
+include/Autoconf.bsv
+include/config/
+include/generated/
