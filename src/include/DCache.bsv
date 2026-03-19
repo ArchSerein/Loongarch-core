@@ -27,6 +27,8 @@ typedef Vector#(DCacheLineWords, Data) DCacheLine;
 function DCacheTag     getDTag(Addr a) = truncateLSB(a);
 function DCacheIndex   getDIndex(Addr a) = truncate(a >> valueOf(DCacheOffsetSz));
 function DCacheWordSel getDWordSel(Addr a) = truncate(a >> 2);
+function Addr          getDBlockBase(Addr a) = { truncateLSB(a >> valueOf(DCacheOffsetSz))
+                                               , 0 };
 function Bool isUncacheAddr(Addr a);
   return (truncateLSB(a) == uncached_base);
 endfunction
@@ -282,7 +284,7 @@ module mkDCache(DCache);
 
   rule doSendFillAddr (state == SendFillAddr);
     arQ.enq(AxiReadAddr{
-      addr: missReq.addr,
+      addr: getDBlockBase(missReq.addr),
       len: fromInteger(valueOf(DCacheLineWords) - 1),
       size: 3'd2,
       burst: AxiBurstIncr
