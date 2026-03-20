@@ -27,8 +27,11 @@ typedef Vector#(DCacheLineWords, Data) DCacheLine;
 function DCacheTag     getDTag(Addr a) = truncateLSB(a);
 function DCacheIndex   getDIndex(Addr a) = truncate(a >> valueOf(DCacheOffsetSz));
 function DCacheWordSel getDWordSel(Addr a) = truncate(a >> 2);
-function Addr          getDBlockBase(Addr a) = { truncateLSB(a >> valueOf(DCacheOffsetSz))
-                                               , 0 };
+function Addr getDBlockBase(Addr a);
+  Bit#(TSub#(AddrSz, DCacheOffsetSz)) upper = truncateLSB(a);
+  Bit#(DCacheOffsetSz) lower = 0;
+  return { upper, lower };
+endfunction
 function Bool isUncacheAddr(Addr a);
   return (truncateLSB(a) == uncached_base);
 endfunction

@@ -94,6 +94,7 @@ module mkCore(Core);
   Fifo#(2, E2M)           e2mFifo <- mkCFFifo;
   Fifo#(2, M2W)           m2wFifo <- mkCFFifo;
   Fifo#(2, DiffCommit) diffCommitFifo <- mkCFFifo;
+  Reg#(Bool) diffCommitPending <- mkReg(False);
 
   rule doFetch (csrf.started);
     iCache.req(pcReg[0]);
@@ -241,7 +242,7 @@ module mkCore(Core);
     end
   endrule
 
-  rule doWriteback (csrf.started);
+  rule doWriteback (csrf.started && !diffCommitPending);
     let _Mem = m2wFifo.first();
     m2wFifo.deq();
 
@@ -285,6 +286,7 @@ module mkCore(Core);
   method ActionValue#(DiffCommit) diffCommit if (diffCommitFifo.notEmpty);
     let ret = diffCommitFifo.first;
     diffCommitFifo.deq;
+    diffCommitPending <= False;
     return ret;
   endmethod
 

@@ -33,8 +33,11 @@ typedef Vector#(ICacheLineWords, Data) ICacheLine;
 function ICacheTag     getITag(Addr a)     = truncateLSB(a);
 function ICacheIndex   getIIndex(Addr a)   = truncate(a >> valueOf(ICacheOffsetSz));
 function ICacheWordSel getIWordSel(Addr a) = truncate(a >> 2);
-function Addr          getIBlockBase(Addr a) = { truncateLSB(a >> valueOf(ICacheOffsetSz))
-                                               , 0 };
+function Addr getIBlockBase(Addr a);
+  Bit#(TSub#(AddrSz, ICacheOffsetSz)) upper = truncateLSB(a);
+  Bit#(ICacheOffsetSz) lower = 0;
+  return { upper, lower };
+endfunction
 
 interface ICache;
   method Action req(Addr a);

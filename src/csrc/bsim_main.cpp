@@ -124,7 +124,7 @@ public:
     commit->valid = 1;
     commit->pc = pc;
     commit->inst = inst;
-    commit->skip = is_skip_difftest;
+    commit->skip = false;
     commit->wen = (wen != 0) ? 1 : 0;
     commit->wdest = wdest;
     commit->wdata = wdata;
