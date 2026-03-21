@@ -42,6 +42,8 @@
 `define CSR_ECFG_LIE    12: 0 // csr_ecfg_lie[10] reserved bit 0
 
 `define CSR_ESTAT_IS10  1: 0 // Software interrupt
+`define CSR_ESTAT_ECODE 21: 16 // Exception code
+`define CSR_ESTAT_ESUBCODE 30: 22 // Exception subcode
 
 `define ECODE_INT       6'h0
 `define ECODE_PIL       6'h1 // Load page invalid

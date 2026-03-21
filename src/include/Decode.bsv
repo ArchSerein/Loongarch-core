@@ -67,6 +67,20 @@ function DecodedInst decode(Instruction inst);
           5'h14: begin
             dInst.iType = Break;
             dInst.brFunc = NT;
+            dInst.aluFunc = tagged Invalid;
+            dInst.dst = tagged Invalid;
+            dInst.src1 = tagged Invalid;
+            dInst.src2 = tagged Invalid;
+            dInst.imm = tagged Invalid;
+          end
+          5'h16: begin
+            dInst.iType = Syscall;
+            dInst.brFunc = NT;
+            dInst.aluFunc = tagged Invalid;
+            dInst.dst = tagged Invalid;
+            dInst.src1 = tagged Invalid;
+            dInst.src2 = tagged Invalid;
+            dInst.imm = tagged Invalid;
           end
           default: dInst.iType = Unsupported;
         endcase
@@ -214,7 +228,18 @@ function DecodedInst decode(Instruction inst);
     // 000001: CSR instructions (CSRRD / CSRWR)
     // ----------------------------------------------------------------
     6'b000001: begin
-      if (inst[25:24] == 2'b00) begin
+      if (op_25_22 == 4'h9 && op_21_20 == 2'h0 && op_19_15 == 5'h10 &&
+          rk == 5'h0e && rj == 5'd0 && rd == 5'd0) begin
+        dInst.iType   = Ertn;
+        dInst.aluFunc = tagged Invalid;
+        dInst.brFunc  = NT;
+        dInst.dst     = tagged Invalid;
+        dInst.src1    = tagged Invalid;
+        dInst.src2    = tagged Invalid;
+        dInst.csr     = tagged Invalid;
+        dInst.imm     = tagged Invalid;
+      end
+      else if (inst[25:24] == 2'b00) begin
         CsrIndx csrNum = inst[23:10];
         dInst.brFunc  = NT;
         dInst.aluFunc = tagged Invalid;

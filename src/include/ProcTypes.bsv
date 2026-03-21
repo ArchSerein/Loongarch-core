@@ -58,6 +58,8 @@ typedef enum {
 
   Fence, // DBAR / IBAR
 
+  Syscall, // SYSCALL exception
+  Ertn, // ERTN return from exception
   Break // debug
 } IType deriving(Bits, Eq, FShow);
 
@@ -171,6 +173,13 @@ function Fmt showInst(Instruction inst);
       endcase;
       ret = ret + $format(" r%0d, r%0d, r%0d", rd, rj, rk);
     end
+    else if (op4 == 4'b0000 && op2 == 2'b10) begin
+      ret = case (op5)
+        5'h14: $format("break 0x%0x", inst[14:0]);
+        5'h16: $format("syscall 0x%0x", inst[14:0]);
+        default: $format("unsup-ert 0x%0x", inst);
+      endcase;
+    end
     else if (op4 == 4'b0001 && op2 == 2'b00) begin
       ret = case (op5)
       5'b00001: $format("slli.w");
@@ -226,7 +235,11 @@ end
   end
 
   6'b000001: begin
-    if (inst[25:24] == 2'b00) begin
+    if (op4 == 4'b1001 && op2 == 2'b00 && op5 == 5'h10 && rk == 5'h0e &&
+        rj == 5'd0 && rd == 5'd0) begin
+      ret = $format("ertn");
+    end
+    else if (inst[25:24] == 2'b00) begin
       if (rj == 5'd0)
       ret = $format("csrrd r%0d, csr0x%0x", rd, inst[23:10]);
       else if (rj == 5'd1)

@@ -87,6 +87,7 @@ module mkCore(Core);
   Ehr#(3, Bool)    exeEpoch <- mkEhr(False);
   Ehr#(3, Bool) decodeEpoch <- mkEhr(False);
   Reg#(Data)    scSuccValue <- mkRegU;
+  Ehr#(3, Bool) excInExec <- mkEhr(False);
 
   Fifo#(2, F2D)           f2dFifo <- mkCFFifo;
   Fifo#(2, D2R)           d2rFifo <- mkCFFifo;
@@ -94,7 +95,6 @@ module mkCore(Core);
   Fifo#(2, E2M)           e2mFifo <- mkCFFifo;
   Fifo#(2, M2W)           m2wFifo <- mkCFFifo;
   Fifo#(2, DiffCommit) diffCommitFifo <- mkCFFifo;
-  Reg#(Bool) diffCommitPending <- mkReg(False);
 
   rule doFetch (csrf.started);
     iCache.req(pcReg[0]);
@@ -166,6 +166,18 @@ module mkCore(Core);
       if (eInst.iType == Break) begin
         csrf.finish;
       end
+      if (eInst.iType == Syscall) begin
+        Addr excEntry <- csrf.raiseException(`ECODE_SYS, _Rrf.pc);
+        eInst.mispredict = True;
+        eInst.addr = excEntry;
+        excInExec[1] <= True;
+      end
+      if (eInst.iType == Ertn) begin
+        Addr era <- csrf.returnFromException;
+        eInst.mispredict = True;
+        eInst.addr = era;
+        excInExec[1] <= True;
+      end
       if (eInst.iType == Unsupported) begin
         $fwrite(stderr, "ERROR: Executing unsupported instruction at pc: %x. \
           Exiting\n", _Rrf.pc);
@@ -192,6 +204,10 @@ module mkCore(Core);
       `endif
       eInst: tagged Invalid});
     end
+  endrule
+
+  rule clearExcInExec (csrf.started);
+    excInExec[0] <= False;
   endrule
 
   rule doMemory (csrf.started);
@@ -242,7 +258,7 @@ module mkCore(Core);
     end
   endrule
 
-  rule doWriteback (csrf.started && !diffCommitPending);
+  rule doWriteback (csrf.started && !excInExec[2]);
     let _Mem = m2wFifo.first();
     m2wFifo.deq();
 
@@ -286,7 +302,6 @@ module mkCore(Core);
   method ActionValue#(DiffCommit) diffCommit if (diffCommitFifo.notEmpty);
     let ret = diffCommitFifo.first;
     diffCommitFifo.deq;
-    diffCommitPending <= False;
     return ret;
   endmethod
 
