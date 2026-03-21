@@ -286,7 +286,9 @@ module mkCore(Core);
         wdest: fromMaybe(0, _mInst.dst),
         wdata: _mInst.data
       });
+      diffCommitPending <= True;
       `endif
+      $fwrite(stdout, "\n");
     end
     sb.remove();
   endrule
