@@ -28,8 +28,8 @@ AXI_BUNDLED_SIGNALS = {
 }
 
 STANDARD_AXI_SIGNALS = [
-    ('input', '', 'aclk', 'Clock'),
-    ('input', '', 'aresetn', 'Reset (active low)'),
+    ('input', '', 'clk', 'Clock'),
+    ('input', '', 'reset', 'Reset (active high)'),
     ('input', '[31:0]', 'intrpt', 'Interrupt'),
     ('input', '', 'intrpt_en', 'Interrupt enable'),
     ('output', '', 'hostToCpu_rdy', 'Host to CPU ready'),
@@ -87,8 +87,8 @@ STANDARD_AXI_SIGNALS = [
 ]
 
 PORT_MAPPING = {
-    'CLK': 'aclk',
-    'RST_N': 'aresetn',
+    'CLK': 'clk',
+    'RST_N': 'reset',
     'hostToCpu_startpc': 'intrpt',
     'EN_hostToCpu': 'intrpt_en',
     'RDY_hostToCpu': 'hostToCpu_rdy',
@@ -150,8 +150,8 @@ def generate_wrapper():
     wire        bresp_int;
 
     mkCoreAxiTop u_core (
-        .aclk                   (aclk),
-        .aresetn                (aresetn),
+        .aclk                   (clk),
+        .aresetn                (reset),
 
         .EN_cpuToHost           (EN_cpuToHost),
         .cpuToHost              (cpuToHost),
@@ -233,13 +233,13 @@ def rename_original_core():
         content = f.read()
 
     content = content.replace('module mkCoreAxiTop(CLK,\n\t\t    RST_N,', 
-                              'module mkCoreAxiTop(aclk,\n\t\t    aresetn,')
+                              'module mkCoreAxiTop(clk,\n\t\t    reset,')
 
     for old_name, new_name in PORT_MAPPING.items():
         content = re.sub(r'\b' + re.escape(old_name) + r'\b', new_name, content)
 
-    content = content.replace('input  CLK;', 'input  aclk;')
-    content = content.replace('input  RST_N;', 'input  aresetn;')
+    content = content.replace('input  CLK;', 'input  clk;')
+    content = content.replace('input  RST_N;', 'input  reset;')
 
     return content
 
