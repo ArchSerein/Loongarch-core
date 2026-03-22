@@ -43,15 +43,16 @@ endinterface;
 CoreAxiTop core <- mkCoreAxiTop;
 Empty _axiMemSim <- mkAxiMemSimBridge(core.axiMem, memSvc);
 
-rule countCycles (started);
+rule countCycles (started && cycles != fromInteger(valueOf(TbMaxCycles) - 1));
   cycles <= cycles + 1;
-  if (cycles == fromInteger(valueOf(TbMaxCycles) - 1)) begin
-    indication.halt(32'h00000002);
-    started <= False;
-  end
 endrule
 
-rule drainCpuToHost (started && core.cpuToHostValid);
+rule forceHalt (started && cycles == fromInteger(valueOf(TbMaxCycles) - 1));
+  indication.halt(32'h00000002);
+  started <= False;
+endrule
+
+rule drainCpuToHost (core.cpuToHostValid);
   let msg <- core.cpuToHost;
   case (msg.c2hType)
     ExitCode: begin

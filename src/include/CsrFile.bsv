@@ -84,7 +84,6 @@ module mkCsrFile(CsrFile);
   endmethod
 
   method Action finish;
-    startReg <= False;
     toHostFifo.enq(CpuToHostData{
       c2hType: ExitCode,
       data: 16'b0});
@@ -241,9 +240,10 @@ module mkCsrFile(CsrFile);
       return csr_era;
     endmethod
 
-    method ActionValue#(CpuToHostData) cpuToHost;
+    method ActionValue#(CpuToHostData) cpuToHost if (toHostFifo.notEmpty);
+      let ret = toHostFifo.first;
       toHostFifo.deq;
-      return toHostFifo.first;
+      return ret;
     endmethod
 
     method Bool cpuToHostValid = toHostFifo.notEmpty;

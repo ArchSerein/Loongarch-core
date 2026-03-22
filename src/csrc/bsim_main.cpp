@@ -204,5 +204,5 @@ int main(int argc, char** argv) {
     std::cerr << "\nbsim: FAILED (code=" << g_exit_code << ")\n";
   }
 
-  return static_cast<int>(g_exit_code);
+  std::_Exit(g_exit_code);
 }

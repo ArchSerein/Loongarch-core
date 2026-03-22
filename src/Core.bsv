@@ -332,14 +332,12 @@ module mkCore(Core);
         wdest: fromMaybe(0, _mInst.dst),
         wdata: _mInst.data
       });
-      diffCommitPending <= True;
       `endif
-      $fwrite(stdout, "\n");
     end
     sb.remove();
   endrule
 
-  method ActionValue#(CpuToHostData) cpuToHost if (csrf.started);
+  method ActionValue#(CpuToHostData) cpuToHost;
     let ret <- csrf.cpuToHost;
     return ret;
   endmethod
