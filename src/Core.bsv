@@ -164,20 +164,58 @@ module mkCore(Core);
 
   rule doExec (csrf.started);
     let _Rrf = r2eFifo.first();
-    r2eFifo.deq();
+
+    Bool doNormalExec = True;
 
     if (exeEpoch[2] == _Rrf.irExeEpoch) begin
-      ExecInst eInst = exec(_Rrf.rInst, _Rrf.rVal1, _Rrf.rVal2, _Rrf.pc,
-        _Rrf.predPc, _Rrf.csrVal);
+      if (isValid(_Rrf.rInst.muldivFunc)) begin
+        let mdFunc = fromMaybe(?, _Rrf.rInst.muldivFunc);
+        if (mdFunc == MulW || mdFunc == MulhW || mdFunc == MulhWu) begin
+           if (!mulInFlight) begin
+             Bool is_signed = (mdFunc == MulW || mdFunc == MulhW);
+             mulUnit.start(is_signed, _Rrf.rVal1, _Rrf.rVal2);
+             mulInFlight <= True;
+             doNormalExec = False;
+           end else if (!mulUnit.finish) begin
+             doNormalExec = False;
+           end else begin
+             mulInFlight <= False;
+           end
+        end else if (mdFunc == DivW || mdFunc == DivWu || mdFunc == ModW || mdFunc == ModWu) begin
+           if (!divInFlight) begin
+             Bool is_signed = (mdFunc == DivW || mdFunc == ModW);
+             divUnit.start(is_signed, _Rrf.rVal1, _Rrf.rVal2);
+             divInFlight <= True;
+             doNormalExec = False;
+           end else if (!divUnit.finish) begin
+             doNormalExec = False;
+           end else begin
+             divInFlight <= False;
+           end
+        end
+      end
+    end
+
+    if (doNormalExec) begin
+      r2eFifo.deq();
+
+      if (exeEpoch[2] == _Rrf.irExeEpoch) begin
+        ExecInst eInst = exec(_Rrf.rInst, _Rrf.rVal1, _Rrf.rVal2, _Rrf.pc,
+          _Rrf.predPc, _Rrf.csrVal);
+
+        if (isValid(_Rrf.rInst.muldivFunc)) begin
+          let mdFunc = fromMaybe(?, _Rrf.rInst.muldivFunc);
+          if (mdFunc == MulW) eInst.data = mulUnit.result()[31:0];
+          else if (mdFunc == MulhW || mdFunc == MulhWu) eInst.data = mulUnit.result()[63:32];
+          else if (mdFunc == DivW || mdFunc == DivWu) eInst.data = divUnit.result()[31:0];
+          else if (mdFunc == ModW || mdFunc == ModWu) eInst.data = divUnit.result()[63:32];
+        end
 
       if (eInst.iType == Break) begin
         csrf.finish;
       end
       if (eInst.iType == Syscall) begin
-        Addr excEntry <- csrf.raiseException(`ECODE_SYS, _Rrf.pc);
-        eInst.mispredict = True;
-        eInst.addr = excEntry;
-        excInExec[1] <= True;
+        csrf.finish;
       end
       if (eInst.iType == Ertn) begin
         Addr era <- csrf.returnFromException;
@@ -210,6 +248,7 @@ module mkCore(Core);
       inst: _Rrf.inst,
       `endif
       eInst: tagged Invalid});
+    end
     end
   endrule
 
