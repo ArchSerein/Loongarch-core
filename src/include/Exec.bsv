@@ -22,6 +22,29 @@ function Data alu(Data a, Data b, AluFunc func);
 endfunction
 
 (* noinline *)
+function Data muldiv(Data a, Data b, MulDivFunc func);
+  Int#(32) aSigned = unpack(a);
+  Int#(32) bSigned = unpack(b);
+  UInt#(32) aUnsigned = unpack(a);
+  UInt#(32) bUnsigned = unpack(b);
+
+  Int#(64) signedProd = signExtend(aSigned) * signExtend(bSigned);
+  UInt#(64) unsignedProd = zeroExtend(aUnsigned) * zeroExtend(bUnsigned);
+
+  Data res = case (func)
+    MulW   : truncate(pack(signedProd));
+    MulhW  : pack(signedProd)[63:32];
+    MulhWu : pack(unsignedProd)[63:32];
+    DivW   : (b == 0) ? 32'hffff_ffff : truncate(pack(signExtend(aSigned) / signExtend(bSigned)));
+    DivWu  : (b == 0) ? 32'hffff_ffff : pack(aUnsigned / bUnsigned);
+    ModW   : (b == 0) ? a : truncate(pack(signExtend(aSigned) % signExtend(bSigned)));
+    ModWu  : (b == 0) ? a : pack(aUnsigned % bUnsigned);
+  endcase;
+
+  return res;
+endfunction
+
+(* noinline *)
 function Bool aluBr(Data a, Data b, BrFunc brFunc);
   Bool brTaken = case(brFunc)
     Eq  : (a == b);
@@ -52,8 +75,13 @@ endfunction
 function ExecInst exec(DecodedInst dInst, Data rVal1, Data rVal2, Addr pc, Addr ppc, Data csrVal);
   ExecInst eInst = ?;
 
-  Data aluVal2 = isValid(dInst.imm) ? fromMaybe(?, dInst.imm) : rVal2;
-  let aluRes = alu(rVal1, aluVal2, fromMaybe(?, dInst.aluFunc));
+  Data immVal = fromMaybe(0, dInst.imm);
+  Data operand2 = isValid(dInst.imm) ? immVal : rVal2;
+  Data execRes = isValid(dInst.muldivFunc) ?
+                   muldiv(rVal1, rVal2, fromMaybe(?, dInst.muldivFunc)) :
+                 isValid(dInst.aluFunc) ?
+                   alu(rVal1, operand2, fromMaybe(?, dInst.aluFunc)) :
+                   0;
 
   eInst.iType = dInst.iType;
   eInst.dst = dInst.dst;
@@ -68,10 +96,10 @@ function ExecInst exec(DecodedInst dInst, Data rVal1, Data rVal2, Addr pc, Addr 
                (dInst.iType == J || dInst.iType == Jr) ?
                  (pc + 4) :
                dInst.iType == Lu12i ?
-                 fromMaybe(?, dInst.imm) :
+                 immVal :
                dInst.iType == Pcaddu12i ?
-                 (pc + fromMaybe(?, dInst.imm)) :
-                 aluRes;
+                 (pc + immVal) :
+                 execRes;
 
   // For CSRWR: carry the value to write to CSR in addr field
   if (dInst.iType == Csrw) begin
@@ -79,11 +107,11 @@ function ExecInst exec(DecodedInst dInst, Data rVal1, Data rVal2, Addr pc, Addr 
   end
 
   let brTaken = aluBr(rVal1, rVal2, dInst.brFunc);
-  let brAddr = brAddrCalc(pc, rVal1, dInst.iType, fromMaybe(?, dInst.imm), brTaken);
+  let brAddr = brAddrCalc(pc, rVal1, dInst.iType, immVal, brTaken);
 
   if (dInst.iType != Csrw) begin
     eInst.addr = (case(dInst.iType)
-      Ld, St, Ll, Sc: aluRes;
+      Ld, St, Ll, Sc: execRes;
       default: brAddr;
     endcase);
   end
@@ -94,4 +122,3 @@ function ExecInst exec(DecodedInst dInst, Data rVal1, Data rVal2, Addr pc, Addr 
 
   return eInst;
 endfunction
-

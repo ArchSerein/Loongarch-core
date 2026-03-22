@@ -169,12 +169,19 @@ function Fmt showInst(Instruction inst);
         5'b01110: $format("sll.w");
         5'b01111: $format("srl.w");
         5'b10000: $format("sra.w");
+        5'b11000: $format("mul.w");
+        5'b11001: $format("mulh.w");
+        5'b11010: $format("mulh.wu");
         default: $format("unsup-3R 0x%0x", inst);
       endcase;
       ret = ret + $format(" r%0d, r%0d, r%0d", rd, rj, rk);
     end
     else if (op4 == 4'b0000 && op2 == 2'b10) begin
       ret = case (op5)
+        5'h00: $format("div.w r%0d, r%0d, r%0d", rd, rj, rk);
+        5'h01: $format("mod.w r%0d, r%0d, r%0d", rd, rj, rk);
+        5'h02: $format("div.wu r%0d, r%0d, r%0d", rd, rj, rk);
+        5'h03: $format("mod.wu r%0d, r%0d, r%0d", rd, rj, rk);
         5'h14: $format("break 0x%0x", inst[14:0]);
         5'h16: $format("syscall 0x%0x", inst[14:0]);
         default: $format("unsup-ert 0x%0x", inst);
