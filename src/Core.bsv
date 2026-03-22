@@ -12,9 +12,12 @@ import Scoreboard::*;
 import Bht::*;
 import ICache::*;
 import DCache::*;
+import Mul::*;
+import Div::*;
 import AxiTypes::*;
 import AxiMem::*;
 `include "Autoconf.bsv"
+`include "CsrAddr.bsv"
 
 interface Core;
   method ActionValue#(CpuToHostData) cpuToHost;
@@ -79,6 +82,10 @@ module mkCore(Core);
   RFile                    rf <- mkRFile;
   ICache               iCache <- mkICache;
   DCache               dCache <- mkDCache;
+  Mul_ifc             mulUnit <- mkMul;
+  Reg#(Bool)      mulInFlight <- mkReg(False);
+  Div_ifc             divUnit <- mkDiv;
+  Reg#(Bool)      divInFlight <- mkReg(False);
   AxiMemMaster        axiMux <- mkAxiArbiter2(iCache.axiMem, dCache.axiMem);
   Btb#(6)                 btb <- mkBtb; // 64-entry BTB
   Bht#(8)                 bht <- mkBht;

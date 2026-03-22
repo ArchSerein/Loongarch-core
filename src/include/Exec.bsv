@@ -21,28 +21,6 @@ function Data alu(Data a, Data b, AluFunc func);
   return res;
 endfunction
 
-(* noinline *)
-function Data muldiv(Data a, Data b, MulDivFunc func);
-  Int#(32) aSigned = unpack(a);
-  Int#(32) bSigned = unpack(b);
-  UInt#(32) aUnsigned = unpack(a);
-  UInt#(32) bUnsigned = unpack(b);
-
-  Int#(64) signedProd = signExtend(aSigned) * signExtend(bSigned);
-  UInt#(64) unsignedProd = zeroExtend(aUnsigned) * zeroExtend(bUnsigned);
-
-  Data res = case (func)
-    MulW   : truncate(pack(signedProd));
-    MulhW  : pack(signedProd)[63:32];
-    MulhWu : pack(unsignedProd)[63:32];
-    DivW   : (b == 0) ? 32'hffff_ffff : truncate(pack(signExtend(aSigned) / signExtend(bSigned)));
-    DivWu  : (b == 0) ? 32'hffff_ffff : pack(aUnsigned / bUnsigned);
-    ModW   : (b == 0) ? a : truncate(pack(signExtend(aSigned) % signExtend(bSigned)));
-    ModWu  : (b == 0) ? a : pack(aUnsigned % bUnsigned);
-  endcase;
-
-  return res;
-endfunction
 
 (* noinline *)
 function Bool aluBr(Data a, Data b, BrFunc brFunc);
@@ -77,9 +55,7 @@ function ExecInst exec(DecodedInst dInst, Data rVal1, Data rVal2, Addr pc, Addr 
 
   Data immVal = fromMaybe(0, dInst.imm);
   Data operand2 = isValid(dInst.imm) ? immVal : rVal2;
-  Data execRes = isValid(dInst.muldivFunc) ?
-                   muldiv(rVal1, rVal2, fromMaybe(?, dInst.muldivFunc)) :
-                 isValid(dInst.aluFunc) ?
+  Data execRes = isValid(dInst.aluFunc) ?
                    alu(rVal1, operand2, fromMaybe(?, dInst.aluFunc)) :
                    0;
 
