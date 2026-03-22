@@ -28,16 +28,10 @@ struct Options {
   std::uint64_t max_cycles = 1000000;
   bool trace = false;
   std::string trace_path = "build/wave.vcd";
+  std::string mem_image = "build/mem.bin";
   std::uint32_t start_pc = 0;
+  std::string diff_ref_so;
 };
-
-std::string mem_image_path() {
-  const char* from_env = std::getenv("TB_MEM_IMAGE");
-  if (from_env != nullptr && *from_env != '\0') {
-    return from_env;
-  }
-  return "build/mem.bin";
-}
 
 void load_mem_image(TbMemory& mem, const std::string& path) {
   std::ifstream input(path, std::ios::binary);
@@ -86,6 +80,14 @@ Options parse_args(int argc, char** argv) {
       opts.start_pc = static_cast<std::uint32_t>(std::strtoul(argv[++i], nullptr, 0));
       continue;
     }
+    if (std::strcmp(argv[i], "--mem-image") == 0 && (i + 1) < argc) {
+      opts.mem_image = argv[++i];
+      continue;
+    }
+    if (std::strcmp(argv[i], "--diff-ref-so") == 0 && (i + 1) < argc) {
+      opts.diff_ref_so = argv[++i];
+      continue;
+    }
     std::cerr << "unknown argument: " << argv[i] << '\n';
     std::exit(2);
   }
@@ -99,7 +101,6 @@ struct StepInputs {
   std::uint32_t request_read_mem_resp_data = 0;
 
   bool en_indication_halt = false;
-  bool en_indication_putc = false;
   bool en_indication_read_mem_req = false;
   bool en_indication_write_mem_req = false;
 };
@@ -111,7 +112,6 @@ void drive_inputs(VmkTb& top, const StepInputs& in) {
   top.request_read_mem_resp_data = in.request_read_mem_resp_data;
 
   top.EN_indication_halt = static_cast<std::uint8_t>(in.en_indication_halt);
-  top.EN_indication_putc = static_cast<std::uint8_t>(in.en_indication_putc);
   top.EN_indication_read_mem_req = static_cast<std::uint8_t>(in.en_indication_read_mem_req);
   top.EN_indication_write_mem_req = static_cast<std::uint8_t>(in.en_indication_write_mem_req);
 }
@@ -149,16 +149,16 @@ int main(int argc, char** argv) {
   const Options opts = parse_args(argc, argv);
 
   TbMemory mem;
-  load_mem_image(mem, mem_image_path());
+  load_mem_image(mem, opts.mem_image);
 
-  auto top = std::make_unique<VmkTb>();
+  auto top = std::unique_ptr<VmkTb>(new VmkTb());
   vluint64_t main_time = 0;
 
 #if VM_TRACE
   std::unique_ptr<VerilatedVcdC> tfp;
   if (opts.trace) {
     Verilated::traceEverOn(true);
-    tfp = std::make_unique<VerilatedVcdC>();
+    tfp = std::unique_ptr<VerilatedVcdC>(new VerilatedVcdC());
     top->trace(tfp.get(), 99);
     tfp->open(opts.trace_path.c_str());
   }
@@ -220,7 +220,7 @@ int main(int argc, char** argv) {
 
     if (top->RDY_indication_write_mem_req) {
       in.en_indication_write_mem_req = true;
-      const std::uint64_t raw = static_cast<std::uint64_t>(top->indication_write_mem_req);
+      const std::uint64_t raw = (static_cast<std::uint64_t>(top->indication_write_mem_req[1]) << 32) | static_cast<std::uint64_t>(top->indication_write_mem_req[0]);
 
       // Preferred packing: {addr, data}. Fallback to {data, addr} if needed.
       std::uint32_t addr = static_cast<std::uint32_t>(raw >> 32);
@@ -242,12 +242,6 @@ int main(int argc, char** argv) {
       in.en_request_read_mem_resp = true;
       in.request_read_mem_resp_data = pending_read_resps.front();
       pending_read_resps.pop_front();
-    }
-
-    if (top->RDY_indication_putc) {
-      in.en_indication_putc = true;
-      const std::uint8_t c = static_cast<std::uint8_t>(top->indication_putc & 0xffu);
-      std::cout << static_cast<char>(c) << std::flush;
     }
 
     if (top->RDY_indication_halt) {

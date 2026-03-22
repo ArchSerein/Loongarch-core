@@ -44,6 +44,11 @@ CPPFILES += $(ROOT_DIR)/csrc/bsim_main.cpp  \
             $(ROOT_DIR)/csrc/tb_memory.cpp   \
             $(ROOT_DIR)/csrc/difftest.cpp
 
+# C++ Sources for Verilator simulation
+VERILATOR_CPPFILES = $(ROOT_DIR)/csrc/sim_main.cpp  \
+            $(ROOT_DIR)/csrc/tb_memory.cpp   \
+            $(ROOT_DIR)/csrc/difftest.cpp
+
 LDLIBS += -ldl
 
 # Connectal Compilation Flags
@@ -79,11 +84,11 @@ BSC_CORE_FLAGS := -u -verilog -vsim $(VERILATOR) -g $(CORE_AXI_TOP) \
                   -info-dir $(IDIR) \
                   -vdir $(VDIR)
 
-VERILATOR_FLAGS := --cc --exe --build --trace \
+VERILATOR_FLAGS := -Wno-STMTDLY --no-timing --cc --exe --build --trace -y $(shell dirname $(shell which bsc))/../lib/Verilog \
                    --top-module $(VERILATOR_TOP) \
                    -Mdir $(OBJDIR) \
                    -o sim \
-                   -CFLAGS "-std=c++11 -O2"
+                   -CFLAGS "-std=c++14 -O2"
 
 # ==========================================
 # 4. Build Targets
@@ -107,7 +112,7 @@ endif
 
 # Verilator execution
 verilator-sim: $(SIM_BIN)
-	TB_MEM_IMAGE=$(TB_MEM_IMAGE) $(SIM_BIN) --max-cycles $(MAX_CYCLES) --start-pc $(START_PC)
+	$(SIM_BIN) --max-cycles $(MAX_CYCLES) --start-pc $(START_PC)
 
 # Generate core RTL with AXI top-level wrapper.
 core-verilog: $(VDIR)/$(CORE_AXI_TOP).v
@@ -132,13 +137,13 @@ $(SIM_BIN): $(VDIR)/$(VERILATOR_TOP).v $(ROOT_DIR)/csrc/sim_main.cpp $(OBJDIR)
 	$(VERILATOR) $(VERILATOR_FLAGS) \
                 $(VDIR)/*.v \
                 $(BSV_DPI_SRCS) \
-                $(ROOT_DIR)/csrc/sim_main.cpp
+                $(VERILATOR_CPPFILES)
 
 # ==========================================
 # 6. Cleaning
 # ==========================================
 clean:
-	rm -rf $(BOARD) SWSOCK0 $(BDIR) $(IDIR) $(VDIR)
+	rm -rf $(BOARD) SWSOCK0 $(BDIR) $(IDIR) $(VDIR) $(OBJDIR)
 
 # ==========================================
 # 7. Connectal Core Logic
