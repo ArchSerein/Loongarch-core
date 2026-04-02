@@ -12,18 +12,17 @@ menu "TRACE_WAVE switch"
     default 0x30000000
 endmenu
 
-endmenu
-
-menu "LoongArch-core difftest config"
   config DIFFTEST
     bool "Enable difftest"
     default n
-endmenu
 
-menu "LoongArch-core performance trace config"
   config TRACE_PERFORMANCE
     bool "Enable performance tracer"
     default y
+
+  config MTRACE
+    bool "Enable memery trace"
+    default n
 endmenu
 
 menu "TLB Config"

@@ -265,28 +265,72 @@ module mkCore(Core);
 
     if (isValid(_Exec.eInst)) begin
       let _eInst = fromMaybe(?, _Exec.eInst);
+      _eInst.mask = _Exec.mask;
+      
+      ByteMask m = fromMaybe(5'b00000, _Exec.mask);
+      Bit#(WordSz) rawEn = truncate(m);
+      Bit#(2) offset = _eInst.addr[1:0];
+      Bit#(2) alignOff = 0;
+      Bit#(WordSz) byteEn = 0;
+      Data wData = 0;
+
+      case (rawEn)
+        4'b0001: begin
+          alignOff = offset;
+          byteEn = 4'b0001 << alignOff;
+          wData = zeroExtend(_eInst.data[7:0]) << {alignOff, 3'b0};
+        end
+        4'b0011: begin
+          alignOff = {offset[1], 1'b0};
+          byteEn = 4'b0011 << alignOff;
+          wData = zeroExtend(_eInst.data[15:0]) << {alignOff, 3'b0};
+        end
+        4'b1111: begin
+          alignOff = 2'b00;
+          byteEn = 4'b1111;
+          wData = _eInst.data;
+        end
+        default: begin
+          alignOff = 2'b00;
+          byteEn = 4'b0000;
+          wData = 0;
+        end
+      endcase
       case (_eInst.iType)
         Ld: begin
-          // $fwrite(stdout, "pc-> %x read addr->%x\n", _Exec.pc, _eInst.addr);
-          let req = MemReq { op: Ld, addr: _eInst.addr, data: ? };
+          let req = MemReq { op: Ld, addr: _eInst.addr, data: ?, byteEn: byteEn };
+          `ifdef CONFIG_MTRACE
+          $fwrite(stdout, "[MTRACE] LD pc:%x addr:%x be:%x\n", _Exec.pc, _eInst.addr, byteEn);
+          `endif
           dCache.req(req);
         end
         St: begin
-          // $fwrite(stdout, "pc-> %x write addr->%x, data->%x\n", _Exec.pc, _eInst.addr, _eInst.data);
-          let req = MemReq { op: St, addr: _eInst.addr, data: _eInst.data };
+          let req = MemReq { op: St, addr: _eInst.addr, data: wData, byteEn: byteEn };
+          `ifdef CONFIG_MTRACE
+          $fwrite(stdout, "[MTRACE] ST pc:%x addr:%x be:%x data:%x raw:%x\n", _Exec.pc, _eInst.addr, byteEn, wData, _eInst.data);
+          `endif
           scSuccValue <= _eInst.data;
           dCache.req(req);
         end
         Ll: begin
-          let req = MemReq { op: Lr, addr: _eInst.addr, data: ? };
+          let req = MemReq { op: Lr, addr: _eInst.addr, data: ?, byteEn: byteEn };
+          `ifdef CONFIG_MTRACE
+          $fwrite(stdout, "[MTRACE] LL pc:%x addr:%x be:%x\n", _Exec.pc, _eInst.addr, byteEn);
+          `endif
           dCache.req(req);
         end
         Sc: begin
-          let req = MemReq { op: Sc, addr: _eInst.addr, data: _eInst.data };
+          let req = MemReq { op: Sc, addr: _eInst.addr, data: wData, byteEn: byteEn };
+          `ifdef CONFIG_MTRACE
+          $fwrite(stdout, "[MTRACE] SC pc:%x addr:%x be:%x data:%x raw:%x\n", _Exec.pc, _eInst.addr, byteEn, wData, _eInst.data);
+          `endif
           dCache.req(req);
         end
         Fence: begin
-          let req = MemReq { op: Fence, addr: ?, data: ? };
+          let req = MemReq { op: Fence, addr: ?, data: ?, byteEn: byteEn };
+          `ifdef CONFIG_MTRACE
+          $fwrite(stdout, "[MTRACE] FENCE pc:%x\n", _Exec.pc);
+          `endif
           dCache.req(req);
         end
         default: begin
