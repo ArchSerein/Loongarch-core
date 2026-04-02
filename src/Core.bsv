@@ -65,6 +65,7 @@ typedef struct {
   `ifdef CONFIG_DIFFTEST
   Instruction         inst;
   `endif
+  Maybe#(ByteMask)    mask;
   Maybe#(ExecInst)    eInst;
 }   E2M deriving(Bits, Eq);
 
@@ -205,10 +206,10 @@ module mkCore(Core);
 
         if (isValid(_Rrf.rInst.muldivFunc)) begin
           let mdFunc = fromMaybe(?, _Rrf.rInst.muldivFunc);
-          if (mdFunc == MulW) eInst.data = mulUnit.result()[31:0];
-          else if (mdFunc == MulhW || mdFunc == MulhWu) eInst.data = mulUnit.result()[63:32];
-          else if (mdFunc == DivW || mdFunc == DivWu) eInst.data = divUnit.result()[31:0];
-          else if (mdFunc == ModW || mdFunc == ModWu) eInst.data = divUnit.result()[63:32];
+          if (mdFunc == MulW) eInst.data = truncate(mulUnit.result());
+          else if (mdFunc == MulhW || mdFunc == MulhWu) eInst.data = truncateLSB(mulUnit.result());
+          else if (mdFunc == DivW || mdFunc == DivWu) eInst.data = truncate(divUnit.result());
+          else if (mdFunc == ModW || mdFunc == ModWu) eInst.data = truncateLSB(divUnit.result());
         end
 
       if (eInst.iType == Break) begin
@@ -241,12 +242,14 @@ module mkCore(Core);
       `ifdef CONFIG_DIFFTEST
       inst: _Rrf.inst,
       `endif
+      mask: _Rrf.rInst.mask,
       eInst: tagged Valid eInst});
     end else begin
       e2mFifo.enq(E2M{pc: _Rrf.pc,
       `ifdef CONFIG_DIFFTEST
       inst: _Rrf.inst,
       `endif
+      mask: _Rrf.rInst.mask,
       eInst: tagged Invalid});
     end
     end
@@ -310,9 +313,41 @@ module mkCore(Core);
 
     if (isValid(_Mem.mInst)) begin
       let _mInst = fromMaybe(?, _Mem.mInst);
+      Data rData = _mInst.data;
       if (_mInst.iType == Ld || _mInst.iType == Ll || _mInst.iType ==
         Sc) begin
-        _mInst.data <- dCache.resp();
+        rData <- dCache.resp();
+        
+        if (_mInst.iType == Ld) begin
+          ByteMask m = fromMaybe(5'b11111, _mInst.mask);
+          Bool signExt = m[4] == 1'b1;
+          Bit#(4) rawEn = m[3:0];
+          Bit#(2) offset = _mInst.addr[1:0];
+          Bit#(2) loadOffset = 2'b00;
+
+          case (rawEn)
+            4'b0001: loadOffset = offset;
+            4'b0011: loadOffset = {offset[1], 1'b0};
+            default: loadOffset = 2'b00;
+          endcase
+
+          Data shiftedData = rData >> {loadOffset, 3'b0};
+          
+          if (rawEn == 4'b0001) begin
+             if (signExt)
+                rData = signExtend(shiftedData[7:0]);
+             else
+                rData = zeroExtend(shiftedData[7:0]);
+          end else if (rawEn == 4'b0011) begin
+             if (signExt)
+                rData = signExtend(shiftedData[15:0]);
+             else
+                rData = zeroExtend(shiftedData[15:0]);
+           end else begin
+             rData = shiftedData;
+           end
+        end
+        _mInst.data = rData;
       end
 
       if (isValid(_mInst.dst)) begin

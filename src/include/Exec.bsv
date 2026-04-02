@@ -62,6 +62,7 @@ function ExecInst exec(DecodedInst dInst, Data rVal1, Data rVal2, Addr pc, Addr 
   eInst.iType = dInst.iType;
   eInst.dst = dInst.dst;
   eInst.csr = dInst.csr;
+  eInst.mask = dInst.mask;
 
   eInst.data = dInst.iType == Csrr ?
                  csrVal :

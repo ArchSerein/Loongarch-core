@@ -13,7 +13,8 @@ function DecodedInst decode(Instruction inst);
     src1: tagged Invalid,
     src2: tagged Invalid,
     csr: tagged Invalid,
-    imm: tagged Invalid
+    imm: tagged Invalid,
+    mask: tagged Invalid
   };
 
   Op_31_26 op_31_26 = inst[31:26];
@@ -140,20 +141,49 @@ function DecodedInst decode(Instruction inst);
     end
 
     6'b001010: begin
+      dInst.aluFunc = tagged Valid AddW;
+      dInst.src1    = tagged Valid rj;
+      dInst.imm     = tagged Valid si12;
       case (op_25_22)
+        4'b0000: begin
+          dInst.iType   = Ld;
+          dInst.mask    = tagged Valid 5'b10001;
+          dInst.dst     = tagged Valid rd;
+        end
+        4'b0001: begin
+          dInst.iType   = Ld;
+          dInst.mask    = tagged Valid 5'b10011;
+          dInst.dst     = tagged Valid rd;
+        end
         4'b0010: begin
           dInst.iType   = Ld;
-          dInst.aluFunc = tagged Valid AddW;
+          dInst.mask    = tagged Valid 5'b11111;
           dInst.dst     = tagged Valid rd;
-          dInst.src1    = tagged Valid rj;
-          dInst.imm     = tagged Valid si12;
+        end
+        4'b0100: begin
+          dInst.iType   = St;
+          dInst.mask    = tagged Valid 5'b10001;
+          dInst.src2    = tagged Valid rd;
+        end
+        4'b0101: begin
+          dInst.iType   = St;
+          dInst.mask    = tagged Valid 5'b10011;
+          dInst.src2    = tagged Valid rd;
         end
         4'b0110: begin
           dInst.iType   = St;
-          dInst.aluFunc = tagged Valid AddW;
-          dInst.src1    = tagged Valid rj;
+          dInst.mask    = tagged Valid 5'b11111;
           dInst.src2    = tagged Valid rd;
-          dInst.imm     = tagged Valid si12;
+        end
+        4'b1000: begin
+          dInst.iType   = Ld;
+          dInst.mask    = tagged Valid 5'b00001;
+          dInst.dst     = tagged Valid rd;
+        end
+        4'b1001: begin
+          dInst.iType   = Ld;
+          dInst.mask    = tagged Valid 5'b00011;
+          dInst.dst     = tagged Valid rd;
         end
         default: dInst.iType = Unsupported;
       endcase

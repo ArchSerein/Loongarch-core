@@ -118,6 +118,7 @@ typedef struct {
   Maybe#(RIndx)       src2;
   Maybe#(CsrIndx)     csr;
   Maybe#(Data)        imm;
+  Maybe#(ByteMask)    mask;
 } DecodedInst deriving(Bits, Eq, FShow);
 
 typedef struct {
@@ -125,6 +126,7 @@ typedef struct {
   Maybe#(RIndx)    dst;
   Maybe#(CsrIndx)  csr;
   Data             data;
+  Maybe#(ByteMask) mask;
   Addr             addr;
   Bool             mispredict;
   Bool             brTaken;
