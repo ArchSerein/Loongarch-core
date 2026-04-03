@@ -55,6 +55,7 @@ typedef enum {
 
   Csrr, // CSRRD
   Csrw, // CSRWR
+  Csrxchg, // CSRXCHG
 
   Fence, // DBAR / IBAR
 

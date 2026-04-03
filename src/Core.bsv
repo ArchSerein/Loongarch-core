@@ -398,11 +398,13 @@ module mkCore(Core);
         rf.wr(fromMaybe(?, _mInst.dst), _mInst.data);
       end
 
-      Data csrWrData = _mInst.iType == Csrw ? _mInst.addr : _mInst.data;
-      csrf.wr(_mInst.iType == Csrw ? _mInst.csr : Invalid, csrWrData);
+      Bool isCsrWrite = (_mInst.iType == Csrw || _mInst.iType == Csrxchg);
+      Data csrWrData = isCsrWrite ? _mInst.addr : _mInst.data;
+      csrf.wr(isCsrWrite ? _mInst.csr : Invalid, csrWrData);
 
       Bool wen = isValid(_mInst.dst) && fromMaybe(0, _mInst.dst) != 0;
-      // $fwrite(stdout, "commit: pc->%x, inst->%x\n", _Mem.pc, _Mem.inst);
+      $fwrite(stdout, "commit: pc->%x, inst->%x\n", _Mem.pc, _Mem.inst);
+      // $fwrite(stdout, "commit: pc->%x\n", _Mem.pc);
       `ifdef CONFIG_DIFFTEST
       diffCommitFifo.enq(DiffCommit{
         pc: _Mem.pc,

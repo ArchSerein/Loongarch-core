@@ -68,6 +68,8 @@ function ExecInst exec(DecodedInst dInst, Data rVal1, Data rVal2, Addr pc, Addr 
                  csrVal :
                dInst.iType == Csrw ?
                  csrVal :
+               dInst.iType == Csrxchg ?
+                 csrVal :
                (dInst.iType == St || dInst.iType == Sc) ?
                  rVal2 :
                (dInst.iType == J || dInst.iType == Jr) ?
@@ -78,23 +80,26 @@ function ExecInst exec(DecodedInst dInst, Data rVal1, Data rVal2, Addr pc, Addr 
                  (pc + immVal) :
                  execRes;
 
-  // For CSRWR: carry the value to write to CSR in addr field
+  // For CSR writes: carry the value to write to CSR in addr field
   if (dInst.iType == Csrw) begin
     eInst.addr = rVal1;
+  end
+  if (dInst.iType == Csrxchg) begin
+    eInst.addr = (csrVal & (~rVal2)) | (rVal1 & rVal2);
   end
 
   let brTaken = aluBr(rVal1, rVal2, dInst.brFunc);
   let brAddr = brAddrCalc(pc, rVal1, dInst.iType, immVal, brTaken);
 
-  if (dInst.iType != Csrw) begin
+  if (dInst.iType != Csrw && dInst.iType != Csrxchg) begin
     eInst.addr = (case(dInst.iType)
       Ld, St, Ll, Sc: execRes;
       default: brAddr;
     endcase);
   end
 
-  // CSRW addr is repurposed; never mispredict for it
-  eInst.mispredict = (dInst.iType == Csrw) ? False : (brAddr != ppc);
+  // CSR write-like ops repurpose addr; never mispredict for them
+  eInst.mispredict = (dInst.iType == Csrw || dInst.iType == Csrxchg) ? False : (brAddr != ppc);
   eInst.brTaken = brTaken;
 
   return eInst;

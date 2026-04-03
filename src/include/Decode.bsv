@@ -124,6 +124,40 @@ function DecodedInst decode(Instruction inst);
       end
     end
 
+    6'b000001: begin
+      if (op_25_22 == 4'h9 && op_21_20 == 2'h0 && op_19_15 == 5'h10 &&
+          rk == 5'h0e && rj == 5'd0 && rd == 5'd0) begin
+        dInst.iType = Ertn;
+      end
+      else begin
+        case ({inst[25], inst[24]})
+          2'b00: begin
+            CsrIndx csrNum = inst[23:10];
+
+            if (rj == 5'd0) begin
+              dInst.iType = Csrr;
+              dInst.dst   = tagged Valid rd;
+              dInst.csr   = tagged Valid csrNum;
+            end
+            else if (rj == 5'd1) begin
+              dInst.iType = Csrw;
+              dInst.dst   = tagged Valid rd;
+              dInst.src1  = tagged Valid rd;
+              dInst.csr   = tagged Valid csrNum;
+            end
+            else begin
+              dInst.iType = Csrxchg;
+              dInst.dst   = tagged Valid rd;
+              dInst.src1  = tagged Valid rd;
+              dInst.src2  = tagged Valid rj;
+              dInst.csr   = tagged Valid csrNum;
+            end
+          end
+          default: dInst.iType = Unsupported;
+        endcase
+      end
+    end
+
     6'b000101: begin
       if (inst[25] == 0) begin
         dInst.iType = Lu12i;
@@ -212,28 +246,6 @@ function DecodedInst decode(Instruction inst);
           5'b00100, 5'b00101: dInst.iType = Fence;
           default: dInst.iType = Unsupported;
         endcase
-      end
-    end
-
-    6'b000001: begin
-      if (op_25_22 == 4'h9 && op_21_20 == 2'h0 && op_19_15 == 5'h10 &&
-          rk == 5'h0e && rj == 5'd0 && rd == 5'd0) begin
-        dInst.iType = Ertn;
-      end
-      else if (inst[25:24] == 2'b00) begin
-        CsrIndx csrNum = inst[23:10];
-
-        if (rj == 5'd0) begin
-          dInst.iType = Csrr;
-          dInst.dst   = tagged Valid rd;
-          dInst.csr   = tagged Valid csrNum;
-        end
-        else if (rj == 5'd1) begin
-          dInst.iType = Csrw;
-          dInst.dst   = tagged Valid rd;
-          dInst.src1  = tagged Valid rd;
-          dInst.csr   = tagged Valid csrNum;
-        end
       end
     end
 

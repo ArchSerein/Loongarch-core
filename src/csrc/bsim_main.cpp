@@ -153,7 +153,7 @@ private:
       goto good;
     } else if ((addr >> 24) == 0x1c) {
       goto good;
-    } else if ((addr >> 20) == 0x000) {
+    } else if ((addr >> 24) == 0x00) {
         goto good;
     } else goto bad;
   good:
