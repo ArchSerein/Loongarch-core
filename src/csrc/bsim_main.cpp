@@ -114,8 +114,8 @@ public:
     mem.write(addr, data, mask);
   }
 
-  void difftest_instr_commit(std::uint32_t pc, std::uint32_t inst, std::uint8_t wen,
-                             std::uint8_t wdest, std::uint32_t wdata) override {
+  void difftest_instr_commit(std::uint32_t pc, std::uint32_t next_pc, std::uint32_t inst,
+                             std::uint8_t wen, std::uint8_t wdest, std::uint32_t wdata) override {
     if (!g_run || difftest == nullptr || !difftest->enabled()) {
       return;
     }

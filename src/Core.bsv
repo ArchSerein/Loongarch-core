@@ -458,8 +458,13 @@ module mkCore(Core);
 
         $fwrite(stdout, "commit: pc->%x, inst->%x\n", memPkt.pc, memPkt.inst);
         `ifdef CONFIG_DIFFTEST
+        // Compute nextPc for difftest synchronization:
+        // - For branches/jumps that redirected: use the target address
+        // - For sequential flow: use pc + 4
+        Addr commitNextPc = mInst.mispredict ? mInst.addr : (memPkt.pc + 4);
         diffCommitFifo.enq(DiffCommit{
           pc: memPkt.pc,
+          nextPc: commitNextPc,
           inst: memPkt.inst,
           wen: wen,
           wdest: fromMaybe(0, mInst.dst),

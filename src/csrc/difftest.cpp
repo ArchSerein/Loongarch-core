@@ -155,7 +155,14 @@ void Difftest::do_instr_commit(int index) {
         return;
     }
     if (dut.commit[index].skip) {
+        // Sync GPR state from DUT to reference
         proxy->regcpy(dut_regs_ptr_, DIFFTEST_TO_REF, DIFF_TO_REF_GR);
+        // Sync PC: set reference PC to the DUT's next_pc so reference continues
+        // from the correct instruction after the skipped MMIO instruction
+        dut.csr.this_pc = dut.commit[index].next_pc;
+        if (proxy->csrcpy != nullptr) {
+            proxy->csrcpy(&dut.csr, DIFFTEST_TO_REF);
+        }
         return;
     }
     if (dut.commit[index].is_TLBFILL && proxy->tlbfill_index_set != nullptr) {

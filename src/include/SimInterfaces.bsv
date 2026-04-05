@@ -7,6 +7,7 @@ interface SimIndication;
   method Action write_mem_req(Addr addr, Data data, Bit#(8) mask);
   method Action difftest_instr_commit(
     Bit#(32) pc,
+    Bit#(32) nextPc,
     Instruction inst,
     Bit#(1) wen,
     Bit#(5) wdest,

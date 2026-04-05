@@ -90,6 +90,7 @@ typedef struct excp_event_t{
 typedef struct instr_commit_t{
     std::uint8_t valid = 0;
     std::uint32_t pc = 0;
+    std::uint32_t next_pc = 0;
     std::uint32_t inst = 0;
     std::uint8_t skip = 0;
     std::uint8_t is_TLBFILL = 0;

@@ -15,6 +15,7 @@ typedef struct {
 
 typedef struct {
   Addr pc;
+  Addr nextPc;
   Instruction inst;
   Bool wen;
   Bit#(5) wdest;
