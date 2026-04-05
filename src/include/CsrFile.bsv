@@ -141,7 +141,7 @@ module mkCsrFile(CsrFile);
     return res;
   endmethod
 
-  `IFDEF_DIFFTEST(
+`ifdef CONFIG_DIFFTEST
   method DiffArchCsrState diffSnapshot;
     return DiffArchCsrState{
       crmd: csr_crmd,
@@ -172,7 +172,7 @@ module mkCsrFile(CsrFile);
       estat: csr_estat | (timerInt[1] ? 32'h00000800 : 0)
     };
   endmethod
-  )
+`endif
 
   method Action wr(Maybe#(CsrIndx) csrIdx, Data val);
     if (csrIdx matches tagged Valid .idx) begin

@@ -68,7 +68,7 @@ rule drainCpuToHost (core.cpuToHostValid);
   endcase
 endrule
 
-`IFDEF_DIFFTEST(
+`ifdef CONFIG_DIFFTEST
 rule drainDiffTrace (started && core.diffTraceValid);
   let t <- core.diffTrace;
   indication.difftest_greg_state(
@@ -120,7 +120,7 @@ rule drainDiffTrace (started && core.diffTraceValid);
     pack(t.commit.skip)
   );
 endrule
-)
+`endif
 
 method Action hostToCpu(Bit#(32) startpc) if (!started);
   started <= True;
@@ -152,7 +152,7 @@ module mkTb(SimTop);
     writeMemReqQ.enq({addr, data, mask});
   endmethod
 
-  `IFDEF_DIFFTEST(
+`ifdef CONFIG_DIFFTEST
   method Action difftest_greg_state(
       Data gpr_0, Data gpr_1, Data gpr_2, Data gpr_3,
       Data gpr_4, Data gpr_5, Data gpr_6, Data gpr_7,
@@ -212,7 +212,7 @@ module mkTb(SimTop);
       Bit#(1) skip);
     noAction;
   endmethod
-  )
+`endif
 endinterface;
 
 SimRequest coreReq <- mkTbCore(indicationSink);

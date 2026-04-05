@@ -7,10 +7,10 @@ import AxiTypes::*;
 interface CoreAxiTop;
   method ActionValue#(CpuToHostData) cpuToHost;
   method Bool cpuToHostValid;
-  `IFDEF_DIFFTEST(
+`ifdef CONFIG_DIFFTEST
   method ActionValue#(DiffTrace) diffTrace;
   method Bool diffTraceValid;
-  )
+`endif
   method Action hostToCpu(Addr startpc);
   interface AxiMemMaster axiMem;
 endinterface
@@ -26,14 +26,14 @@ module mkCoreAxiTop(CoreAxiTop);
 
   method Bool cpuToHostValid = core.cpuToHostValid;
 
-  `IFDEF_DIFFTEST(
+`ifdef CONFIG_DIFFTEST
   method ActionValue#(DiffTrace) diffTrace;
     let x <- core.diffTrace;
     return x;
   endmethod
 
   method Bool diffTraceValid = core.diffTraceValid;
-  )
+`endif
 
   method Action hostToCpu(Addr startpc);
     core.hostToCpu(startpc);

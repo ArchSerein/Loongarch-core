@@ -6,7 +6,7 @@ interface SimIndication;
   method Action halt(Bit#(32) code);
   method Action read_mem_req(Addr addr);
   method Action write_mem_req(Addr addr, Data data, Bit#(8) mask);
-  `IFDEF_DIFFTEST(
+`ifdef CONFIG_DIFFTEST
   method Action difftest_greg_state(
     Data gpr_0, Data gpr_1, Data gpr_2, Data gpr_3,
     Data gpr_4, Data gpr_5, Data gpr_6, Data gpr_7,
@@ -55,7 +55,7 @@ interface SimIndication;
     Data wdata,
     Bit#(1) skip
   );
-  )
+`endif
 endinterface
 
 // Host -> hardware request interface (Connectal request).

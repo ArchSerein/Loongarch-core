@@ -20,6 +20,19 @@ import sys
 from pathlib import Path
 
 
+def parse_config_bool(value: str):
+    """Parse config-like booleans: y/1/yes/true or n/0/no/false."""
+    if value is None:
+        return None
+
+    normalized = value.strip().strip('"').lower()
+    if normalized in {"y", "1", "yes", "true"}:
+        return True
+    if normalized in {"n", "0", "no", "false"}:
+        return False
+    return None
+
+
 def load_config_values(config_path: str) -> dict:
     """
     Load config values from .config file.
@@ -103,6 +116,8 @@ def convert_define_line(line: str, default_width: int = 32, config_values: dict 
         args = func_match.group(2)
         value = func_match.group(3)
         converted_value = convert_value(value, default_width, config_values, macro_name)
+        if converted_value is None:
+            return ""
         return f"`define {macro_name}({args}) {converted_value}{trailing}"
 
     # Try simple macro
@@ -111,6 +126,8 @@ def convert_define_line(line: str, default_width: int = 32, config_values: dict 
         macro_name = simple_match.group(1)
         value = simple_match.group(2)
         converted_value = convert_value(value, default_width, config_values, macro_name)
+        if converted_value is None:
+            return ""
         if converted_value == "":
             return f"`define {macro_name}{trailing}"
         return f"`define {macro_name} {converted_value}{trailing}"
@@ -125,17 +142,20 @@ def convert_define_line(line: str, default_width: int = 32, config_values: dict 
     return line
 
 
-def convert_value(value: str, default_width: int = 32, config_values: dict = None, macro_name: str = None) -> str:
+def convert_value(value: str, default_width: int = 32, config_values: dict = None, macro_name: str = None):
     """Convert a value from C to Verilog format."""
     if config_values is None:
         config_values = {}
     value = value.strip()
 
-    # Check if this macro is set to y/n in .config
+    # Check if this macro is set in .config.
     if macro_name and macro_name in config_values:
-        config_val = config_values[macro_name]
-        if config_val == "y" or config_val == "n":
+        config_val = parse_config_bool(config_values[macro_name])
+        if config_val is True:
             return ""
+        if config_val is False:
+            # Disabled bool/tristate symbol: do not emit the define line.
+            return None
 
     # Hex literal
     if value.startswith("0x") or value.startswith("0X"):
@@ -228,20 +248,19 @@ def convert_line(line: str, default_width: int = 32, config_values: dict = None)
     return result_line
 
 
-def generate_ifdef_helper(macro_name: str) -> str:
+def generate_ifdef_helper(macro_name: str, enabled: bool) -> str:
     """
-    Generate conditional compilation helper macro for a value-less define.
-    
-    For `define CONFIG_DIFFTEST, generates:
-    `ifdef CONFIG_DIFFTEST
+    Generate IFDEF helper macro from a resolved boolean state.
+
+    For enabled CONFIG_DIFFTEST, generates:
       `define IFDEF_DIFFTEST(x) x
-    `else
+
+    For disabled CONFIG_DIFFTEST, generates:
       `define IFDEF_DIFFTEST(x)
-    `endif
-    
+
     Args:
         macro_name: The macro name (e.g., CONFIG_DIFFTEST)
-    
+
     Returns:
         The helper macro definition string
     """
@@ -253,12 +272,9 @@ def generate_ifdef_helper(macro_name: str) -> str:
     
     helper_name = f"IFDEF_{suffix}"
     
-    return f"""`ifdef {macro_name}
-  `define {helper_name}(x) x
-`else
-  `define {helper_name}(x)
-`endif
-"""
+    if enabled:
+        return f"`define {helper_name}(x) x\n"
+    return f"`define {helper_name}(x)\n"
 
 
 def convert_file(
@@ -282,8 +298,12 @@ def convert_file(
         lines = f.readlines()
 
     converted_lines = []
-    valueless_macros = []  # Collect value-less macros for helper generation
+    helper_macro_states = {}  # CONFIG_* -> bool for IFDEF helper generation
     in_multiline_comment = False
+
+    def track_helper_macro(macro_name: str, enabled: bool):
+        if macro_name.startswith("CONFIG_") and enabled is not None:
+            helper_macro_states[macro_name] = enabled
 
     for line in lines:
         # Handle multiline comments
@@ -300,32 +320,45 @@ def convert_file(
         converted_line = convert_line(line, default_width, config_values)
         converted_lines.append(converted_line)
         
-        # Track value-less defines for helper macro generation
+        # Track CONFIG_* defines for helper macro generation
         stripped = line.strip()
         if stripped.startswith("#define"):
             # Check if it's a value-less define
             empty_pattern = r"^\s*#define\s+(\w+)\s*$"
             empty_match = re.match(empty_pattern, stripped)
             if empty_match:
-                valueless_macros.append(empty_match.group(1))
+                track_helper_macro(empty_match.group(1), True)
             else:
-                # Also check for defines that become value-less due to config y/n
+                # Also track bool-like CONFIG_* values from define text or .config.
                 simple_pattern = r"^\s*#define\s+(\w+)\s+(.+)$"
                 simple_match = re.match(simple_pattern, stripped)
                 if simple_match:
                     macro_name = simple_match.group(1)
+                    raw_value = simple_match.group(2).strip()
+
+                    cfg_state = None
                     if macro_name in config_values:
-                        config_val = config_values[macro_name]
-                        if config_val == "y" or config_val == "n":
-                            valueless_macros.append(macro_name)
+                        cfg_state = parse_config_bool(config_values[macro_name])
+                    if cfg_state is None:
+                        cfg_state = parse_config_bool(raw_value)
+
+                    if cfg_state is not None:
+                        track_helper_macro(macro_name, cfg_state)
+
+    # Keep IFDEF helpers available even if the symbol is not emitted in autoconf.h
+    # (for example when CONFIG_FOO is set to n in .config).
+    for macro_name, cfg_value in config_values.items():
+        cfg_state = parse_config_bool(cfg_value)
+        if cfg_state is not None:
+            track_helper_macro(macro_name, cfg_state)
 
     content = "".join(converted_lines)
     
-    # Append helper macros for value-less defines
-    if valueless_macros:
+    # Append helper macros for tracked CONFIG_* symbols
+    if helper_macro_states:
         content += "\n// Conditional compilation helper macros\n"
-        for macro_name in valueless_macros:
-            content += generate_ifdef_helper(macro_name)
+        for macro_name, enabled in helper_macro_states.items():
+            content += generate_ifdef_helper(macro_name, enabled)
 
     if output_path:
         with open(output_path, "w") as f:
