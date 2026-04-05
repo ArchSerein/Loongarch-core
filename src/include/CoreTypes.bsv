@@ -1,12 +1,19 @@
+import Types::*;
+import CoreTypes::*;
+import ProcTypes::*;
+`include "Autoconf.bsv"
+
 typedef struct {
   Addr        pc;
   Addr        predPc;
+  Bool        bhtPred;
   ExcpInfo    excp;
 }   F2D deriving(Bits, Eq);
 
 typedef struct {
   Addr        pc;
   Addr        predPc;
+  Bool        bhtPred;
   `IFDEF_DIFFTEST(Instruction inst);
   DecodedInst dInst;
   ExcpInfo    excp;
@@ -15,6 +22,7 @@ typedef struct {
 typedef struct {
   Addr        pc;
   Addr        predPc;
+  Bool        bhtPred;
   `IFDEF_DIFFTEST(Instruction inst);
   Data        rVal1;
   Data        rVal2;

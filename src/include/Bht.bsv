@@ -3,6 +3,7 @@ import Vector::*;
 import Ehr::*;
 
 interface Bht#(numeric type indexSize);
+  method  Bool    predict(Addr pc);
   method  Addr    ppcDP(Addr pc, Addr targetPC);
   method  Action  update(Addr pc, Bool taken);
 endinterface
@@ -33,6 +34,12 @@ module mkBht(Bht#(indexSize)) provisos(Add#(a__, indexSize, 32));
     Bit#(indexSize) index = getBhtIndex(pc);
     let dpBits = getBhtEntry(index, 1);
     bhtArr[index][1] <= newDpBits(dpBits, taken);
+  endmethod
+
+  method Bool predict(Addr pc);
+    Bit#(indexSize) index = getBhtIndex(pc);
+    let dpBits = getBhtEntry(index, 0);
+    return (dpBits[1] == 1'b1);
   endmethod
 
   method Addr ppcDP(Addr pc, Addr targetPC);
