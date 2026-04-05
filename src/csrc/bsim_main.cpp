@@ -123,8 +123,9 @@ public:
     instr_commit_t* commit = difftest->get_instr_commit(0);
     commit->valid = 1;
     commit->pc = pc;
+    commit->next_pc = next_pc;
     commit->inst = inst;
-    commit->skip = false;
+    commit->skip = is_skip_difftest;
     commit->wen = (wen != 0) ? 1 : 0;
     commit->wdest = wdest;
     commit->wdata = wdata;
