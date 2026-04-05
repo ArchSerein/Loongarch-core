@@ -5,9 +5,12 @@ Generate a wrapper module to adapt mkCoreAxiTop AXI signals to standard AXI4 int
 
 import re
 import sys
+from pathlib import Path
 
-MK_CORE_AXI_TOP_V = '/root/Loongarch-core/src/build/verilog/mkCoreAxiTop.v'
-OUTPUT_V = '/root/Loongarch-core/src/build/verilog/mkCoreAxiTop_wrapper.v'
+ROOT_DIR = Path(__file__).resolve().parent.parent
+MK_CORE_AXI_TOP_V = str(ROOT_DIR / 'build/verilog/mkCoreAxiTop.v')
+OUTPUT_V = str(ROOT_DIR / 'build/verilog/mkCoreAxiTop_wrapper.v')
+AUTOCONF_H = ROOT_DIR / 'include/generated/autoconf.h'
 
 AXI_BUNDLED_SIGNALS = {
     'araddr': {'width': 45, 'split': [
@@ -38,11 +41,6 @@ STANDARD_AXI_SIGNALS = [
     ('input', '', 'cpuToHost_rdy', 'CPU to host ready'),
     ('input', '', 'cpuToHostValid_rdy', 'CPU to host valid ready'),
     ('input', '', 'EN_cpuToHost', 'Enable CPU to host'),
-    ('output', '[101:0]', 'debug_commit', 'Debug commit'),
-    ('output', '', 'debug_commitValid', 'Debug commit valid'),
-    ('input', '', 'debug_commit_rdy', 'Debug commit ready'),
-    ('input', '', 'debug_commitValid_rdy', 'Debug commit valid ready'),
-    ('input', '', 'EN_debug_commit', 'Enable debug commit'),
     ('', '', '', ''),
     ('output', '[3:0]', 'arid', 'AXI Read ID'),
     ('output', '[31:0]', 'araddr', 'AXI Read Address'),
@@ -118,17 +116,37 @@ PORT_MAPPING = {
     'axiMem_wrResp_r': 'bresp',
     'EN_axiMem_wrResp': 'bready',
     'RDY_axiMem_wrResp': 'bresp_rdy',
-    'diffCommit': 'debug_commit',
-    'diffCommitValid': 'debug_commitValid',
-    'RDY_diffCommit': 'debug_commit_rdy',
-    'RDY_diffCommitValid': 'debug_commitValid_rdy',
-    'EN_diffCommit': 'EN_debug_commit',
 }
 
 
+def difftest_enabled():
+    if not AUTOCONF_H.exists():
+        return False
+    return '#define CONFIG_DIFFTEST 1' in AUTOCONF_H.read_text()
+
+
 def generate_wrapper():
+    standard_axi_signals = list(STANDARD_AXI_SIGNALS)
+    port_mapping = dict(PORT_MAPPING)
+    if difftest_enabled():
+        diff_signals = [
+            ('output', '[2443:0]', 'debug_trace', 'Debug difftest trace'),
+            ('output', '', 'debug_traceValid', 'Debug difftest trace valid'),
+            ('input', '', 'debug_trace_rdy', 'Debug difftest trace ready'),
+            ('input', '', 'debug_traceValid_rdy', 'Debug difftest trace valid ready'),
+            ('input', '', 'EN_debug_trace', 'Enable debug difftest trace'),
+        ]
+        standard_axi_signals[10:10] = diff_signals
+        port_mapping.update({
+            'diffTrace': 'debug_trace',
+            'diffTraceValid': 'debug_traceValid',
+            'RDY_diffTrace': 'debug_trace_rdy',
+            'RDY_diffTraceValid': 'debug_traceValid_rdy',
+            'EN_diffTrace': 'EN_debug_trace',
+        })
+
     port_decls = []
-    for direction, width, name, comment in STANDARD_AXI_SIGNALS:
+    for direction, width, name, comment in standard_axi_signals:
         if name == '':
             port_decls.append('')
         elif direction == '':
@@ -159,13 +177,6 @@ def generate_wrapper():
 
         .cpuToHostValid         (cpuToHostValid),
         .cpuToHostValid_rdy     (cpuToHostValid_rdy),
-
-        .EN_debug_commit        (EN_debug_commit),
-        .debug_commit           (debug_commit),
-        .debug_commit_rdy       (debug_commit_rdy),
-
-        .debug_commitValid      (debug_commitValid),
-        .debug_commitValid_rdy  (debug_commitValid_rdy),
 
         .intrpt                 (intrpt),
         .intrpt_en              (intrpt_en),
@@ -224,6 +235,19 @@ def generate_wrapper():
 
 endmodule
 """
+    if difftest_enabled():
+        diff_wiring = """
+        .EN_debug_trace         (EN_debug_trace),
+        .debug_trace            (debug_trace),
+        .debug_trace_rdy        (debug_trace_rdy),
+
+        .debug_traceValid       (debug_traceValid),
+        .debug_traceValid_rdy   (debug_traceValid_rdy),
+"""
+        wrapper = wrapper.replace(
+            "        .intrpt                 (intrpt),\n",
+            diff_wiring + "\n        .intrpt                 (intrpt),\n",
+        )
     return wrapper
 
 
@@ -235,7 +259,17 @@ def rename_original_core():
     content = content.replace('module mkCoreAxiTop(CLK,\n\t\t    RST_N,', 
                               'module mkCoreAxiTop(clk,\n\t\t    reset,')
 
-    for old_name, new_name in PORT_MAPPING.items():
+    port_mapping = dict(PORT_MAPPING)
+    if difftest_enabled():
+        port_mapping.update({
+            'diffTrace': 'debug_trace',
+            'diffTraceValid': 'debug_traceValid',
+            'RDY_diffTrace': 'debug_trace_rdy',
+            'RDY_diffTraceValid': 'debug_traceValid_rdy',
+            'EN_diffTrace': 'EN_debug_trace',
+        })
+
+    for old_name, new_name in port_mapping.items():
         content = re.sub(r'\b' + re.escape(old_name) + r'\b', new_name, content)
 
     content = content.replace('input  CLK;', 'input  clk;')

@@ -42,6 +42,7 @@ typedef struct {
   Addr                pc;
   `IFDEF_DIFFTEST(Instruction inst);
   ExcpInfo            excp;
+  `IFDEF_DIFFTEST(Maybe#(DiffMemOp) diffMem;);
   Maybe#(ExecInst)    mInst;
 }   M2W deriving(Bits, Eq);
 

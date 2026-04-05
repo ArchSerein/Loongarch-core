@@ -66,13 +66,16 @@ BSVPATH += \
 
 # C++ Sources for Connectal simulation
 CPPFILES += $(ROOT_DIR)/csrc/bsim_main.cpp  \
-            $(ROOT_DIR)/csrc/tb_memory.cpp   \
-            $(ROOT_DIR)/csrc/difftest.cpp
+            $(ROOT_DIR)/csrc/tb_memory.cpp
 
 # C++ Sources for Verilator simulation
 VERILATOR_CPPFILES = $(ROOT_DIR)/csrc/sim_main.cpp  \
-            $(ROOT_DIR)/csrc/tb_memory.cpp   \
-            $(ROOT_DIR)/csrc/difftest.cpp
+            $(ROOT_DIR)/csrc/tb_memory.cpp
+
+ifeq ($(CONFIG_DIFFTEST),y)
+CPPFILES += $(ROOT_DIR)/csrc/difftest.cpp
+VERILATOR_CPPFILES += $(ROOT_DIR)/csrc/difftest.cpp
+endif
 
 LDLIBS += -ldl
 

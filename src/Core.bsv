@@ -25,8 +25,8 @@ interface Core;
   method ActionValue#(CpuToHostData) cpuToHost;
   method Bool cpuToHostValid;
   `IFDEF_DIFFTEST(
-    method ActionValue#(DiffCommit) diffCommit;
-    method Bool diffCommitValid
+    method ActionValue#(DiffTrace) diffTrace;
+    method Bool diffTraceValid
   );
   method Action hostToCpu(Addr startpc);
   interface AxiMemMaster axiMem;
@@ -55,7 +55,8 @@ module mkCore(Core);
   Fifo#(2, E2M)           e2mFifo <- mkCFFifo;
   Fifo#(2, M2W)           m2wFifo <- mkCFFifo;
   `IFDEF_DIFFTEST(
-    Fifo#(2, DiffCommit) diffCommitFifo <- mkCFFifo;
+    Fifo#(2, PendingDiffTrace) pendingDiffFifo <- mkPipelineFifo;
+    Fifo#(2, DiffTrace) diffTraceFifo <- mkCFFifo;
   )
 
   rule doFetch (csrf.started);
@@ -242,13 +243,35 @@ module mkCore(Core);
         default: noAction;
       endcase
 
+      `IFDEF_DIFFTEST(
+      Maybe#(DiffMemOp) diffMem = tagged Invalid;
+      if (eInst.iType == Ld || eInst.iType == Ll) begin
+        diffMem = tagged Valid DiffMemOp{
+          isLoad: True,
+          isStore: False,
+          isSc: False,
+          addr: eInst.addr,
+          storeData: 0
+        };
+      end else if (eInst.iType == St || eInst.iType == Sc) begin
+        diffMem = tagged Valid DiffMemOp{
+          isLoad: False,
+          isStore: True,
+          isSc: (eInst.iType == Sc),
+          addr: eInst.addr,
+          storeData: wData
+        };
+      end
+      )
       m2wFifo.enq(M2W{pc: execPkt.pc,
-        `IFDEF_DIFFTEST(inst: execPkt.inst),
+        `IFDEF_DIFFTEST(inst: execPkt.inst,)
+        `IFDEF_DIFFTEST(diffMem: diffMem,)
         excp: execPkt.excp,
         mInst: tagged Valid eInst});
     end else begin
       m2wFifo.enq(M2W{pc: execPkt.pc,
-        `IFDEF_DIFFTEST(inst: execPkt.inst),
+        `IFDEF_DIFFTEST(inst: execPkt.inst,)
+        `IFDEF_DIFFTEST(diffMem: tagged Invalid,)
         excp: execPkt.excp,
         mInst: tagged Invalid});
     end
@@ -275,6 +298,7 @@ module mkCore(Core);
       Bool wb_has_excp = has_int || wbExcp.valid;
       Bit#(6) wb_ecode = has_int ? `ECODE_INT : wbExcp.ecode;
       Bit#(9) wb_esubcode = has_int ? 0 : wbExcp.esubcode;
+      Data interruptBits = has_int ? (csrf.rd(`CSR_ESTAT) & csrf.rd(`CSR_ECFG) & 32'h00001fff) : 0;
 
       Bool wen = False;
       if (wb_has_excp) begin
@@ -293,10 +317,11 @@ module mkCore(Core);
       $fwrite(stdout, "commit: pc->%x, inst->%x\n", memPkt.pc, memPkt.inst);
       `IFDEF_DIFFTEST(
       Addr commitNextPc = mInst.mispredict ? mInst.addr : (memPkt.pc + 4);
-      // Skip difftest for MMIO instructions (address 0xbfafxxxx)
       Bool isMMIO = (mInst.iType == Ld || mInst.iType == St || mInst.iType == Ll || mInst.iType == Sc)
                     && (mInst.addr[31:16] == 16'hbfaf);
-      diffCommitFifo.enq(DiffCommit{
+
+      DiffCommit commit = DiffCommit{
+        valid: !wb_has_excp,
         pc: memPkt.pc,
         nextPc: commitNextPc,
         inst: memPkt.inst,
@@ -304,21 +329,81 @@ module mkCore(Core);
         wdest: fromMaybe(0, mInst.dst),
         wdata: mInst.data,
         skip: isMMIO
-      }));
+      };
+
+      DiffStoreEvent storeEvent = DiffStoreEvent{
+        valid: False,
+        paddr: 0,
+        vaddr: 0,
+        data: 0
+      };
+      DiffLoadEvent loadEvent = DiffLoadEvent{
+        valid: False,
+        paddr: 0,
+        vaddr: 0
+      };
+
+      if (!wb_has_excp && memPkt.diffMem matches tagged Valid .diffMem) begin
+        if (diffMem.isStore && (!diffMem.isSc || rData == scSucc)) begin
+          storeEvent = DiffStoreEvent{
+            valid: True,
+            paddr: zeroExtend(diffMem.addr),
+            vaddr: zeroExtend(diffMem.addr),
+            data: zeroExtend(diffMem.storeData)
+          };
+        end
+        if (diffMem.isLoad) begin
+          loadEvent = DiffLoadEvent{
+            valid: True,
+            paddr: zeroExtend(diffMem.addr),
+            vaddr: zeroExtend(diffMem.addr)
+          };
+        end
+      end
+
+      pendingDiffFifo.enq(PendingDiffTrace{
+        commit: commit,
+        excp: DiffExcpEvent{
+          excpValid: wb_has_excp,
+          eret: (mInst.iType == Ertn),
+          interrupt: interruptBits,
+          exception: has_int ? 0 : zeroExtend(wbExcp.ecode),
+          exceptionPC: memPkt.pc,
+          exceptionInst: memPkt.inst
+        },
+        store: storeEvent,
+        load: loadEvent
+      });
+      )
     end
     sb.remove();
   endrule
+
+  `IFDEF_DIFFTEST(
+  rule emitDiffTrace (csrf.started && pendingDiffFifo.notEmpty);
+    let pending = pendingDiffFifo.first;
+    pendingDiffFifo.deq;
+    diffTraceFifo.enq(DiffTrace{
+      commit: pending.commit,
+      regs: rf.diffSnapshot,
+      csr: csrf.diffSnapshot,
+      excp: pending.excp,
+      store: pending.store,
+      load: pending.load
+    });
+  endrule
+  )
 
   method ActionValue#(CpuToHostData) cpuToHost = csrf.cpuToHost;
   method Bool cpuToHostValid = csrf.cpuToHostValid;
 
   `IFDEF_DIFFTEST(
-  method ActionValue#(DiffCommit) diffCommit if (diffCommitFifo.notEmpty);
-    let ret = diffCommitFifo.first;
-    diffCommitFifo.deq;
+  method ActionValue#(DiffTrace) diffTrace if (diffTraceFifo.notEmpty);
+    let ret = diffTraceFifo.first;
+    diffTraceFifo.deq;
     return ret;
   endmethod
-  method Bool diffCommitValid = diffCommitFifo.notEmpty;
+  method Bool diffTraceValid = diffTraceFifo.notEmpty;
   )
 
   // TODO: this method will be remove

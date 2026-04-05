@@ -1,5 +1,6 @@
 #include "difftest.hpp"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -19,11 +20,25 @@ struct la32_timer {
 static const char* const kFallbackRefSoPath =
     "/root/Loongarch-core/chiplab/toolchains/nemu/la32r-nemu-interpreter-so";
 
-static const char* const kGregName[32] = {
-    "r0", "ra", "tp", "sp", "a0", "a1", "a2", "a3",
-    "a4", "a5", "a6", "a7", "t0", "t1", "t2", "t3",
-    "t4", "t5", "t6", "t7", "t8", "x",  "fp", "s0",
-    "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8",
+static const int DIFFTEST_NR_GREG = sizeof(arch_greg_state_t) / sizeof(std::uint32_t);
+static const int DIFFTEST_NR_CSRREG = sizeof(arch_csr_state_t) / sizeof(std::uint32_t);
+static const int DIFFTEST_NR_REG = DIFFTEST_NR_GREG + DIFFTEST_NR_CSRREG;
+
+static const char* const kRegName[DIFFTEST_NR_REG] = {
+    "r0",      "ra",     "tp",      "sp",      "a0",      "a1",     "a2",        "a3",
+    "a4",      "a5",     "a6",      "a7",      "t0",      "t1",     "t2",        "t3",
+    "t4",      "t5",     "t6",      "t7",      "t8",      "x",      "fp",        "s0",
+    "s1",      "s2",     "s3",      "s4",      "s5",      "s6",     "s7",        "s8",
+    "crmd",    "prmd",   "euen",    "ecfg",    "era",     "badv",   "eentry",    "tlbidx",
+    "tlbehi",  "tlbelo0","tlbelo1", "asid",    "pgdl",    "pgdh",   "save0",     "save1",
+    "save2",   "save3",  "tid",     "tcfg",    "tval",    "llbctl", "tlbrentry", "dmw0",
+    "dmw1",    "estat",  "this_pc"
+};
+
+static const char kCompareMask[DIFFTEST_NR_CSRREG] = {
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 0, 1
 };
 
 std::string resolve_ref_so_path(const std::string& cli_ref_so_path) {
@@ -47,12 +62,6 @@ std::string resolve_ref_so_path(const std::string& cli_ref_so_path) {
     }
 
     return kFallbackRefSoPath;
-}
-
-void overlay_known_dut_state(difftest_core_state_t* target, const difftest_core_state_t& dut,
-                             std::uint32_t pc) {
-    std::memcpy(target->regs.gpr, dut.regs.gpr, sizeof(target->regs.gpr));
-    target->csr.this_pc = pc;
 }
 
 }  // namespace
@@ -170,10 +179,7 @@ void Difftest::do_first_instr_commit() {
                      "difftest: warning: first commit seen before reference memory sync\n");
     }
 
-    proxy->regcpy(ref_regs_ptr_, REF_TO_DUT, REF_TO_DIFF_ALL);
-    overlay_known_dut_state(&ref, dut, dut.commit[0].pc);
-    proxy->regcpy(ref_regs_ptr_, DIFFTEST_TO_REF, DIFF_TO_REF_ALL);
-
+    proxy->regcpy(dut_regs_ptr_, DIFFTEST_TO_REF, DIFF_TO_REF_ALL);
     started_ = true;
     std::fprintf(stderr, "difftest: enabled at pc=0x%08x (core %d)\n", dut.commit[0].pc,
                  coreid_);
@@ -185,16 +191,6 @@ void Difftest::do_instr_commit(int index) {
     }
 
     const instr_commit_t& commit = dut.commit[index];
-    if (commit.skip) {
-        // Skip instructions are not executed by the reference model. Pull the
-        // current reference state, overlay the DUT-visible architectural state,
-        // then push it back so the next architectural instruction stays aligned.
-        proxy->regcpy(ref_regs_ptr_, REF_TO_DUT, REF_TO_DIFF_ALL);
-        overlay_known_dut_state(&ref, dut, commit.next_pc);
-        proxy->regcpy(ref_regs_ptr_, DIFFTEST_TO_REF, DIFF_TO_REF_ALL);
-        return;
-    }
-
     if (commit.is_TLBFILL && proxy->tlbfill_index_set != nullptr) {
         proxy->tlbfill_index_set(commit.TLBFILL_index);
     }
@@ -206,6 +202,10 @@ void Difftest::do_instr_commit(int index) {
         timer.time_val = dut.csr.tval;
         proxy->timercpy(&timer);
     }
+    if (commit.skip) {
+        proxy->regcpy(dut_regs_ptr_, DIFFTEST_TO_REF, DIFF_TO_REF_GR);
+        return;
+    }
 
     proxy->exec(1);
 }
@@ -213,7 +213,6 @@ void Difftest::do_instr_commit(int index) {
 int Difftest::step(std::uint64_t main_time) {
     (void)main_time;
     idx_commit_ = 0;
-    progress_ = false;
 
     if (!enabled()) {
         return STATE_RUNNING;
@@ -223,12 +222,8 @@ int Difftest::step(std::uint64_t main_time) {
     }
 
     while (idx_commit_ < DIFFTEST_COMMIT_WIDTH && dut.commit[idx_commit_].valid) {
-        instr_commit_t& commit = dut.commit[idx_commit_];
+        const instr_commit_t& commit = dut.commit[idx_commit_];
         progress_ = true;
-        dut.csr.this_pc = commit.pc;
-        if (commit.wen && commit.wdest != 0 && commit.wdest < 32) {
-            dut.regs.gpr[commit.wdest] = commit.wdata;
-        }
         if (state != nullptr) {
             state->record_inst(commit.pc, commit.inst, commit.wen, commit.wdest, commit.wdata,
                                commit.skip != 0);
@@ -240,6 +235,10 @@ int Difftest::step(std::uint64_t main_time) {
         return STATE_RUNNING;
     }
 
+    if (idx_commit_ > 0) {
+        dut.csr.this_pc = dut.commit[idx_commit_ - 1].pc;
+    }
+
     do_first_instr_commit();
     if (!started_) {
         for (std::uint32_t i = 0; i < idx_commit_; ++i) {
@@ -248,37 +247,104 @@ int Difftest::step(std::uint64_t main_time) {
         return STATE_RUNNING;
     }
 
-    for (std::uint32_t index = 0; index < idx_commit_; ++index) {
-        const instr_commit_t& commit = dut.commit[index];
-        do_instr_commit(index);
-        proxy->regcpy(ref_regs_ptr_, REF_TO_DUT, REF_TO_DIFF_ALL);
-
-        if (ref.csr.this_pc != commit.next_pc) {
-            std::fprintf(stderr,
-                         "difftest: pc mismatch after pc=0x%08x inst=0x%08x "
-                         "ref_next=0x%08x dut_next=0x%08x\n",
-                         commit.pc, commit.inst, ref.csr.this_pc, commit.next_pc);
-            return STATE_ABORT;
-        }
-
-        for (int i = 0; i < 32; ++i) {
-            if (dut.regs.gpr[i] != ref.regs.gpr[i]) {
-                std::fprintf(stderr,
-                             "difftest: %s(r%02d) mismatch at pc=0x%08x "
-                             "ref=0x%08x dut=0x%08x (inst=0x%08x)\n",
-                             kGregName[i], i, commit.pc, ref.regs.gpr[i], dut.regs.gpr[i],
-                             commit.inst);
-                return STATE_ABORT;
+    if (proxy->estat_sync != nullptr) {
+        for (std::uint32_t index = 0; index < idx_commit_; ++index) {
+            if (dut.commit[index].csr_rstat) {
+                proxy->estat_sync(dut.commit[index].csr_data, 0x00001fff);
             }
         }
+    }
 
+    for (std::uint32_t index = 0; index < idx_commit_; ++index) {
+        do_instr_commit(index);
         dut.commit[index].valid = 0;
-        dut.csr.this_pc = commit.next_pc;
     }
 
-    if (dut.excp.excp_valid && dut.excp.interrupt != 0 && proxy->raise_intr != nullptr) {
-        proxy->raise_intr(dut.excp.interrupt);
+    if (dut.excp.excp_valid && dut.excp.exception == 0) {
+        if (dut.excp.interrupt != 0 && proxy->raise_intr != nullptr) {
+            proxy->raise_intr(dut.excp.interrupt);
+            return STATE_RUNNING;
+        }
+        if ((dut.csr.estat & 0x3) != 0) {
+            return STATE_RUNNING;
+        }
+        std::fprintf(stderr, "difftest: warning: interrupt exception with no pending irq\n");
     }
+
+    if (proxy->store_commit != nullptr) {
+        for (std::uint32_t index = 0; index < idx_commit_; ++index) {
+            if (dut.store[index].valid) {
+                if (proxy->store_commit(dut.store[index].paddr, dut.store[index].data) != 0) {
+                    std::fprintf(stderr,
+                                 "difftest: store mismatch at pc=0x%08x paddr=0x%llx "
+                                 "vaddr=0x%llx data=0x%llx\n",
+                                 dut.commit[index].pc,
+                                 static_cast<unsigned long long>(dut.store[index].paddr),
+                                 static_cast<unsigned long long>(dut.store[index].vaddr),
+                                 static_cast<unsigned long long>(dut.store[index].data));
+                    return STATE_ABORT;
+                }
+            }
+        }
+    }
+
+    for (std::uint32_t index = 0; index < idx_commit_; ++index) {
+        if (dut.load[index].valid && ((dut.load[index].paddr & 0x00000000f8000000ULL) != 0)) {
+            proxy->regcpy(dut_regs_ptr_, DIFFTEST_TO_REF, DIFF_TO_REF_GR);
+        }
+    }
+
+    if (dut.excp.excp_valid) {
+        if (dut.excp.exception != 0) {
+            proxy->exec(1);
+        } else if (dut.excp.interrupt != 0 && proxy->raise_intr != nullptr) {
+            proxy->raise_intr(dut.excp.interrupt);
+        }
+    }
+
+    proxy->regcpy(ref_regs_ptr_, REF_TO_DUT, REF_TO_DIFF_ALL);
+
+    ref.csr.tval = dut.csr.tval;
+    if (dut.excp.excp_valid) {
+        dut.csr.this_pc = ref.csr.this_pc;
+    }
+
+    bool ecode_error = false;
+    if ((dut.csr.estat | 0x00001fffU) != (ref.csr.estat | 0x00001fffU)) {
+        std::fprintf(stderr, "difftest: warning: estat mismatch dut=0x%08x ref=0x%08x\n",
+                     dut.csr.estat, ref.csr.estat);
+        ecode_error = true;
+    }
+
+    for (int i = 0; i < DIFFTEST_NR_CSRREG; ++i) {
+        if (!kCompareMask[i]) {
+            dut_regs_ptr_[DIFFTEST_NR_GREG + i] = 0;
+            ref_regs_ptr_[DIFFTEST_NR_GREG + i] = 0;
+        }
+    }
+
+    if (ecode_error ||
+        std::memcmp(dut_regs_ptr_, ref_regs_ptr_, DIFFTEST_NR_REG * sizeof(std::uint32_t)) != 0) {
+        for (int i = 0; i < DIFFTEST_NR_REG; ++i) {
+            if (dut_regs_ptr_[i] != ref_regs_ptr_[i]) {
+                if (i < 32) {
+                    std::fprintf(stderr,
+                                 "difftest: %s(r%02d) mismatch at pc=0x%08x "
+                                 "ref=0x%08x dut=0x%08x\n",
+                                 kRegName[i], i, ref.csr.this_pc, ref_regs_ptr_[i],
+                                 dut_regs_ptr_[i]);
+                } else {
+                    std::fprintf(stderr,
+                                 "difftest: %s mismatch at pc=0x%08x "
+                                 "ref=0x%08x dut=0x%08x\n",
+                                 kRegName[i], ref.csr.this_pc, ref_regs_ptr_[i],
+                                 dut_regs_ptr_[i]);
+                }
+            }
+        }
+        return STATE_ABORT;
+    }
+
     if (dut.trap.valid) {
         sim_over_ = true;
         return STATE_END;
@@ -288,12 +354,22 @@ int Difftest::step(std::uint64_t main_time) {
 }
 
 void Difftest::display() {
-    std::fprintf(stderr, "\n============== DUT Shadow GPR ==============\n");
+    std::fprintf(stderr, "\n============== DUT Regs ==============\n");
     for (int i = 0; i < 32; ++i) {
-        std::fprintf(stderr, "%s(r%2d): 0x%08x%s", kGregName[i], i, dut.regs.gpr[i],
+        std::fprintf(stderr, "%s(r%2d): 0x%08x%s", kRegName[i], i, dut.regs.gpr[i],
                      (i % 4 == 3) ? "\n" : " ");
     }
     std::fprintf(stderr, "pc: 0x%08x\n", dut.csr.this_pc);
+    std::fprintf(stderr, "CRMD: 0x%08x,    PRMD: 0x%08x,   EUEN: 0x%08x\n",
+                 dut.csr.crmd, dut.csr.prmd, dut.csr.euen);
+    std::fprintf(stderr, "ECFG: 0x%08x,   ESTAT: 0x%08x,    ERA: 0x%08x\n",
+                 dut.csr.ecfg, dut.csr.estat, dut.csr.era);
+    std::fprintf(stderr, "BADV: 0x%08x,  EENTRY: 0x%08x, LLBCTL: 0x%08x\n",
+                 dut.csr.badv, dut.csr.eentry, dut.csr.llbctl);
+    std::fprintf(stderr, "INDEX: 0x%08x, TLBEHI: 0x%08x, TLBELO0: 0x%08x, TLBELO1: 0x%08x\n",
+                 dut.csr.tlbidx, dut.csr.tlbehi, dut.csr.tlbelo0, dut.csr.tlbelo1);
+    std::fprintf(stderr, "ASID: 0x%08x, TLBRENTRY: 0x%08x, DMW0: 0x%08x, DMW1: 0x%08x\n",
+                 dut.csr.asid, dut.csr.tlbrentry, dut.csr.dmw0, dut.csr.dmw1);
 
     if (enabled() && proxy->isa_reg_display != nullptr) {
         std::fprintf(stderr, "\n============== REF Regs ==============\n");
