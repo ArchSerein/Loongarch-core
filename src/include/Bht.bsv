@@ -4,7 +4,6 @@ import Ehr::*;
 
 interface Bht#(numeric type indexSize);
   method  Bool    predict(Addr pc);
-  method  Addr    ppcDP(Addr pc, Addr targetPC);
   method  Action  update(Addr pc, Bool taken);
 endinterface
 
@@ -40,17 +39,5 @@ module mkBht(Bht#(indexSize)) provisos(Add#(a__, indexSize, 32));
     Bit#(indexSize) index = getBhtIndex(pc);
     let dpBits = getBhtEntry(index, 0);
     return (dpBits[1] == 1'b1);
-  endmethod
-
-  method Addr ppcDP(Addr pc, Addr targetPC);
-    Bit#(indexSize) index = getBhtIndex(pc);
-    let dpBits = getBhtEntry(index, 0);
-
-    Bool direction = (dpBits == 2'b00 || dpBits == 2'b01) ? False : True;
-    if (direction) begin
-      return targetPC;
-    end else begin
-      return pc + 4;
-    end
   endmethod
 endmodule

@@ -33,7 +33,7 @@ interface Core;
 endinterface
 
 module mkCore(Core);
-  Ehr#(4, Addr)         pcReg <- mkEhr(START_PC);
+  Ehr#(4, Addr)         pcReg <- mkEhr(startpc);
   CsrFile                csrf <- mkCsrFile;
   RFile                    rf <- mkRFile;
   ICache               iCache <- mkICache;
@@ -61,15 +61,16 @@ module mkCore(Core);
   rule doFetch (csrf.started);
     Addr predPc = btb.predPc(pcReg[0]);
     Bool bhtPred = bht.predict(pcReg[0]);
+    Addr dnpc = bhtPred ? predPc : pcReg[0] + 4;
     ExcpInfo fExcp = mkNoExcp;
     if (pcReg[0][1:0] != 2'b00) begin
       fExcp = mkExcp(`ECODE_ADE, `ESUBCODE_ADEF, pcReg[0]);
     end
 
     iCache.req(pcReg[0]);
-    pcReg[0] <= predPc;
+    pcReg[0] <= dnpc;
 
-    f2dFifo.enq(F2D{pc: pcReg[0], predPc: predPc, bhtPred: bhtPred, excp: fExcp});
+    f2dFifo.enq(F2D{pc: pcReg[0], predPc: dnpc, excp: fExcp});
   endrule
 
   rule doDecode (csrf.started);
@@ -84,8 +85,8 @@ module mkCore(Core);
       else if (dInst.iType == Break) dExcp = mkExcp(`ECODE_BRK, `ESUBCODE_NONE, fetchPkt.pc);
     end
 
-    d2rFifo.enq(D2R{pc: fetchPkt.pc, predPc: fetchPkt.predPc, bhtPred: fetchPkt.bhtPred, dInst: dInst,
-      `IFDEF_DIFFTEST(inst: inst,)
+    d2rFifo.enq(D2R{pc: fetchPkt.pc, predPc: fetchPkt.predPc, dInst: dInst,
+      `IFDEF_DIFFTEST(inst: inst),
       excp: dExcp});
     f2dFifo.deq();
   endrule
@@ -99,8 +100,8 @@ module mkCore(Core);
       Data    rVal2 = rf.rd2(fromMaybe(?, rInst.src2));
       Data    csrVal = csrf.rd(fromMaybe(?, rInst.csr));
 
-      r2eFifo.enq(R2E{pc: decodePkt.pc, predPc: decodePkt.predPc, bhtPred: decodePkt.bhtPred,
-        `IFDEF_DIFFTEST(inst: decodePkt.inst,)
+      r2eFifo.enq(R2E{pc: decodePkt.pc, predPc: decodePkt.predPc,
+        `IFDEF_DIFFTEST(inst: decodePkt.inst),
         rVal1: rVal1,
         rVal2: rVal2, csrVal: csrVal,
         rInst: rInst, excp: decodePkt.excp});
@@ -184,9 +185,7 @@ module mkCore(Core);
       end
 
       e2mFifo.enq(E2M{pc: rrfPkt.pc,
-        `ifdef CONFIG_DIFFTEST
-        inst: rrfPkt.inst,
-        `endif
+        `IFDEF_DIFFTEST(inst: rrfPkt.inst),
         excp: eExcp,
         mask: rrfPkt.rInst.mask,
         eInst: tagged Valid eInst});
@@ -230,12 +229,12 @@ module mkCore(Core);
       endcase
 
       m2wFifo.enq(M2W{pc: execPkt.pc,
-        `IFDEF_DIFFTEST(inst: execPkt.inst,)
+        `IFDEF_DIFFTEST(inst: execPkt.inst),
         excp: execPkt.excp,
         mInst: tagged Valid eInst});
     end else begin
       m2wFifo.enq(M2W{pc: execPkt.pc,
-        `IFDEF_DIFFTEST(inst: execPkt.inst,)
+        `IFDEF_DIFFTEST(inst: execPkt.inst),
         excp: execPkt.excp,
         mInst: tagged Invalid});
     end
@@ -278,7 +277,7 @@ module mkCore(Core);
       end
 
       $fwrite(stdout, "commit: pc->%x, inst->%x\n", memPkt.pc, memPkt.inst);
-      `ifdef CONFIG_DIFFTEST
+      `IFDEF_DIFFTEST(
       Addr commitNextPc = mInst.mispredict ? mInst.addr : (memPkt.pc + 4);
       diffCommitFifo.enq(DiffCommit{
         pc: memPkt.pc,
@@ -287,8 +286,7 @@ module mkCore(Core);
         wen: wen,
         wdest: fromMaybe(0, mInst.dst),
         wdata: mInst.data
-      });
-      `endif
+      }));
     end
     sb.remove();
   endrule
@@ -296,14 +294,14 @@ module mkCore(Core);
   method ActionValue#(CpuToHostData) cpuToHost = csrf.cpuToHost;
   method Bool cpuToHostValid = csrf.cpuToHostValid;
 
-  `ifdef CONFIG_DIFFTEST
+  `IFDEF_DIFFTEST(
   method ActionValue#(DiffCommit) diffCommit if (diffCommitFifo.notEmpty);
     let ret = diffCommitFifo.first;
     diffCommitFifo.deq;
     return ret;
   endmethod
   method Bool diffCommitValid = diffCommitFifo.notEmpty;
-  `endif
+  )
 
   // TODO: this method will be remove
   method Action hostToCpu(Addr startpc) if (!csrf.started);
