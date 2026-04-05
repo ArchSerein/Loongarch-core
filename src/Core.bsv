@@ -70,125 +70,139 @@ module mkCore(Core);
     iCache.req(pcReg[0]);
     pcReg[0] <= dnpc;
 
-    f2dFifo.enq(F2D{pc: pcReg[0], predPc: dnpc, excp: fExcp});
+    f2dFifo.enq(F2D{pc: pcReg[0], predPc: dnpc, fEpoch: exeEpoch[0], excp: fExcp});
   endrule
 
   rule doDecode (csrf.started);
     let inst <- iCache.resp();
-    DecodedInst dInst = decode(inst);
-
     let fetchPkt = f2dFifo.first();
-    ExcpInfo dExcp = fetchPkt.excp;
-    if (!dExcp.valid) begin
-      if (dInst.iType == Unsupported) dExcp = mkExcp(`ECODE_INE, `ESUBCODE_NONE, fetchPkt.pc);
-      else if (dInst.iType == Syscall) dExcp = mkExcp(`ECODE_SYS, `ESUBCODE_NONE, fetchPkt.pc);
-      else if (dInst.iType == Break) dExcp = mkExcp(`ECODE_BRK, `ESUBCODE_NONE, fetchPkt.pc);
-    end
-
-    d2rFifo.enq(D2R{pc: fetchPkt.pc, predPc: fetchPkt.predPc, dInst: dInst,
-      `IFDEF_DIFFTEST(inst: inst),
-      excp: dExcp});
     f2dFifo.deq();
+
+    if (fetchPkt.fEpoch != exeEpoch[1]) begin
+      // Epoch mismatch: instruction was fetched before redirect, discard it
+    end else begin
+      DecodedInst dInst = decode(inst);
+      ExcpInfo dExcp = fetchPkt.excp;
+      if (!dExcp.valid) begin
+        if (dInst.iType == Unsupported) dExcp = mkExcp(`ECODE_INE, `ESUBCODE_NONE, fetchPkt.pc);
+        else if (dInst.iType == Syscall) dExcp = mkExcp(`ECODE_SYS, `ESUBCODE_NONE, fetchPkt.pc);
+        else if (dInst.iType == Break) dExcp = mkExcp(`ECODE_BRK, `ESUBCODE_NONE, fetchPkt.pc);
+      end
+
+      d2rFifo.enq(D2R{pc: fetchPkt.pc, predPc: fetchPkt.predPc, dEpoch: fetchPkt.fEpoch, dInst: dInst,
+        `IFDEF_DIFFTEST(inst: inst,)
+        excp: dExcp});
+    end
   endrule
 
   rule doRrf (csrf.started);
     let decodePkt = d2rFifo.first();
-    let rInst = decodePkt.dInst;
 
-    if (!sb.search1(rInst.src1) && !sb.search2(rInst.src2)) begin
-      Data    rVal1 = rf.rd1(fromMaybe(?, rInst.src1));
-      Data    rVal2 = rf.rd2(fromMaybe(?, rInst.src2));
-      Data    csrVal = csrf.rd(fromMaybe(?, rInst.csr));
-
-      r2eFifo.enq(R2E{pc: decodePkt.pc, predPc: decodePkt.predPc,
-        `IFDEF_DIFFTEST(inst: decodePkt.inst),
-        rVal1: rVal1,
-        rVal2: rVal2, csrVal: csrVal,
-        rInst: rInst, excp: decodePkt.excp});
-      sb.insert(rInst.dst);
+    if (decodePkt.dEpoch != exeEpoch[1]) begin
+      // Epoch mismatch: discard stale instruction
       d2rFifo.deq();
+    end else begin
+      let rInst = decodePkt.dInst;
+      if (!sb.search1(rInst.src1) && !sb.search2(rInst.src2)) begin
+        Data    rVal1 = rf.rd1(fromMaybe(?, rInst.src1));
+        Data    rVal2 = rf.rd2(fromMaybe(?, rInst.src2));
+        Data    csrVal = csrf.rd(fromMaybe(?, rInst.csr));
+
+        r2eFifo.enq(R2E{pc: decodePkt.pc, predPc: decodePkt.predPc, rEpoch: decodePkt.dEpoch,
+          `IFDEF_DIFFTEST(inst: decodePkt.inst,)
+          rVal1: rVal1,
+          rVal2: rVal2, csrVal: csrVal,
+          rInst: rInst, excp: decodePkt.excp});
+        sb.insert(rInst.dst);
+        d2rFifo.deq();
+      end
     end
   endrule
 
   rule doExec (csrf.started);
     let rrfPkt = r2eFifo.first();
-    Bool doNormalExec = True;
 
-    if (isValid(rrfPkt.rInst.muldivFunc)) begin
-      let mdFunc = fromMaybe(?, rrfPkt.rInst.muldivFunc);
-      Bool is_mul = (mdFunc == MulW || mdFunc == MulhW || mdFunc == MulhWu);
-      Bool is_div = (mdFunc == DivW || mdFunc == DivWu || mdFunc == ModW || mdFunc == ModWu);
-      Bool is_signed = (mdFunc == MulW || mdFunc == MulhW || mdFunc == DivW || mdFunc == ModW);
-
-      if (is_mul) begin
-        if (!mulInFlight) begin
-          mulUnit.start(is_signed, rrfPkt.rVal1, rrfPkt.rVal2);
-          mulInFlight <= True;
-          doNormalExec = False;
-        end else if (!mulUnit.finish) begin
-          doNormalExec = False;
-        end else begin
-          mulInFlight <= False;
-        end
-      end else if (is_div) begin
-        if (!divInFlight) begin
-          divUnit.start(is_signed, rrfPkt.rVal1, rrfPkt.rVal2);
-          divInFlight <= True;
-          doNormalExec = False;
-        end else if (!divUnit.finish) begin
-          doNormalExec = False;
-        end else begin
-          divInFlight <= False;
-        end
-      end
-    end
-
-    if (doNormalExec) begin
+    if (rrfPkt.rEpoch != exeEpoch[2]) begin
+      // Epoch mismatch: discard stale instruction
       r2eFifo.deq();
-      ExecInst eInst = exec(rrfPkt.rInst, rrfPkt.rVal1, rrfPkt.rVal2, rrfPkt.pc,
-        rrfPkt.predPc, rrfPkt.csrVal);
-      ExcpInfo eExcp = rrfPkt.excp;
+      sb.remove();
+    end else begin
+      Bool doNormalExec = True;
 
       if (isValid(rrfPkt.rInst.muldivFunc)) begin
         let mdFunc = fromMaybe(?, rrfPkt.rInst.muldivFunc);
-        case (mdFunc)
-          MulW: eInst.data = truncate(mulUnit.result());
-          MulhW, MulhWu: eInst.data = truncateLSB(mulUnit.result());
-          DivW, DivWu: eInst.data = truncate(divUnit.result());
-          ModW, ModWu: eInst.data = truncateLSB(divUnit.result());
-        endcase
+        Bool is_mul = (mdFunc == MulW || mdFunc == MulhW || mdFunc == MulhWu);
+        Bool is_div = (mdFunc == DivW || mdFunc == DivWu || mdFunc == ModW || mdFunc == ModWu);
+        Bool is_signed = (mdFunc == MulW || mdFunc == MulhW || mdFunc == DivW || mdFunc == ModW);
+
+        if (is_mul) begin
+          if (!mulInFlight) begin
+            mulUnit.start(is_signed, rrfPkt.rVal1, rrfPkt.rVal2);
+            mulInFlight <= True;
+            doNormalExec = False;
+          end else if (!mulUnit.finish) begin
+            doNormalExec = False;
+          end else begin
+            mulInFlight <= False;
+          end
+        end else if (is_div) begin
+          if (!divInFlight) begin
+            divUnit.start(is_signed, rrfPkt.rVal1, rrfPkt.rVal2);
+            divInFlight <= True;
+            doNormalExec = False;
+          end else if (!divUnit.finish) begin
+            doNormalExec = False;
+          end else begin
+            divInFlight <= False;
+          end
+        end
       end
 
-      if (eInst.iType == Ertn) begin
-        Addr era <- csrf.returnFromException;
-        eInst.mispredict = True;
-        eInst.addr = era;
-      end
+      if (doNormalExec) begin
+        r2eFifo.deq();
+        ExecInst eInst = exec(rrfPkt.rInst, rrfPkt.rVal1, rrfPkt.rVal2, rrfPkt.pc,
+          rrfPkt.predPc, rrfPkt.csrVal);
+        ExcpInfo eExcp = rrfPkt.excp;
 
-      if (eInst.mispredict) begin
-        exeEpoch[2] <= !exeEpoch[2];
-        pcReg[2] <= eInst.addr;
-        btb.update(rrfPkt.pc, eInst.addr);
-      end else begin
-        btb.update(rrfPkt.pc, rrfPkt.predPc);
-      end
-      bht.update(rrfPkt.pc, eInst.brTaken);
+        if (isValid(rrfPkt.rInst.muldivFunc)) begin
+          let mdFunc = fromMaybe(?, rrfPkt.rInst.muldivFunc);
+          case (mdFunc)
+            MulW: eInst.data = truncate(mulUnit.result());
+            MulhW, MulhWu: eInst.data = truncateLSB(mulUnit.result());
+            DivW, DivWu: eInst.data = truncate(divUnit.result());
+            ModW, ModWu: eInst.data = truncateLSB(divUnit.result());
+          endcase
+        end
 
-      if (!eExcp.valid && (eInst.iType == Ld || eInst.iType == St ||
-          eInst.iType == Ll || eInst.iType == Sc)) begin
-        ByteMask m = fromMaybe(5'b11111, rrfPkt.rInst.mask);
-        Bit#(4) rawEn = m[3:0];
-        Bool exAle = False;
-        if (rawEn == 4'b0011) exAle = (eInst.addr[0] != 1'b0);
-        else if (rawEn == 4'b1111) exAle = (eInst.addr[1:0] != 2'b00);
-        if (exAle) eExcp = mkExcp(`ECODE_ALE, `ESUBCODE_NONE, eInst.addr);
-      end
+        if (eInst.iType == Ertn) begin
+          Addr era <- csrf.returnFromException;
+          eInst.mispredict = True;
+          eInst.addr = era;
+        end
 
-      e2mFifo.enq(E2M{pc: rrfPkt.pc,
-        `IFDEF_DIFFTEST(inst: rrfPkt.inst),
-        excp: eExcp,
-        mask: rrfPkt.rInst.mask,
-        eInst: tagged Valid eInst});
+        if (eInst.mispredict) begin
+          exeEpoch[2] <= !exeEpoch[2];
+          pcReg[2] <= eInst.addr;
+          btb.update(rrfPkt.pc, eInst.addr);
+        end
+        bht.update(rrfPkt.pc, eInst.brTaken);
+
+        if (!eExcp.valid && (eInst.iType == Ld || eInst.iType == St ||
+            eInst.iType == Ll || eInst.iType == Sc)) begin
+          ByteMask m = fromMaybe(5'b11111, rrfPkt.rInst.mask);
+          Bit#(4) rawEn = m[3:0];
+          Bool exAle = False;
+          if (rawEn == 4'b0011) exAle = (eInst.addr[0] != 1'b0);
+          else if (rawEn == 4'b1111) exAle = (eInst.addr[1:0] != 2'b00);
+          if (exAle) eExcp = mkExcp(`ECODE_ALE, `ESUBCODE_NONE, eInst.addr);
+        end
+
+        e2mFifo.enq(E2M{pc: rrfPkt.pc,
+          `IFDEF_DIFFTEST(inst: rrfPkt.inst,)
+          excp: eExcp,
+          mask: rrfPkt.rInst.mask,
+          eInst: tagged Valid eInst});
+      end
     end
   endrule
 

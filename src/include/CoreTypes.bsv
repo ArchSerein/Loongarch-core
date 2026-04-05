@@ -5,12 +5,14 @@ import ProcTypes::*;
 typedef struct {
   Addr        pc;
   Addr        predPc;
+  Bool        fEpoch;
   ExcpInfo    excp;
 }   F2D deriving(Bits, Eq);
 
 typedef struct {
   Addr        pc;
   Addr        predPc;
+  Bool        dEpoch;
   `IFDEF_DIFFTEST(Instruction inst);
   DecodedInst dInst;
   ExcpInfo    excp;
@@ -19,6 +21,7 @@ typedef struct {
 typedef struct {
   Addr        pc;
   Addr        predPc;
+  Bool        rEpoch;
   `IFDEF_DIFFTEST(Instruction inst);
   Data        rVal1;
   Data        rVal2;
