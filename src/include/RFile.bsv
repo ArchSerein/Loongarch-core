@@ -2,11 +2,13 @@ import Types::*;
 import ProcTypes::*;
 import Vector::*;
 import Ehr::*;
+`include "Autoconf.bsv"
 
 interface RFile;
   method Action wr(RIndx rindx, Data data);
   method Data rd1(RIndx rindx);
   method Data rd2(RIndx rindx);
+  `IFDEF_DIFFTEST(method DiffArchGRegState diffSnapshot;)
 endinterface
 
 (* synthesize *)
@@ -25,6 +27,16 @@ module mkRFile(RFile);
 
   method Data rd1(RIndx rindx) = read(rindx);
   method Data rd2(RIndx rindx) = read(rindx);
+
+  `IFDEF_DIFFTEST(
+  method DiffArchGRegState diffSnapshot;
+    Vector#(32, Data) snap = newVector;
+    for (Integer i = 0; i < 32; i = i + 1) begin
+      snap[i] = rfile[i];
+    end
+    return DiffArchGRegState{gpr: snap};
+  endmethod
+  )
 endmodule
 
 (* synthesize *)
@@ -43,4 +55,14 @@ module mkBypassRFile(RFile);
 
   method Data rd1(RIndx rindx) = read(rindx);
   method Data rd2(RIndx rindx) = read(rindx);
+
+  `IFDEF_DIFFTEST(
+  method DiffArchGRegState diffSnapshot;
+    Vector#(32, Data) snap = newVector;
+    for (Integer i = 0; i < 32; i = i + 1) begin
+      snap[i] = rfile[i][1];
+    end
+    return DiffArchGRegState{gpr: snap};
+  endmethod
+  )
 endmodule

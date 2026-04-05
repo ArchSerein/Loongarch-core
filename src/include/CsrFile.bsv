@@ -4,6 +4,7 @@ import Ehr::*;
 import ConfigReg::*;
 import Fifo::*;
 `include "CsrAddr.bsv"
+`include "Autoconf.bsv"
 
 interface CsrFile;
   method Action start;
@@ -11,6 +12,7 @@ interface CsrFile;
   method Bool started;
   method Bool hasInterrupt;
   method Data rd(CsrIndx idx);
+  `IFDEF_DIFFTEST(method DiffArchCsrState diffSnapshot;)
   method Action wr(Maybe#(CsrIndx) idx, Data val);
   method ActionValue#(Addr) raiseException(Bit#(6) ecode, Bit#(9) esubcode, Addr pc);
   method ActionValue#(Addr) returnFromException;
@@ -138,6 +140,39 @@ module mkCsrFile(CsrFile);
     endcase
     return res;
   endmethod
+
+  `IFDEF_DIFFTEST(
+  method DiffArchCsrState diffSnapshot;
+    return DiffArchCsrState{
+      crmd: csr_crmd,
+      prmd: csr_prmd,
+      euen: csr_euen,
+      ecfg: csr_ecfg,
+      era: csr_era,
+      badv: csr_badv,
+      eentry: csr_eentry,
+      tlbidx: csr_tlbidx,
+      tlbehi: csr_tlbehi,
+      tlbelo0: csr_tlbelo0,
+      tlbelo1: csr_tlbelo1,
+      asid: csr_asid,
+      pgdl: csr_pgdl,
+      pgdh: csr_pgdh,
+      save0: csr_save0,
+      save1: csr_save1,
+      save2: csr_save2,
+      save3: csr_save3,
+      tid: csr_tid,
+      tcfg: csr_tcfg,
+      tval: csr_tval[1],
+      llbctl: {29'b0, pack(llbctlKlo), 1'b0, pack(llbit)},
+      tlbrentry: csr_tlbrentry,
+      dmw0: csr_dmw0,
+      dmw1: csr_dmw1,
+      estat: csr_estat | (timerInt[1] ? 32'h00000800 : 0)
+    };
+  endmethod
+  )
 
   method Action wr(Maybe#(CsrIndx) csrIdx, Data val);
     if (csrIdx matches tagged Valid .idx) begin
