@@ -1,26 +1,59 @@
 #include "difftest.hpp"
 
-#include <cassert>
-#include <cerrno>
-#include <cstring>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <dlfcn.h>
-#include <memory>
-#include <unistd.h>
-
 #include <string>
+#include <unistd.h>
 
 namespace {
 
-static const char* kDefaultRefSoPath =
+struct la32_timer {
+    std::uint32_t counter_id = 0;
+    std::uint32_t stable_counter_l = 0;
+    std::uint32_t stable_counter_h = 0;
+    std::uint32_t time_val = 0;
+};
+
+static const char* const kFallbackRefSoPath =
     "/root/Loongarch-core/chiplab/toolchains/nemu/la32r-nemu-interpreter-so";
 
-static const char* kGregName[32] = {
+static const char* const kGregName[32] = {
     "r0", "ra", "tp", "sp", "a0", "a1", "a2", "a3",
     "a4", "a5", "a6", "a7", "t0", "t1", "t2", "t3",
     "t4", "t5", "t6", "t7", "t8", "x",  "fp", "s0",
     "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8",
 };
+
+std::string resolve_ref_so_path(const std::string& cli_ref_so_path) {
+    if (!cli_ref_so_path.empty()) {
+        return cli_ref_so_path;
+    }
+
+    const char* env_ref_so = std::getenv("DIFFTEST_REF_SO");
+    if (env_ref_so != nullptr && env_ref_so[0] != '\0') {
+        return env_ref_so;
+    }
+
+    const char* user = std::getenv("USER");
+    if (user != nullptr && user[0] != '\0') {
+        std::string workspace_ref_so =
+            std::string("/home/") + user +
+            "/loong-arch/LoongArch/chiplab/toolchains/nemu/la32r-nemu-interpreter-so";
+        if (access(workspace_ref_so.c_str(), F_OK) == 0) {
+            return workspace_ref_so;
+        }
+    }
+
+    return kFallbackRefSoPath;
+}
+
+void overlay_known_dut_state(difftest_core_state_t* target, const difftest_core_state_t& dut,
+                             std::uint32_t pc) {
+    std::memcpy(target->regs.gpr, dut.regs.gpr, sizeof(target->regs.gpr));
+    target->csr.this_pc = pc;
+}
 
 }  // namespace
 
@@ -39,11 +72,7 @@ void* NemuProxy::load_symbol(const char* symbol_name, bool required) {
 
 NemuProxy::NemuProxy(int coreid, const std::string& ref_so_path) {
     (void)coreid;
-    if (!ref_so_path.empty()) {
-        ref_so_path_ = ref_so_path;
-    } else {
-        ref_so_path_ = kDefaultRefSoPath;
-    }
+    ref_so_path_ = resolve_ref_so_path(ref_so_path);
 
     if (access(ref_so_path_.c_str(), F_OK) != 0) {
         std::fprintf(
@@ -59,8 +88,8 @@ NemuProxy::NemuProxy(int coreid, const std::string& ref_so_path) {
 #endif
     handle_ = dlopen(ref_so_path_.c_str(), flags);
     if (handle_ == nullptr) {
-        std::fprintf(stderr, "difftest: dlopen(%s) failed: %s\n",
-                     ref_so_path_.c_str(), dlerror());
+        std::fprintf(stderr, "difftest: dlopen(%s) failed: %s\n", ref_so_path_.c_str(),
+                     dlerror());
         return;
     }
 
@@ -129,14 +158,9 @@ void Difftest::load_memory_image(const void* image, std::size_t nbytes, std::uin
 }
 
 void Difftest::do_first_instr_commit() {
-    if (!enabled() || started_ || idx_commit_ == 0) {
+    if (!enabled() || started_ || idx_commit_ == 0 || !dut.commit[0].valid) {
         return;
     }
-
-    if (!dut.commit[0].valid) {
-        return;
-    }
-
     if (dut.commit[0].pc != first_inst_pc_) {
         return;
     }
@@ -145,30 +169,44 @@ void Difftest::do_first_instr_commit() {
         std::fprintf(stderr,
                      "difftest: warning: first commit seen before reference memory sync\n");
     }
-    proxy->regcpy(dut_regs_ptr_, DIFFTEST_TO_REF, DIFF_TO_REF_GR);
+
+    proxy->regcpy(ref_regs_ptr_, REF_TO_DUT, REF_TO_DIFF_ALL);
+    overlay_known_dut_state(&ref, dut, dut.commit[0].pc);
+    proxy->regcpy(ref_regs_ptr_, DIFFTEST_TO_REF, DIFF_TO_REF_ALL);
+
     started_ = true;
-    std::fprintf(stderr, "difftest: enabled at pc=0x%08x (core %d)\n", dut.commit[0].pc, coreid_);
+    std::fprintf(stderr, "difftest: enabled at pc=0x%08x (core %d)\n", dut.commit[0].pc,
+                 coreid_);
 }
 
 void Difftest::do_instr_commit(int index) {
     if (!enabled()) {
         return;
     }
-    if (dut.commit[index].skip) {
-        // For skipped instructions (e.g., MMIO), we must sync the DUT's
-        // architectural state to the reference model so they stay in sync.
-        // 1. Sync GPR state from DUT to reference
-        proxy->regcpy(dut_regs_ptr_, DIFFTEST_TO_REF, DIFF_TO_REF_GR);
-        // 2. Sync PC: advance REF's PC to the DUT's next_pc.
-        //    We use regcpy with DIFF_TO_REF_ALL to sync both GPR and PC/CSR,
-        //    ensuring the reference model continues from the correct address.
-        dut.csr.this_pc = dut.commit[index].next_pc;
-        proxy->regcpy(reinterpret_cast<std::uint32_t*>(&dut), DIFFTEST_TO_REF, DIFF_TO_REF_ALL);
+
+    const instr_commit_t& commit = dut.commit[index];
+    if (commit.skip) {
+        // Skip instructions are not executed by the reference model. Pull the
+        // current reference state, overlay the DUT-visible architectural state,
+        // then push it back so the next architectural instruction stays aligned.
+        proxy->regcpy(ref_regs_ptr_, REF_TO_DUT, REF_TO_DIFF_ALL);
+        overlay_known_dut_state(&ref, dut, commit.next_pc);
+        proxy->regcpy(ref_regs_ptr_, DIFFTEST_TO_REF, DIFF_TO_REF_ALL);
         return;
     }
-    if (dut.commit[index].is_TLBFILL && proxy->tlbfill_index_set != nullptr) {
-        proxy->tlbfill_index_set(dut.commit[index].TLBFILL_index);
+
+    if (commit.is_TLBFILL && proxy->tlbfill_index_set != nullptr) {
+        proxy->tlbfill_index_set(commit.TLBFILL_index);
     }
+    if (commit.is_CNTinst && proxy->timercpy != nullptr) {
+        la32_timer timer;
+        timer.counter_id = dut.csr.tid;
+        timer.stable_counter_l = static_cast<std::uint32_t>(commit.timer_64_value);
+        timer.stable_counter_h = static_cast<std::uint32_t>(commit.timer_64_value >> 32);
+        timer.time_val = dut.csr.tval;
+        proxy->timercpy(&timer);
+    }
+
     proxy->exec(1);
 }
 
@@ -185,14 +223,15 @@ int Difftest::step(std::uint64_t main_time) {
     }
 
     while (idx_commit_ < DIFFTEST_COMMIT_WIDTH && dut.commit[idx_commit_].valid) {
-        instr_commit_t& c = dut.commit[idx_commit_];
+        instr_commit_t& commit = dut.commit[idx_commit_];
         progress_ = true;
-        dut.csr.this_pc = c.pc;
-        if (c.wen && c.wdest != 0 && c.wdest < 32) {
-            dut.regs.gpr[c.wdest] = c.wdata;
+        dut.csr.this_pc = commit.pc;
+        if (commit.wen && commit.wdest != 0 && commit.wdest < 32) {
+            dut.regs.gpr[commit.wdest] = commit.wdata;
         }
         if (state != nullptr) {
-            state->record_inst(c.pc, c.inst, c.wen, c.wdest, c.wdata, c.skip != 0);
+            state->record_inst(commit.pc, commit.inst, commit.wen, commit.wdest, commit.wdata,
+                               commit.skip != 0);
         }
         ++idx_commit_;
     }
@@ -210,21 +249,31 @@ int Difftest::step(std::uint64_t main_time) {
     }
 
     for (std::uint32_t index = 0; index < idx_commit_; ++index) {
+        const instr_commit_t& commit = dut.commit[index];
         do_instr_commit(index);
-        proxy->regcpy(ref_regs_ptr_, REF_TO_DUT, REF_TO_DIFF_GR);
-        ref.csr.this_pc = dut.commit[index].pc;
+        proxy->regcpy(ref_regs_ptr_, REF_TO_DUT, REF_TO_DIFF_ALL);
+
+        if (ref.csr.this_pc != commit.next_pc) {
+            std::fprintf(stderr,
+                         "difftest: pc mismatch after pc=0x%08x inst=0x%08x "
+                         "ref_next=0x%08x dut_next=0x%08x\n",
+                         commit.pc, commit.inst, ref.csr.this_pc, commit.next_pc);
+            return STATE_ABORT;
+        }
 
         for (int i = 0; i < 32; ++i) {
             if (dut.regs.gpr[i] != ref.regs.gpr[i]) {
                 std::fprintf(stderr,
                              "difftest: %s(r%02d) mismatch at pc=0x%08x "
                              "ref=0x%08x dut=0x%08x (inst=0x%08x)\n",
-                             kGregName[i], i, ref.csr.this_pc, ref.regs.gpr[i], dut.regs.gpr[i],
-                             dut.commit[index].inst);
+                             kGregName[i], i, commit.pc, ref.regs.gpr[i], dut.regs.gpr[i],
+                             commit.inst);
                 return STATE_ABORT;
             }
         }
+
         dut.commit[index].valid = 0;
+        dut.csr.this_pc = commit.next_pc;
     }
 
     if (dut.excp.excp_valid && dut.excp.interrupt != 0 && proxy->raise_intr != nullptr) {
