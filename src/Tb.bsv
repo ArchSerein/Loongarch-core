@@ -71,7 +71,7 @@ endrule
 `ifdef CONFIG_DIFFTEST
 rule drainDiffCommit (started && core.diffCommitValid);
   let c <- core.diffCommit;
-  indication.difftest_instr_commit(c.pc, c.nextPc, c.inst, pack(c.wen), c.wdest, c.wdata);
+  indication.difftest_instr_commit(c.pc, c.nextPc, c.inst, pack(c.wen), c.wdest, c.wdata, pack(c.skip));
 endrule
 `endif
 
@@ -111,7 +111,8 @@ module mkTb(SimTop);
       Instruction inst,
       Bit#(1) wen,
       Bit#(5) wdest,
-      Data wdata);
+      Data wdata,
+      Bit#(1) skip);
     noAction;
   endmethod
 endinterface;

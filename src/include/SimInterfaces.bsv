@@ -11,7 +11,8 @@ interface SimIndication;
     Instruction inst,
     Bit#(1) wen,
     Bit#(5) wdest,
-    Data wdata
+    Data wdata,
+    Bit#(1) skip
   );
 endinterface
 

@@ -20,6 +20,7 @@ typedef struct {
   Bool wen;
   Bit#(5) wdest;
   Data wdata;
+  Bool skip;  // True if this instruction should skip difftest (e.g., MMIO)
 } DiffCommit deriving(Bits, Eq, FShow);
 
 typedef Bit#(5) RIndx;

@@ -115,7 +115,8 @@ public:
   }
 
   void difftest_instr_commit(std::uint32_t pc, std::uint32_t next_pc, std::uint32_t inst,
-                             std::uint8_t wen, std::uint8_t wdest, std::uint32_t wdata) override {
+                             std::uint8_t wen, std::uint8_t wdest, std::uint32_t wdata,
+                             std::uint8_t skip) override {
     if (!g_run || difftest == nullptr || !difftest->enabled()) {
       return;
     }
@@ -125,7 +126,7 @@ public:
     commit->pc = pc;
     commit->next_pc = next_pc;
     commit->inst = inst;
-    commit->skip = is_skip_difftest;
+    commit->skip = skip;
     commit->wen = (wen != 0) ? 1 : 0;
     commit->wdest = wdest;
     commit->wdata = wdata;
@@ -138,24 +139,22 @@ public:
       g_exit_code = 3;
       g_run = 0;
     }
-    is_skip_difftest = false;
   }
 
 private:
   Memory& mem;
   Difftest* difftest = nullptr;
   std::uint64_t diff_main_time = 0;
-  std::uint8_t  is_skip_difftest = false;
+
   void check_memory_bound(std::uint32_t addr, bool is_write) {
     if ((addr >> 16) == 0xbfaf) {
       auto ret = mem.isDeviceAddress(addr & 0xffff);
       if (!ret) goto bad;
-      else is_skip_difftest = 1;
       goto good;
     } else if ((addr >> 24) == 0x1c) {
       goto good;
     } else if ((addr >> 24) == 0x00) {
-        goto good;
+      goto good;
     } else goto bad;
   good:
     return;

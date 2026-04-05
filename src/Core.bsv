@@ -293,13 +293,17 @@ module mkCore(Core);
       $fwrite(stdout, "commit: pc->%x, inst->%x\n", memPkt.pc, memPkt.inst);
       `IFDEF_DIFFTEST(
       Addr commitNextPc = mInst.mispredict ? mInst.addr : (memPkt.pc + 4);
+      // Skip difftest for MMIO instructions (address 0xbfafxxxx)
+      Bool isMMIO = (mInst.iType == Ld || mInst.iType == St || mInst.iType == Ll || mInst.iType == Sc)
+                    && (mInst.addr[31:16] == 16'hbfaf);
       diffCommitFifo.enq(DiffCommit{
         pc: memPkt.pc,
         nextPc: commitNextPc,
         inst: memPkt.inst,
         wen: wen,
         wdest: fromMaybe(0, mInst.dst),
-        wdata: mInst.data
+        wdata: mInst.data,
+        skip: isMMIO
       }));
     end
     sb.remove();
