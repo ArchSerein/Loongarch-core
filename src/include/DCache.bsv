@@ -27,8 +27,24 @@ typedef Vector#(DCacheLineWords, Data) DCacheLine;
 function DCacheTag     getDTag(Addr a) = truncateLSB(a);
 function DCacheIndex   getDIndex(Addr a) = truncate(a >> valueOf(DCacheOffsetSz));
 function DCacheWordSel getDWordSel(Addr a) = truncate(a >> 2);
+function Addr getDBlockBase(Addr a);
+  Bit#(TSub#(AddrSz, DCacheOffsetSz)) upper = truncateLSB(a);
+  Bit#(DCacheOffsetSz) lower = 0;
+  return { upper, lower };
+endfunction
 function Bool isUncacheAddr(Addr a);
   return (truncateLSB(a) == uncached_base);
+endfunction
+
+function Data applyByteMask(Data oldData, Data newData, Bit#(WordSz) byteEn);
+  Data merged = oldData;
+  for (Integer i = 0; i < valueOf(WordSz); i = i + 1) begin
+    if (byteEn[i] == 1'b1) begin
+      Bit#(8) b = newData[(8 * i) + 7 : (8 * i)];
+      merged[(8 * i) + 7 : (8 * i)] = b;
+    end
+  end
+  return merged;
 endfunction
 
 interface DCache;
@@ -215,7 +231,8 @@ module mkDCache(DCache);
         Bool doWrite = (r.op == St) ||
           (r.op == Sc && lrValid && lrAddr == r.addr);
         if (doWrite) begin
-          DCacheLine newLine = update(hitLine, wsel, r.data);
+          Data mergedWord = applyByteMask(hitLine[wsel], r.data, r.byteEn);
+          DCacheLine newLine = update(hitLine, wsel, mergedWord);
           for (Integer w = 0; w < valueOf(DCacheWays); w = w + 1) begin
             if (fromInteger(w) == hitWay) begin
               dataStore[idx][w] <= newLine;
@@ -282,7 +299,7 @@ module mkDCache(DCache);
 
   rule doSendFillAddr (state == SendFillAddr);
     arQ.enq(AxiReadAddr{
-      addr: missReq.addr,
+      addr: getDBlockBase(missReq.addr),
       len: fromInteger(valueOf(DCacheLineWords) - 1),
       size: 3'd2,
       burst: AxiBurstIncr
@@ -319,7 +336,8 @@ module mkDCache(DCache);
           dirtyStore[idx][way] <= False;
         end
         St: begin
-          DCacheLine newLine = update(nextLine, wsel, r.data);
+          Data mergedWord = applyByteMask(nextLine[wsel], r.data, r.byteEn);
+          DCacheLine newLine = update(nextLine, wsel, mergedWord);
           dataStore[idx][way] <= newLine;
           dirtyStore[idx][way] <= True;
         end
@@ -359,7 +377,7 @@ module mkDCache(DCache);
       });
       wQ.enq(AxiWriteData{
         data: r.data,
-        strb: '1,
+        strb: r.byteEn,
         last: True
       });
     end

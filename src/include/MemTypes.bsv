@@ -9,6 +9,7 @@ typedef struct{
     MemOp op;
     Addr  addr;
     Data  data;
+    Bit#(WordSz) byteEn;
 } MemReq deriving(Eq, Bits, FShow);
 
 typedef struct {

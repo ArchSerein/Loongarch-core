@@ -9,6 +9,8 @@ import SimInterfaces::*;
 import AxiMem::*;
 import CoreAxiTop::*;
 
+`include "Autoconf.bsv"
+
 typedef 20 TbWordAddrSz;
 typedef Bit#(TbWordAddrSz) TbWordAddr;
 typedef 100000000 TbMaxCycles;
@@ -41,15 +43,16 @@ endinterface;
 CoreAxiTop core <- mkCoreAxiTop;
 Empty _axiMemSim <- mkAxiMemSimBridge(core.axiMem, memSvc);
 
-rule countCycles (started);
+rule countCycles (started && cycles != fromInteger(valueOf(TbMaxCycles) - 1));
   cycles <= cycles + 1;
-  if (cycles == fromInteger(valueOf(TbMaxCycles) - 1)) begin
-    indication.halt(32'h00000002);
-    started <= False;
-  end
 endrule
 
-rule drainCpuToHost (started && core.cpuToHostValid);
+rule forceHalt (started && cycles == fromInteger(valueOf(TbMaxCycles) - 1));
+  indication.halt(32'h00000002);
+  started <= False;
+endrule
+
+rule drainCpuToHost (core.cpuToHostValid);
   let msg <- core.cpuToHost;
   case (msg.c2hType)
     ExitCode: begin
@@ -68,7 +71,7 @@ endrule
 `ifdef CONFIG_DIFFTEST
 rule drainDiffCommit (started && core.diffCommitValid);
   let c <- core.diffCommit;
-  indication.difftest_instr_commit(c.pc, c.inst, pack(c.wen), c.wdest, c.wdata);
+  indication.difftest_instr_commit(c.pc, c.nextPc, c.inst, pack(c.wen), c.wdest, c.wdata);
 endrule
 `endif
 
@@ -104,6 +107,7 @@ module mkTb(SimTop);
 
   method Action difftest_instr_commit(
       Bit#(32) pc,
+      Bit#(32) nextPc,
       Instruction inst,
       Bit#(1) wen,
       Bit#(5) wdest,

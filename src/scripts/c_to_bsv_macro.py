@@ -10,6 +10,8 @@ macro definitions. It handles:
 - Hex value conversion: 0x... -> 32'h...
 - Decimal value handling
 - Function-like macros
+- Conditional compilation helper macros for value-less defines
+  e.g., `define CONFIG_DIFFTEST -> generates `IFDEF_DIFFTEST(x) x
 """
 
 import re
@@ -226,6 +228,39 @@ def convert_line(line: str, default_width: int = 32, config_values: dict = None)
     return result_line
 
 
+def generate_ifdef_helper(macro_name: str) -> str:
+    """
+    Generate conditional compilation helper macro for a value-less define.
+    
+    For `define CONFIG_DIFFTEST, generates:
+    `ifdef CONFIG_DIFFTEST
+      `define IFDEF_DIFFTEST(x) x
+    `else
+      `define IFDEF_DIFFTEST(x)
+    `endif
+    
+    Args:
+        macro_name: The macro name (e.g., CONFIG_DIFFTEST)
+    
+    Returns:
+        The helper macro definition string
+    """
+    # Extract the suffix after CONFIG_ prefix
+    if macro_name.startswith("CONFIG_"):
+        suffix = macro_name[7:]  # Remove "CONFIG_" prefix
+    else:
+        suffix = macro_name
+    
+    helper_name = f"IFDEF_{suffix}"
+    
+    return f"""`ifdef {macro_name}
+  `define {helper_name}(x) x
+`else
+  `define {helper_name}(x)
+`endif
+"""
+
+
 def convert_file(
     input_path: str, output_path: str = None, default_width: int = 32, config_path: str = None
 ) -> str:
@@ -247,6 +282,7 @@ def convert_file(
         lines = f.readlines()
 
     converted_lines = []
+    valueless_macros = []  # Collect value-less macros for helper generation
     in_multiline_comment = False
 
     for line in lines:
@@ -261,9 +297,35 @@ def convert_file(
             converted_lines.append(line)
             continue
 
-        converted_lines.append(convert_line(line, default_width, config_values))
+        converted_line = convert_line(line, default_width, config_values)
+        converted_lines.append(converted_line)
+        
+        # Track value-less defines for helper macro generation
+        stripped = line.strip()
+        if stripped.startswith("#define"):
+            # Check if it's a value-less define
+            empty_pattern = r"^\s*#define\s+(\w+)\s*$"
+            empty_match = re.match(empty_pattern, stripped)
+            if empty_match:
+                valueless_macros.append(empty_match.group(1))
+            else:
+                # Also check for defines that become value-less due to config y/n
+                simple_pattern = r"^\s*#define\s+(\w+)\s+(.+)$"
+                simple_match = re.match(simple_pattern, stripped)
+                if simple_match:
+                    macro_name = simple_match.group(1)
+                    if macro_name in config_values:
+                        config_val = config_values[macro_name]
+                        if config_val == "y" or config_val == "n":
+                            valueless_macros.append(macro_name)
 
     content = "".join(converted_lines)
+    
+    # Append helper macros for value-less defines
+    if valueless_macros:
+        content += "\n// Conditional compilation helper macros\n"
+        for macro_name in valueless_macros:
+            content += generate_ifdef_helper(macro_name)
 
     if output_path:
         with open(output_path, "w") as f:

@@ -15,6 +15,7 @@ typedef struct {
 
 typedef struct {
   Addr pc;
+  Addr nextPc;
   Instruction inst;
   Bool wen;
   Bit#(5) wdest;
@@ -55,9 +56,12 @@ typedef enum {
 
   Csrr, // CSRRD
   Csrw, // CSRWR
+  Csrxchg, // CSRXCHG
 
   Fence, // DBAR / IBAR
 
+  Syscall, // SYSCALL exception
+  Ertn, // ERTN return from exception
   Break // debug
 } IType deriving(Bits, Eq, FShow);
 
@@ -116,6 +120,7 @@ typedef struct {
   Maybe#(RIndx)       src2;
   Maybe#(CsrIndx)     csr;
   Maybe#(Data)        imm;
+  Maybe#(ByteMask)    mask;
 } DecodedInst deriving(Bits, Eq, FShow);
 
 typedef struct {
@@ -123,6 +128,7 @@ typedef struct {
   Maybe#(RIndx)    dst;
   Maybe#(CsrIndx)  csr;
   Data             data;
+  Maybe#(ByteMask) mask;
   Addr             addr;
   Bool             mispredict;
   Bool             brTaken;
@@ -167,9 +173,23 @@ function Fmt showInst(Instruction inst);
         5'b01110: $format("sll.w");
         5'b01111: $format("srl.w");
         5'b10000: $format("sra.w");
+        5'b11000: $format("mul.w");
+        5'b11001: $format("mulh.w");
+        5'b11010: $format("mulh.wu");
         default: $format("unsup-3R 0x%0x", inst);
       endcase;
       ret = ret + $format(" r%0d, r%0d, r%0d", rd, rj, rk);
+    end
+    else if (op4 == 4'b0000 && op2 == 2'b10) begin
+      ret = case (op5)
+        5'h00: $format("div.w r%0d, r%0d, r%0d", rd, rj, rk);
+        5'h01: $format("mod.w r%0d, r%0d, r%0d", rd, rj, rk);
+        5'h02: $format("div.wu r%0d, r%0d, r%0d", rd, rj, rk);
+        5'h03: $format("mod.wu r%0d, r%0d, r%0d", rd, rj, rk);
+        5'h14: $format("break 0x%0x", inst[14:0]);
+        5'h16: $format("syscall 0x%0x", inst[14:0]);
+        default: $format("unsup-ert 0x%0x", inst);
+      endcase;
     end
     else if (op4 == 4'b0001 && op2 == 2'b00) begin
       ret = case (op5)
@@ -226,7 +246,11 @@ end
   end
 
   6'b000001: begin
-    if (inst[25:24] == 2'b00) begin
+    if (op4 == 4'b1001 && op2 == 2'b00 && op5 == 5'h10 && rk == 5'h0e &&
+        rj == 5'd0 && rd == 5'd0) begin
+      ret = $format("ertn");
+    end
+    else if (inst[25:24] == 2'b00) begin
       if (rj == 5'd0)
       ret = $format("csrrd r%0d, csr0x%0x", rd, inst[23:10]);
       else if (rj == 5'd1)

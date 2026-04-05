@@ -8,3 +8,5 @@ typedef 32 InstSz;
 typedef Bit#(InstSz) Instruction;
 
 typedef 4  WordSz;
+typedef 1  SIGNED;
+typedef Bit#(TAdd#(WordSz, SIGNED)) ByteMask;

@@ -12,9 +12,12 @@ import Scoreboard::*;
 import Bht::*;
 import ICache::*;
 import DCache::*;
+import Mul::*;
+import Div::*;
 import AxiTypes::*;
 import AxiMem::*;
 `include "Autoconf.bsv"
+`include "CsrAddr.bsv"
 
 interface Core;
   method ActionValue#(CpuToHostData) cpuToHost;
@@ -33,14 +36,17 @@ module mkCore(Core);
   RFile                    rf <- mkRFile;
   ICache               iCache <- mkICache;
   DCache               dCache <- mkDCache;
+  Mul_ifc             mulUnit <- mkMul;
+  Reg#(Bool)      mulInFlight <- mkReg(False);
+  Div_ifc             divUnit <- mkDiv;
+  Reg#(Bool)      divInFlight <- mkReg(False);
   AxiMemMaster        axiMux <- mkAxiArbiter2(iCache.axiMem, dCache.axiMem);
   Btb#(6)                 btb <- mkBtb; // 64-entry BTB
   Bht#(8)                 bht <- mkBht;
   Scoreboard#(6)           sb <- mkCFScoreboard;
 
-  Ehr#(3, Bool)    exeEpoch <- mkEhr(False);
+  Ehr#(4, Bool)    exeEpoch <- mkEhr(False);
   Ehr#(3, Bool) decodeEpoch <- mkEhr(False);
-  Reg#(Data)    scSuccValue <- mkRegU;
 
   Fifo#(2, F2D)           f2dFifo <- mkCFFifo;
   Fifo#(2, D2R)           d2rFifo <- mkCFFifo;
@@ -83,8 +89,8 @@ module mkCore(Core);
   endrule
 
   rule doRrf (csrf.started);
-    let _Decode = d2rFifo.first();
-    let rInst = _Decode.dInst;
+    let decodePkt = d2rFifo.first();
+    let rInst = decodePkt.dInst;
 
     if (!sb.search1(rInst.src1) && !sb.search2(rInst.src2)) begin
       Data    rVal1 = rf.rd1(fromMaybe(?, rInst.src1));
@@ -187,7 +193,7 @@ module mkCore(Core);
   endrule
 
   rule doMemory (csrf.started);
-    let _Exec = e2mFifo.first();
+    let execPkt = e2mFifo.first();
     e2mFifo.deq();
 
     if (execPkt.epoch == exeEpoch[3]) begin
@@ -244,43 +250,72 @@ module mkCore(Core);
   endrule
 
   rule doWriteback (csrf.started);
-    let _Mem = m2wFifo.first();
+    let memPkt = m2wFifo.first();
     m2wFifo.deq();
 
-    if (isValid(_Mem.mInst)) begin
-      let _mInst = fromMaybe(?, _Mem.mInst);
-      if (_mInst.iType == Ld || _mInst.iType == Ll || _mInst.iType ==
-        Sc) begin
-        _mInst.data <- dCache.resp();
+    if (memPkt.epoch == exeEpoch[0]) begin
+      if (isValid(memPkt.mInst)) begin
+        let mInst = fromMaybe(?, memPkt.mInst);
+        Data rData = mInst.data;
+        if (mInst.iType == Ld || mInst.iType == Ll || mInst.iType == Sc) begin
+          rData <- dCache.resp();
+          if (mInst.iType == Ld) begin
+            ByteMask m = fromMaybe(5'b11111, mInst.mask);
+            rData = selectLoadData(rData, mInst.addr[1:0], m[3:0], m[4] == 1'b1);
+          end
+          mInst.data = rData;
+        end
+
+        Bool has_int = csrf.hasInterrupt;
+        ExcpInfo wbExcp = memPkt.excp;
+        Bool wb_has_excp = has_int || wbExcp.valid;
+        Bit#(6) wb_ecode = has_int ? `ECODE_INT : wbExcp.ecode;
+        Bit#(9) wb_esubcode = has_int ? 0 : wbExcp.esubcode;
+
+        Bool wen = False;
+        if (wb_has_excp) begin
+          Addr exEntry <- csrf.raiseException(wb_ecode, wb_esubcode, memPkt.pc);
+          exeEpoch[3] <= !exeEpoch[3];
+          pcReg[3] <= exEntry;
+        end else begin
+          if (isValid(mInst.dst)) begin
+            rf.wr(fromMaybe(?, mInst.dst), mInst.data);
+            wen = (fromMaybe(0, mInst.dst) != 0);
+          end
+          Bool isCsrWrite = (mInst.iType == Csrw || mInst.iType == Csrxchg);
+          csrf.wr(isCsrWrite ? mInst.csr : Invalid, isCsrWrite ? mInst.addr : mInst.data);
+        end
+
+        $fwrite(stdout, "commit: pc->%x, inst->%x\n", memPkt.pc, memPkt.inst);
+        `ifdef CONFIG_DIFFTEST
+        // Compute nextPc for difftest synchronization:
+        // - For branches/jumps that redirected: use the target address
+        // - For sequential flow: use pc + 4
+        Addr commitNextPc = mInst.mispredict ? mInst.addr : (memPkt.pc + 4);
+        diffCommitFifo.enq(DiffCommit{
+          pc: memPkt.pc,
+          nextPc: commitNextPc,
+          inst: memPkt.inst,
+          wen: wen,
+          wdest: fromMaybe(0, mInst.dst),
+          wdata: mInst.data
+        });
+        `endif
       end
-
-      if (isValid(_mInst.dst)) begin
-        rf.wr(fromMaybe(?, _mInst.dst), _mInst.data);
+      sb.remove();
+    end else begin
+      // Flushed instruction, drain cache if necessary
+      if (isValid(memPkt.mInst)) begin
+        let mInst = fromMaybe(?, memPkt.mInst);
+        if (mInst.iType == Ld || mInst.iType == Ll || mInst.iType == Sc) begin
+           let _unused <- dCache.resp();
+        end
       end
-
-      Data csrWrData = _mInst.iType == Csrw ? _mInst.addr : _mInst.data;
-      csrf.wr(_mInst.iType == Csrw ? _mInst.csr : Invalid, csrWrData);
-
-      Bool wen = isValid(_mInst.dst) && fromMaybe(0, _mInst.dst) != 0;
-      // $fwrite(stdout, "commit: pc->%x, inst->%x\n", _Mem.pc, _Mem.inst);
-      `ifdef CONFIG_DIFFTEST
-      diffCommitFifo.enq(DiffCommit{
-        pc: _Mem.pc,
-        inst: _Mem.inst,
-        wen: wen,
-        wdest: fromMaybe(0, _mInst.dst),
-        wdata: _mInst.data
-      });
-      `endif
+      sb.remove();
     end
-    sb.remove();
   endrule
 
-  method ActionValue#(CpuToHostData) cpuToHost if (csrf.started);
-    let ret <- csrf.cpuToHost;
-    return ret;
-  endmethod
-
+  method ActionValue#(CpuToHostData) cpuToHost = csrf.cpuToHost;
   method Bool cpuToHostValid = csrf.cpuToHostValid;
 
   `ifdef CONFIG_DIFFTEST
@@ -289,7 +324,6 @@ module mkCore(Core);
     diffCommitFifo.deq;
     return ret;
   endmethod
-
   method Bool diffCommitValid = diffCommitFifo.notEmpty;
   `endif
 

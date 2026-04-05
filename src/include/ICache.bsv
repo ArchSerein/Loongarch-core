@@ -33,6 +33,11 @@ typedef Vector#(ICacheLineWords, Data) ICacheLine;
 function ICacheTag     getITag(Addr a)     = truncateLSB(a);
 function ICacheIndex   getIIndex(Addr a)   = truncate(a >> valueOf(ICacheOffsetSz));
 function ICacheWordSel getIWordSel(Addr a) = truncate(a >> 2);
+function Addr getIBlockBase(Addr a);
+  Bit#(TSub#(AddrSz, ICacheOffsetSz)) upper = truncateLSB(a);
+  Bit#(ICacheOffsetSz) lower = 0;
+  return { upper, lower };
+endfunction
 
 interface ICache;
   method Action req(Addr a);
@@ -189,7 +194,7 @@ module mkICache(ICache);
 
   rule doStartMiss (state == StartMiss);
     arQ.enq(AxiReadAddr{
-      addr: missAddr,
+      addr: getIBlockBase(missAddr),
       len: fromInteger(valueOf(ICacheLineWords) - 1),
       size: 3'd2,
       burst: AxiBurstIncr

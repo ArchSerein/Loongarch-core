@@ -8,7 +8,7 @@
 class Memory {
 public:
     static constexpr std::size_t kTbWordAddrWidth = 22;
-    static constexpr std::size_t kTbPmemAddrWidth = 20;
+    static constexpr std::size_t kTbPmemAddrWidth = 21;
 
     Memory(MMIOMap& mmio_ref) : words_(std::size_t{1} << kTbWordAddrWidth, 0),
         pmem_(std::size_t{1} << kTbPmemAddrWidth), mmio(mmio_ref) {}

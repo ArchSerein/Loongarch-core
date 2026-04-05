@@ -9,8 +9,11 @@ interface CsrFile;
   method Action start;
   method Action finish;
   method Bool started;
+  method Bool hasInterrupt;
   method Data rd(CsrIndx idx);
   method Action wr(Maybe#(CsrIndx) idx, Data val);
+  method ActionValue#(Addr) raiseException(Bit#(6) ecode, Bit#(9) esubcode, Addr pc);
+  method ActionValue#(Addr) returnFromException;
   method ActionValue#(CpuToHostData) cpuToHost;
   method Bool cpuToHostValid;
 endinterface
@@ -82,7 +85,6 @@ module mkCsrFile(CsrFile);
   endmethod
 
   method Action finish;
-    startReg <= False;
     toHostFifo.enq(CpuToHostData{
       c2hType: ExitCode,
       data: 16'b0});
@@ -90,6 +92,13 @@ module mkCsrFile(CsrFile);
 
   method Bool started;
     return startReg;
+  endmethod
+
+  method Bool hasInterrupt;
+    Data estatWithTimer = csr_estat | (timerInt[1] ? 32'h00000800 : 0);
+    Bool ieEnabled = (csr_crmd[`CSR_CRMD_IE] == 1'b1);
+    Bool pending = ((estatWithTimer[`CSR_ECFG_LIE] & csr_ecfg[`CSR_ECFG_LIE]) != 0);
+    return startReg && ieEnabled && pending;
   endmethod
 
   method Data rd(CsrIndx idx);
@@ -210,9 +219,39 @@ module mkCsrFile(CsrFile);
       numInsts <= numInsts + 1;
     endmethod
 
-    method ActionValue#(CpuToHostData) cpuToHost;
+    method ActionValue#(Addr) raiseException(Bit#(6) ecode, Bit#(9) esubcode, Addr pc);
+      Data curCrmd = csr_crmd;
+      Data nextCrmd = curCrmd;
+      nextCrmd[`CSR_CRMD_PLV] = 2'b0;
+      nextCrmd[`CSR_CRMD_IE] = 1'b0;
+
+      Data nextPrmd = csr_prmd;
+      nextPrmd[`CSR_PRMD_PPLV] = curCrmd[`CSR_CRMD_PLV];
+      nextPrmd[`CSR_PRMD_PIE] = curCrmd[`CSR_CRMD_IE];
+
+      Data nextEstat = csr_estat;
+      nextEstat[`CSR_ESTAT_ECODE] = ecode;
+      nextEstat[`CSR_ESTAT_ESUBCODE] = esubcode;
+
+      csr_crmd <= nextCrmd;
+      csr_prmd <= nextPrmd;
+      csr_estat <= nextEstat;
+      csr_era <= pc;
+      return csr_eentry;
+    endmethod
+
+    method ActionValue#(Addr) returnFromException;
+      Data nextCrmd = csr_crmd;
+      nextCrmd[`CSR_CRMD_PLV] = csr_prmd[`CSR_PRMD_PPLV];
+      nextCrmd[`CSR_CRMD_IE] = csr_prmd[`CSR_PRMD_PIE];
+      csr_crmd <= nextCrmd;
+      return csr_era;
+    endmethod
+
+    method ActionValue#(CpuToHostData) cpuToHost if (toHostFifo.notEmpty);
+      let ret = toHostFifo.first;
       toHostFifo.deq;
-      return toHostFifo.first;
+      return ret;
     endmethod
 
     method Bool cpuToHostValid = toHostFifo.notEmpty;

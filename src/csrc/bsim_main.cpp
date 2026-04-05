@@ -114,8 +114,8 @@ public:
     mem.write(addr, data, mask);
   }
 
-  void difftest_instr_commit(std::uint32_t pc, std::uint32_t inst, std::uint8_t wen,
-                             std::uint8_t wdest, std::uint32_t wdata) override {
+  void difftest_instr_commit(std::uint32_t pc, std::uint32_t next_pc, std::uint32_t inst,
+                             std::uint8_t wen, std::uint8_t wdest, std::uint32_t wdata) override {
     if (!g_run || difftest == nullptr || !difftest->enabled()) {
       return;
     }
@@ -123,6 +123,7 @@ public:
     instr_commit_t* commit = difftest->get_instr_commit(0);
     commit->valid = 1;
     commit->pc = pc;
+    commit->next_pc = next_pc;
     commit->inst = inst;
     commit->skip = is_skip_difftest;
     commit->wen = (wen != 0) ? 1 : 0;
@@ -153,7 +154,7 @@ private:
       goto good;
     } else if ((addr >> 24) == 0x1c) {
       goto good;
-    } else if ((addr >> 20) == 0x000) {
+    } else if ((addr >> 24) == 0x00) {
         goto good;
     } else goto bad;
   good:
@@ -204,5 +205,5 @@ int main(int argc, char** argv) {
     std::cerr << "\nbsim: FAILED (code=" << g_exit_code << ")\n";
   }
 
-  return static_cast<int>(g_exit_code);
+  std::_Exit(g_exit_code);
 }
