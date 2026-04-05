@@ -79,11 +79,10 @@ module mkCore(Core);
     let fetchPkt = f2dFifo.first();
     f2dFifo.deq();
 
-    if (fetchPkt.fEpoch != exeEpoch[1]) begin
-      // Epoch mismatch: instruction was fetched before redirect, discard it
-    end else begin
+    if (fetchPkt.fEpoch == exeEpoch[1]) begin
       DecodedInst dInst = decode(inst);
       ExcpInfo dExcp = fetchPkt.excp;
+      // 检测异常(ine, syscall, break)
       if (!dExcp.valid) begin
         if (dInst.iType == Unsupported) dExcp = mkExcp(`ECODE_INE, `ESUBCODE_NONE, fetchPkt.pc);
         else if (dInst.iType == Syscall) dExcp = mkExcp(`ECODE_SYS, `ESUBCODE_NONE, fetchPkt.pc);
@@ -305,7 +304,7 @@ module mkCore(Core);
       if (mInst.iType == Ld || mInst.iType == Ll || mInst.iType == Sc) begin
         rData <- dCache.resp();
         if (mInst.iType == Ld) begin
-          ByteMask m = fromMaybe(5'b11111, mInst.mask);
+          ByteMask m = fromMaybe(5'b00000, mInst.mask);
           rData = selectLoadData(rData, mInst.addr[1:0], m[3:0], m[4] == 1'b1);
         end
         mInst.data = rData;

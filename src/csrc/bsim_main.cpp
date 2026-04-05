@@ -10,6 +10,7 @@
 
 #include <unistd.h>
 
+#include "../include/generated/autoconf.h"
 #include "tb_memory.hpp"
 #include "mmio.hpp"
 #ifdef CONFIG_DIFFTEST
@@ -17,7 +18,6 @@
 #endif
 #include "SimIndication.h"
 #include "SimRequest.h"
-#include "../include/generated/autoconf.h"
 
 namespace {
 
