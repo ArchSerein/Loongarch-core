@@ -155,14 +155,15 @@ void Difftest::do_instr_commit(int index) {
         return;
     }
     if (dut.commit[index].skip) {
-        // Sync GPR state from DUT to reference
+        // For skipped instructions (e.g., MMIO), we must sync the DUT's
+        // architectural state to the reference model so they stay in sync.
+        // 1. Sync GPR state from DUT to reference
         proxy->regcpy(dut_regs_ptr_, DIFFTEST_TO_REF, DIFF_TO_REF_GR);
-        // Sync PC: set reference PC to the DUT's next_pc so reference continues
-        // from the correct instruction after the skipped MMIO instruction
+        // 2. Sync PC: advance REF's PC to the DUT's next_pc.
+        //    We use regcpy with DIFF_TO_REF_ALL to sync both GPR and PC/CSR,
+        //    ensuring the reference model continues from the correct address.
         dut.csr.this_pc = dut.commit[index].next_pc;
-        if (proxy->csrcpy != nullptr) {
-            proxy->csrcpy(&dut.csr, DIFFTEST_TO_REF);
-        }
+        proxy->regcpy(reinterpret_cast<std::uint32_t*>(&dut), DIFFTEST_TO_REF, DIFF_TO_REF_ALL);
         return;
     }
     if (dut.commit[index].is_TLBFILL && proxy->tlbfill_index_set != nullptr) {
