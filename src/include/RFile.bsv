@@ -9,6 +9,7 @@ interface RFile;
   method Data rd1(RIndx rindx);
   method Data rd2(RIndx rindx);
   `IFDEF_DIFFTEST(method DiffArchGRegState diffSnapshot;)
+  `IFDEF_DIFFTEST(method DiffArchGRegState diffSnapshotAfterWrite(Maybe#(RIndx) rindx, Data data);)
 endinterface
 
 (* synthesize *)
@@ -33,6 +34,17 @@ module mkRFile(RFile);
     Vector#(32, Data) snap = newVector;
     for (Integer i = 0; i < 32; i = i + 1) begin
       snap[i] = rfile[i];
+    end
+    return DiffArchGRegState{gpr: snap};
+  endmethod
+
+  method DiffArchGRegState diffSnapshotAfterWrite(Maybe#(RIndx) rindx, Data data);
+    Vector#(32, Data) snap = newVector;
+    for (Integer i = 0; i < 32; i = i + 1) begin
+      snap[i] = rfile[i];
+    end
+    if (rindx matches tagged Valid .idx &&& idx != 0) begin
+      snap[idx] = data;
     end
     return DiffArchGRegState{gpr: snap};
   endmethod
@@ -61,6 +73,17 @@ module mkBypassRFile(RFile);
     Vector#(32, Data) snap = newVector;
     for (Integer i = 0; i < 32; i = i + 1) begin
       snap[i] = rfile[i][1];
+    end
+    return DiffArchGRegState{gpr: snap};
+  endmethod
+
+  method DiffArchGRegState diffSnapshotAfterWrite(Maybe#(RIndx) rindx, Data data);
+    Vector#(32, Data) snap = newVector;
+    for (Integer i = 0; i < 32; i = i + 1) begin
+      snap[i] = rfile[i][1];
+    end
+    if (rindx matches tagged Valid .idx &&& idx != 0) begin
+      snap[idx] = data;
     end
     return DiffArchGRegState{gpr: snap};
   endmethod

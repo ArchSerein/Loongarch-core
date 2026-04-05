@@ -92,13 +92,6 @@ typedef struct {
 
 typedef struct {
   DiffCommit commit;
-  DiffExcpEvent excp;
-  DiffStoreEvent store;
-  DiffLoadEvent load;
-} PendingDiffTrace deriving(Bits, Eq);
-
-typedef struct {
-  DiffCommit commit;
   DiffArchGRegState regs;
   DiffArchCsrState csr;
   DiffExcpEvent excp;

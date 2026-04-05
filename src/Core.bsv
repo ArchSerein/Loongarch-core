@@ -55,7 +55,6 @@ module mkCore(Core);
   Fifo#(2, E2M)           e2mFifo <- mkCFFifo;
   Fifo#(2, M2W)           m2wFifo <- mkCFFifo;
   `IFDEF_DIFFTEST(
-    Fifo#(2, PendingDiffTrace) pendingDiffFifo <- mkPipelineFifo;
     Fifo#(2, DiffTrace) diffTraceFifo <- mkCFFifo;
   )
 
@@ -320,16 +319,17 @@ module mkCore(Core);
       Bool isMMIO = (mInst.iType == Ld || mInst.iType == St || mInst.iType == Ll || mInst.iType == Sc)
                     && (mInst.addr[31:16] == 16'hbfaf);
 
-      DiffCommit commit = DiffCommit{
-        valid: !wb_has_excp,
-        pc: memPkt.pc,
-        nextPc: commitNextPc,
-        inst: memPkt.inst,
-        wen: wen,
-        wdest: fromMaybe(0, mInst.dst),
-        wdata: mInst.data,
-        skip: isMMIO
-      };
+      Maybe#(RIndx) diffDst = tagged Invalid;
+      Bool isCsrWrite = (!wb_has_excp) && (mInst.iType == Csrw || mInst.iType == Csrxchg);
+      Maybe#(CsrIndx) diffCsrIdx = tagged Invalid;
+      Data diffCsrVal = mInst.data;
+      if (wen && isValid(mInst.dst)) begin
+        diffDst = mInst.dst;
+      end
+      if (isCsrWrite) begin
+        diffCsrIdx = mInst.csr;
+        diffCsrVal = mInst.addr;
+      end
 
       DiffStoreEvent storeEvent = DiffStoreEvent{
         valid: False,
@@ -361,8 +361,26 @@ module mkCore(Core);
         end
       end
 
-      pendingDiffFifo.enq(PendingDiffTrace{
-        commit: commit,
+      diffTraceFifo.enq(DiffTrace{
+        commit: DiffCommit{
+          valid: !wb_has_excp,
+          pc: memPkt.pc,
+          nextPc: commitNextPc,
+          inst: memPkt.inst,
+          wen: wen,
+          wdest: fromMaybe(0, mInst.dst),
+          wdata: mInst.data,
+          skip: isMMIO
+        },
+        regs: rf.diffSnapshotAfterWrite(diffDst, mInst.data),
+        csr: csrf.diffSnapshotAfterWrite(
+          diffCsrIdx,
+          diffCsrVal,
+          wb_has_excp,
+          wb_ecode,
+          wb_esubcode,
+          memPkt.pc
+        ),
         excp: DiffExcpEvent{
           excpValid: wb_has_excp,
           eret: (mInst.iType == Ertn),
@@ -378,21 +396,6 @@ module mkCore(Core);
     end
     sb.remove();
   endrule
-
-  `IFDEF_DIFFTEST(
-  rule emitDiffTrace (csrf.started && pendingDiffFifo.notEmpty);
-    let pending = pendingDiffFifo.first;
-    pendingDiffFifo.deq;
-    diffTraceFifo.enq(DiffTrace{
-      commit: pending.commit,
-      regs: rf.diffSnapshot,
-      csr: csrf.diffSnapshot,
-      excp: pending.excp,
-      store: pending.store,
-      load: pending.load
-    });
-  endrule
-  )
 
   method ActionValue#(CpuToHostData) cpuToHost = csrf.cpuToHost;
   method Bool cpuToHostValid = csrf.cpuToHostValid;
