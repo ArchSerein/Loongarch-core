@@ -90,7 +90,7 @@ module mkCore(Core);
       end
 
       d2rFifo.enq(D2R{pc: fetchPkt.pc, predPc: fetchPkt.predPc, dEpoch: fetchPkt.fEpoch, dInst: dInst,
-        `IFDEF_DIFFTEST(inst: inst,)
+        `IFDEF_DIFFTEST(inst: inst),
         excp: dExcp});
     end
   endrule
@@ -109,7 +109,7 @@ module mkCore(Core);
         Data    csrVal = csrf.rd(fromMaybe(?, rInst.csr));
 
         r2eFifo.enq(R2E{pc: decodePkt.pc, predPc: decodePkt.predPc, rEpoch: decodePkt.dEpoch,
-          `IFDEF_DIFFTEST(inst: decodePkt.inst,)
+          `IFDEF_DIFFTEST(inst: decodePkt.inst),
           rVal1: rVal1,
           rVal2: rVal2, csrVal: csrVal,
           rInst: rInst, excp: decodePkt.excp});
@@ -198,7 +198,7 @@ module mkCore(Core);
         end
 
         e2mFifo.enq(E2M{pc: rrfPkt.pc,
-          `IFDEF_DIFFTEST(inst: rrfPkt.inst,)
+          `IFDEF_DIFFTEST(inst: rrfPkt.inst),
           excp: eExcp,
           mask: rrfPkt.rInst.mask,
           eInst: tagged Valid eInst});
