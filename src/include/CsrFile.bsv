@@ -12,9 +12,10 @@ interface CsrFile;
   method Bool started;
   method Bool hasInterrupt;
   method Data rd(CsrIndx idx);
-`ifdef CONFIG_DIFFTEST
-  method DiffArchCsrState diffSnapshot;
-`endif
+  `ifdef CONFIG_DIFFTEST
+    method DiffArchCsrState diffSnapshot;
+    method DiffArchCsrState diffSnapshotAfterWrite(Maybe#(CsrIndx) idx, Data val, Bool raiseExcp, Bit#(6) ecode, Bit#(9) esubcode, Addr pc);
+  `endif
   method Action wr(Maybe#(CsrIndx) idx, Data val);
   method ActionValue#(Addr) raiseException(Bit#(6) ecode, Bit#(9) esubcode, Addr pc);
   method ActionValue#(Addr) returnFromException;
@@ -174,7 +175,115 @@ module mkCsrFile(CsrFile);
       estat: csr_estat | (timerInt[1] ? 32'h00000800 : 0)
     };
   endmethod
-`endif
+
+  method DiffArchCsrState diffSnapshotAfterWrite(Maybe#(CsrIndx) csrIdx, Data val, Bool raiseExcp,
+      Bit#(6) ecode, Bit#(9) esubcode, Addr pc);
+    Data next_crmd = csr_crmd;
+    Data next_prmd = csr_prmd;
+    Data next_euen = csr_euen;
+    Data next_ecfg = csr_ecfg;
+    Data next_era = csr_era;
+    Data next_badv = csr_badv;
+    Data next_eentry = csr_eentry;
+    Data next_tlbidx = csr_tlbidx;
+    Data next_tlbehi = csr_tlbehi;
+    Data next_tlbelo0 = csr_tlbelo0;
+    Data next_tlbelo1 = csr_tlbelo1;
+    Data next_asid = csr_asid;
+    Data next_pgdl = csr_pgdl;
+    Data next_pgdh = csr_pgdh;
+    Data next_save0 = csr_save0;
+    Data next_save1 = csr_save1;
+    Data next_save2 = csr_save2;
+    Data next_save3 = csr_save3;
+    Data next_tid = csr_tid;
+    Data next_tcfg = csr_tcfg;
+    Data next_tval = csr_tval[1];
+    Bool next_timerInt = timerInt[1];
+    Bool next_llbit = llbit;
+    Bool next_llbctlKlo = llbctlKlo;
+    Data next_tlbrentry = csr_tlbrentry;
+    Data next_dmw0 = csr_dmw0;
+    Data next_dmw1 = csr_dmw1;
+    Data next_estat_raw = csr_estat;
+
+    if (raiseExcp) begin
+      next_crmd[`CSR_CRMD_PLV] = 2'b0;
+      next_crmd[`CSR_CRMD_IE] = 1'b0;
+      next_prmd[`CSR_PRMD_PPLV] = csr_crmd[`CSR_CRMD_PLV];
+      next_prmd[`CSR_PRMD_PIE] = csr_crmd[`CSR_CRMD_IE];
+      next_estat_raw[`CSR_ESTAT_ECODE] = ecode;
+      next_estat_raw[`CSR_ESTAT_ESUBCODE] = esubcode;
+      next_era = pc;
+    end else if (csrIdx matches tagged Valid .idx) begin
+      case (idx)
+        `CSR_CRMD: next_crmd = (val & 32'h000001FF) | (next_crmd & 32'hFFFFFE00);
+        `CSR_PRMD: next_prmd = (val & 32'h00000007) | (next_prmd & 32'hFFFFFFF8);
+        `CSR_EUEN: next_euen = (val & 32'h00000001) | (next_euen & 32'hFFFFFFFE);
+        `CSR_ECFG: next_ecfg = (val & 32'h00001BFF) | (next_ecfg & 32'hFFFFE400);
+        `CSR_ESTAT: next_estat_raw = (val & 32'h00000003) | (next_estat_raw & 32'hFFFFFFFC);
+        `CSR_ERA: next_era = val;
+        `CSR_BADV: next_badv = val;
+        `CSR_EENTRY: next_eentry = (val & 32'hFFFFFFC0) | (next_eentry & 32'h0000003F);
+        `CSR_TLBIDX: next_tlbidx = (val & 32'hBF00000F) | (next_tlbidx & 32'h40FFFFF0);
+        `CSR_TLBEHI: next_tlbehi = (val & 32'hFFFFE000) | (next_tlbehi & 32'h00001FFF);
+        `CSR_TLBEL0: next_tlbelo0 = (val & 32'h0FFFFF7F) | (next_tlbelo0 & 32'hF0000080);
+        `CSR_TLBEL1: next_tlbelo1 = (val & 32'h0FFFFF7F) | (next_tlbelo1 & 32'hF0000080);
+        `CSR_ASID: next_asid = (val & 32'h000003FF) | (next_asid & 32'hFFFFFC00);
+        `CSR_PGDL: next_pgdl = (val & 32'hFFFFF000) | (next_pgdl & 32'h00000FFF);
+        `CSR_PGDH: next_pgdh = (val & 32'hFFFFF000) | (next_pgdh & 32'h00000FFF);
+        `CSR_SAVE0: next_save0 = val;
+        `CSR_SAVE1: next_save1 = val;
+        `CSR_SAVE2: next_save2 = val;
+        `CSR_SAVE3: next_save3 = val;
+        `CSR_TID: next_tid = val;
+        `CSR_TCFG: begin
+          next_tcfg = val;
+          next_tval = {val[`CSR_TCFG_INITV], 2'b0};
+        end
+        `CSR_TICLR: begin
+          if (val[`CSR_TICLR_CLR] == 1) next_timerInt = False;
+        end
+        `CSR_LLBCTL: begin
+          if (val[1] == 1) next_llbit = False;
+          next_llbctlKlo = unpack(val[2]);
+        end
+        `CSR_TLBRENTRY: next_tlbrentry = (val & 32'hFFFFFFC0) | (next_tlbrentry & 32'h0000003F);
+        `CSR_DMW0: next_dmw0 = (val & 32'hEE000039) | (next_dmw0 & 32'h11FFFFC6);
+        `CSR_DMW1: next_dmw1 = (val & 32'hEE000039) | (next_dmw1 & 32'h11FFFFC6);
+        default: begin end
+      endcase
+    end
+
+    return DiffArchCsrState{
+      crmd: next_crmd,
+      prmd: next_prmd,
+      euen: next_euen,
+      ecfg: next_ecfg,
+      era: next_era,
+      badv: next_badv,
+      eentry: next_eentry,
+      tlbidx: next_tlbidx,
+      tlbehi: next_tlbehi,
+      tlbelo0: next_tlbelo0,
+      tlbelo1: next_tlbelo1,
+      asid: next_asid,
+      pgdl: next_pgdl,
+      pgdh: next_pgdh,
+      save0: next_save0,
+      save1: next_save1,
+      save2: next_save2,
+      save3: next_save3,
+      tid: next_tid,
+      tcfg: next_tcfg,
+      tval: next_tval,
+      llbctl: {29'b0, pack(next_llbctlKlo), 1'b0, pack(next_llbit)},
+      tlbrentry: next_tlbrentry,
+      dmw0: next_dmw0,
+      dmw1: next_dmw1,
+      estat: next_estat_raw | (next_timerInt ? 32'h00000800 : 0)
+    };
+  endmethod
 
   method Action wr(Maybe#(CsrIndx) csrIdx, Data val);
     $fwrite(stdout, "csrIdx %x val %x\n", csrIdx, val);
