@@ -10,8 +10,6 @@ macro definitions. It handles:
 - Hex value conversion: 0x... -> 32'h...
 - Decimal value handling
 - Function-like macros
-- Conditional compilation helper macros for value-less defines
-  e.g., `define CONFIG_DIFFTEST -> generates `IFDEF_DIFFTEST(x) x
 """
 
 import re
@@ -45,9 +43,20 @@ def load_config_values(config_path: str) -> dict:
     with open(config_path, "r") as f:
         for line in f:
             line = line.strip()
-            # Skip comments and empty lines
-            if not line or line.startswith("#"):
+            # Skip empty lines
+            if not line:
                 continue
+
+            # Parse disabled config form: '# CONFIG_FOO is not set'
+            not_set_match = re.match(r"^#\s*(CONFIG_\w+)\s+is\s+not\s+set$", line)
+            if not_set_match:
+                config_values[not_set_match.group(1)] = "n"
+                continue
+
+            # Skip other comments
+            if line.startswith("#"):
+                continue
+
             # Parse CONFIG_NAME=value
             if "=" in line:
                 key, value = line.split("=", 1)
@@ -248,35 +257,6 @@ def convert_line(line: str, default_width: int = 32, config_values: dict = None)
     return result_line
 
 
-def generate_ifdef_helper(macro_name: str, enabled: bool) -> str:
-    """
-    Generate IFDEF helper macro from a resolved boolean state.
-
-    For enabled CONFIG_DIFFTEST, generates:
-      `define IFDEF_DIFFTEST(x) x
-
-    For disabled CONFIG_DIFFTEST, generates:
-      `define IFDEF_DIFFTEST(x)
-
-    Args:
-        macro_name: The macro name (e.g., CONFIG_DIFFTEST)
-
-    Returns:
-        The helper macro definition string
-    """
-    # Extract the suffix after CONFIG_ prefix
-    if macro_name.startswith("CONFIG_"):
-        suffix = macro_name[7:]  # Remove "CONFIG_" prefix
-    else:
-        suffix = macro_name
-    
-    helper_name = f"IFDEF_{suffix}"
-    
-    if enabled:
-        return f"`define {helper_name}(x) x\n"
-    return f"`define {helper_name}(x)\n"
-
-
 def convert_file(
     input_path: str, output_path: str = None, default_width: int = 32, config_path: str = None
 ) -> str:
@@ -298,12 +278,7 @@ def convert_file(
         lines = f.readlines()
 
     converted_lines = []
-    helper_macro_states = {}  # CONFIG_* -> bool for IFDEF helper generation
     in_multiline_comment = False
-
-    def track_helper_macro(macro_name: str, enabled: bool):
-        if macro_name.startswith("CONFIG_") and enabled is not None:
-            helper_macro_states[macro_name] = enabled
 
     for line in lines:
         # Handle multiline comments
@@ -319,46 +294,8 @@ def convert_file(
 
         converted_line = convert_line(line, default_width, config_values)
         converted_lines.append(converted_line)
-        
-        # Track CONFIG_* defines for helper macro generation
-        stripped = line.strip()
-        if stripped.startswith("#define"):
-            # Check if it's a value-less define
-            empty_pattern = r"^\s*#define\s+(\w+)\s*$"
-            empty_match = re.match(empty_pattern, stripped)
-            if empty_match:
-                track_helper_macro(empty_match.group(1), True)
-            else:
-                # Also track bool-like CONFIG_* values from define text or .config.
-                simple_pattern = r"^\s*#define\s+(\w+)\s+(.+)$"
-                simple_match = re.match(simple_pattern, stripped)
-                if simple_match:
-                    macro_name = simple_match.group(1)
-                    raw_value = simple_match.group(2).strip()
-
-                    cfg_state = None
-                    if macro_name in config_values:
-                        cfg_state = parse_config_bool(config_values[macro_name])
-                    if cfg_state is None:
-                        cfg_state = parse_config_bool(raw_value)
-
-                    if cfg_state is not None:
-                        track_helper_macro(macro_name, cfg_state)
-
-    # Keep IFDEF helpers available even if the symbol is not emitted in autoconf.h
-    # (for example when CONFIG_FOO is set to n in .config).
-    for macro_name, cfg_value in config_values.items():
-        cfg_state = parse_config_bool(cfg_value)
-        if cfg_state is not None:
-            track_helper_macro(macro_name, cfg_state)
 
     content = "".join(converted_lines)
-    
-    # Append helper macros for tracked CONFIG_* symbols
-    if helper_macro_states:
-        content += "\n// Conditional compilation helper macros\n"
-        for macro_name, enabled in helper_macro_states.items():
-            content += generate_ifdef_helper(macro_name, enabled)
 
     if output_path:
         with open(output_path, "w") as f:

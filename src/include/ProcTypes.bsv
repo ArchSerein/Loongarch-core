@@ -15,7 +15,7 @@ typedef struct {
   Bit#(16) data;
 } CpuToHostData deriving(Bits, Eq, FShow);
 
-`IFDEF_DIFFTEST(
+`ifdef CONFIG_DIFFTEST
 typedef struct {
   Bool valid;
   Addr pc;
@@ -105,7 +105,7 @@ typedef struct {
   DiffStoreEvent store;
   DiffLoadEvent load;
 } DiffTrace deriving(Bits, Eq);
-)
+`endif
 
 typedef Bit#(5) RIndx;
 

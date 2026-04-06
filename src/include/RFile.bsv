@@ -8,7 +8,9 @@ interface RFile;
   method Action wr(RIndx rindx, Data data);
   method Data rd1(RIndx rindx);
   method Data rd2(RIndx rindx);
-  `IFDEF_DIFFTEST(method DiffArchGRegState diffSnapshot;)
+`ifdef CONFIG_DIFFTEST
+  method DiffArchGRegState diffSnapshot;
+`endif
 endinterface
 
 (* synthesize *)
@@ -28,7 +30,7 @@ module mkRFile(RFile);
   method Data rd1(RIndx rindx) = read(rindx);
   method Data rd2(RIndx rindx) = read(rindx);
 
-  `IFDEF_DIFFTEST(
+`ifdef CONFIG_DIFFTEST
   method DiffArchGRegState diffSnapshot;
     Vector#(32, Data) snap = newVector;
     for (Integer i = 0; i < 32; i = i + 1) begin
@@ -36,7 +38,7 @@ module mkRFile(RFile);
     end
     return DiffArchGRegState{gpr: snap};
   endmethod
-  )
+`endif
 endmodule
 
 (* synthesize *)
@@ -56,7 +58,7 @@ module mkBypassRFile(RFile);
   method Data rd1(RIndx rindx) = read(rindx);
   method Data rd2(RIndx rindx) = read(rindx);
 
-  `IFDEF_DIFFTEST(
+`ifdef CONFIG_DIFFTEST
   method DiffArchGRegState diffSnapshot;
     Vector#(32, Data) snap = newVector;
     for (Integer i = 0; i < 32; i = i + 1) begin
@@ -64,5 +66,5 @@ module mkBypassRFile(RFile);
     end
     return DiffArchGRegState{gpr: snap};
   endmethod
-  )
+`endif
 endmodule

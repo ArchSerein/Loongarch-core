@@ -12,7 +12,9 @@ interface CsrFile;
   method Bool started;
   method Bool hasInterrupt;
   method Data rd(CsrIndx idx);
-  `IFDEF_DIFFTEST(method DiffArchCsrState diffSnapshot;)
+`ifdef CONFIG_DIFFTEST
+  method DiffArchCsrState diffSnapshot;
+`endif
   method Action wr(Maybe#(CsrIndx) idx, Data val);
   method ActionValue#(Addr) raiseException(Bit#(6) ecode, Bit#(9) esubcode, Addr pc);
   method ActionValue#(Addr) returnFromException;
@@ -175,6 +177,7 @@ module mkCsrFile(CsrFile);
 `endif
 
   method Action wr(Maybe#(CsrIndx) csrIdx, Data val);
+    $fwrite(stdout, "csrIdx %x val %x\n", csrIdx, val);
     if (csrIdx matches tagged Valid .idx) begin
       case (idx)
         `CSR_CRMD: csr_crmd <= (val & 32'h000001FF) | (csr_crmd   &

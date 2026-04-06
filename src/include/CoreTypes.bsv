@@ -13,7 +13,9 @@ typedef struct {
   Addr        pc;
   Addr        predPc;
   Bool        dEpoch;
-  `IFDEF_DIFFTEST(Instruction inst);
+`ifdef CONFIG_DIFFTEST
+  Instruction inst;
+`endif
   DecodedInst dInst;
   ExcpInfo    excp;
 }   D2R deriving(Bits, Eq);
@@ -22,7 +24,9 @@ typedef struct {
   Addr        pc;
   Addr        predPc;
   Bool        rEpoch;
-  `IFDEF_DIFFTEST(Instruction inst);
+`ifdef CONFIG_DIFFTEST
+  Instruction inst;
+`endif
   Data        rVal1;
   Data        rVal2;
   Data        csrVal;
@@ -32,7 +36,9 @@ typedef struct {
 
 typedef struct {
   Addr                pc;
-  `IFDEF_DIFFTEST(Instruction inst);
+`ifdef CONFIG_DIFFTEST
+  Instruction         inst;
+`endif
   ExcpInfo            excp;
   Maybe#(ByteMask)    mask;
   Maybe#(ExecInst)    eInst;
@@ -40,9 +46,13 @@ typedef struct {
 
 typedef struct {
   Addr                pc;
-  `IFDEF_DIFFTEST(Instruction inst);
+`ifdef CONFIG_DIFFTEST
+  Instruction         inst;
+`endif
   ExcpInfo            excp;
-  `IFDEF_DIFFTEST(Maybe#(DiffMemOp) diffMem;)
+`ifdef CONFIG_DIFFTEST
+  Maybe#(DiffMemOp)   diffMem;
+`endif
   Maybe#(ExecInst)    mInst;
 }   M2W deriving(Bits, Eq);
 

@@ -89,9 +89,13 @@ module mkCore(Core);
         else if (dInst.iType == Break) dExcp = mkExcp(`ECODE_BRK, `ESUBCODE_NONE, fetchPkt.pc);
       end
 
-      d2rFifo.enq(D2R{pc: fetchPkt.pc, predPc: fetchPkt.predPc, dEpoch: fetchPkt.fEpoch, dInst: dInst,
-        `IFDEF_DIFFTEST(inst: inst),
-        excp: dExcp});
+`ifdef CONFIG_DIFFTEST
+      d2rFifo.enq(D2R{pc: fetchPkt.pc, predPc: fetchPkt.predPc, dEpoch: fetchPkt.fEpoch,
+        dInst: dInst, inst: inst, excp: dExcp});
+`else
+      d2rFifo.enq(D2R{pc: fetchPkt.pc, predPc: fetchPkt.predPc, dEpoch: fetchPkt.fEpoch,
+        dInst: dInst, excp: dExcp});
+`endif
     end
   endrule
 
@@ -108,11 +112,17 @@ module mkCore(Core);
         Data    rVal2 = rf.rd2(fromMaybe(?, rInst.src2));
         Data    csrVal = csrf.rd(fromMaybe(?, rInst.csr));
 
+`ifdef CONFIG_DIFFTEST
         r2eFifo.enq(R2E{pc: decodePkt.pc, predPc: decodePkt.predPc, rEpoch: decodePkt.dEpoch,
-          `IFDEF_DIFFTEST(inst: decodePkt.inst),
+          inst: decodePkt.inst, rVal1: rVal1,
+          rVal2: rVal2, csrVal: csrVal,
+          rInst: rInst, excp: decodePkt.excp});
+`else
+        r2eFifo.enq(R2E{pc: decodePkt.pc, predPc: decodePkt.predPc, rEpoch: decodePkt.dEpoch,
           rVal1: rVal1,
           rVal2: rVal2, csrVal: csrVal,
           rInst: rInst, excp: decodePkt.excp});
+`endif
         sb.insert(rInst.dst);
         d2rFifo.deq();
       end
@@ -197,11 +207,17 @@ module mkCore(Core);
           if (exAle) eExcp = mkExcp(`ECODE_ALE, `ESUBCODE_NONE, eInst.addr);
         end
 
+`ifdef CONFIG_DIFFTEST
         e2mFifo.enq(E2M{pc: rrfPkt.pc,
-          `IFDEF_DIFFTEST(inst: rrfPkt.inst),
+          inst: rrfPkt.inst, excp: eExcp,
+          mask: rrfPkt.rInst.mask,
+          eInst: tagged Valid eInst});
+`else
+        e2mFifo.enq(E2M{pc: rrfPkt.pc,
           excp: eExcp,
           mask: rrfPkt.rInst.mask,
           eInst: tagged Valid eInst});
+`endif
       end
     end
   endrule
@@ -221,23 +237,33 @@ module mkCore(Core);
       case (eInst.iType)
         Ld: begin
           dCache.req(MemReq { op: Ld, addr: eInst.addr, data: ?, byteEn: byteEn });
-          `IFDEF_MTRACE($fwrite(stdout, "[MTRACE] LD pc:%x addr:%x be:%x\n", execPkt.pc, eInst.addr, byteEn));
+`ifdef CONFIG_MTRACE
+          $fwrite(stdout, "[MTRACE] LD pc:%x addr:%x be:%x\n", execPkt.pc, eInst.addr, byteEn);
+`endif
         end
         St: begin
           dCache.req(MemReq { op: St, addr: eInst.addr, data: wData, byteEn: byteEn });
-          `IFDEF_MTRACE($fwrite(stdout, "[MTRACE] ST pc:%x addr:%x be:%x data:%x raw:%x\n", execPkt.pc, eInst.addr, byteEn, wData, eInst.data));
+`ifdef CONFIG_MTRACE
+          $fwrite(stdout, "[MTRACE] ST pc:%x addr:%x be:%x data:%x raw:%x\n", execPkt.pc, eInst.addr, byteEn, wData, eInst.data);
+`endif
         end
         Ll: begin
           dCache.req(MemReq { op: Lr, addr: eInst.addr, data: ?, byteEn: byteEn });
-          `IFDEF_MTRACE($fwrite(stdout, "[MTRACE] LL pc:%x addr:%x be:%x\n", execPkt.pc, eInst.addr, byteEn));
+`ifdef CONFIG_MTRACE
+          $fwrite(stdout, "[MTRACE] LL pc:%x addr:%x be:%x\n", execPkt.pc, eInst.addr, byteEn);
+`endif
         end
         Sc: begin
           dCache.req(MemReq { op: Sc, addr: eInst.addr, data: wData, byteEn: byteEn });
-          `IFDEF_MTRACE($fwrite(stdout, "[MTRACE] SC pc:%x addr:%x be:%x data:%x raw:%x\n", execPkt.pc, eInst.addr, byteEn, wData, eInst.data));
+`ifdef CONFIG_MTRACE
+          $fwrite(stdout, "[MTRACE] SC pc:%x addr:%x be:%x data:%x raw:%x\n", execPkt.pc, eInst.addr, byteEn, wData, eInst.data);
+`endif
         end
         Fence: begin
           dCache.req(MemReq { op: Fence, addr: ?, data: ?, byteEn: byteEn });
-          `IFDEF_MTRACE($fwrite(stdout, "[MTRACE] FENCE pc:%x\n", execPkt.pc));
+`ifdef CONFIG_MTRACE
+          $fwrite(stdout, "[MTRACE] FENCE pc:%x\n", execPkt.pc);
+`endif
         end
         default: noAction;
       endcase
@@ -331,7 +357,9 @@ module mkCore(Core);
         csrf.wr(isCsrWrite ? mInst.csr : Invalid, isCsrWrite ? mInst.addr : mInst.data);
       end
 
+    `ifdef CONFIG_DIFFTEST
       $fwrite(stdout, "commit: pc->%x, inst->%x\n", memPkt.pc, memPkt.inst);
+    `endif
     `ifdef CONFIG_DIFFTEST
       Addr commitNextPc = mInst.mispredict ? mInst.addr : (memPkt.pc + 4);
       Bool isMMIO = (mInst.iType == Ld || mInst.iType == St || mInst.iType == Ll || mInst.iType == Sc)
