@@ -1,6 +1,5 @@
 #include "difftest.hpp"
 
-#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -202,10 +201,6 @@ void Difftest::do_instr_commit(int index) {
         timer.time_val = dut.csr.tval;
         proxy->timercpy(&timer);
     }
-    if (commit.skip) {
-        proxy->regcpy(dut_regs_ptr_, DIFFTEST_TO_REF, DIFF_TO_REF_GR);
-        return;
-    }
 
     proxy->exec(1);
 }
@@ -226,7 +221,7 @@ int Difftest::step(std::uint64_t main_time) {
         progress_ = true;
         if (state != nullptr) {
             state->record_inst(commit.pc, commit.inst, commit.wen, commit.wdest, commit.wdata,
-                               commit.skip != 0);
+                               false);
         }
         ++idx_commit_;
     }

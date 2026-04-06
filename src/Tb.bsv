@@ -117,7 +117,7 @@ rule drainDiffTrace (started && core.diffTraceValid);
     pack(t.commit.wen),
     t.commit.wdest,
     t.commit.wdata,
-    pack(t.commit.skip)
+    0
   );
 endrule
 `endif

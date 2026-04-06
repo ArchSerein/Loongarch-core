@@ -284,9 +284,9 @@ module mkCsrFile(CsrFile);
       estat: next_estat_raw | (next_timerInt ? 32'h00000800 : 0)
     };
   endmethod
+  `endif
 
   method Action wr(Maybe#(CsrIndx) csrIdx, Data val);
-    $fwrite(stdout, "csrIdx %x val %x\n", csrIdx, val);
     if (csrIdx matches tagged Valid .idx) begin
       case (idx)
         `CSR_CRMD: csr_crmd <= (val & 32'h000001FF) | (csr_crmd   &

@@ -267,13 +267,14 @@ public:
     if (!g_run || difftest == nullptr || !difftest->enabled()) {
       return;
     }
+    (void)skip;
 
     instr_commit_t* commit = difftest->get_instr_commit(0);
     commit->valid = valid;
     commit->pc = pc;
     commit->next_pc = next_pc;
     commit->inst = inst;
-    commit->skip = skip;
+    commit->skip = 0;
     commit->wen = (wen != 0) ? 1 : 0;
     commit->wdest = wdest;
     commit->wdata = wdata;

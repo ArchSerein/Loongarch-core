@@ -50,6 +50,7 @@ module mkRFile(RFile);
     end
     return DiffArchGRegState{gpr: snap};
   endmethod
+  `endif
 endmodule
 
 (* synthesize *)
@@ -88,4 +89,5 @@ module mkBypassRFile(RFile);
     end
     return DiffArchGRegState{gpr: snap};
   endmethod
+  `endif
 endmodule

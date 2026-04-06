@@ -358,11 +358,11 @@ module mkCore(Core);
 
     `ifdef CONFIG_DIFFTEST
       $fwrite(stdout, "commit: pc->%x, inst->%x\n", memPkt.pc, memPkt.inst);
+    `else
+      $fwrite(stdout, "commit: pc->%x\n", memPkt.pc);
     `endif
     `ifdef CONFIG_DIFFTEST
       Addr commitNextPc = mInst.mispredict ? mInst.addr : (memPkt.pc + 4);
-      Bool isMMIO = (mInst.iType == Ld || mInst.iType == St || mInst.iType == Ll || mInst.iType == Sc)
-                    && (mInst.addr[31:16] == 16'hbfaf);
 
       Maybe#(RIndx) diffDst = tagged Invalid;
       Bool isCsrWrite = (!wb_has_excp) && (mInst.iType == Csrw || mInst.iType == Csrxchg);
@@ -417,7 +417,7 @@ module mkCore(Core);
           wen: wen,
           wdest: fromMaybe(0, mInst.dst),
           wdata: mInst.data,
-          skip: isMMIO
+          skip: False
         },
         regs: rf.diffSnapshotAfterWrite(diffDst, mInst.data),
         csr: csrf.diffSnapshotAfterWrite(
