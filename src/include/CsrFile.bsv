@@ -12,16 +12,20 @@ interface CsrFile;
   method Bool started;
   method Bool hasInterrupt;
   method Data rd(CsrIndx idx);
-  `ifdef CONFIG_DIFFTEST
+`ifdef CONFIG_DIFFTEST
     method DiffArchCsrState diffSnapshot;
-    method DiffArchCsrState diffSnapshotAfterWrite(Maybe#(CsrIndx) idx, Data val, Bool raiseExcp, Bit#(6) ecode, Bit#(9) esubcode, Addr pc);
-  `endif
+    method DiffArchCsrState diffSnapshotAfterWrite(Maybe#(CsrIndx) idx, Data val, Bool raiseExcp, Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv);
+`endif
   method Action wr(Maybe#(CsrIndx) idx, Data val);
-  method ActionValue#(Addr) raiseException(Bit#(6) ecode, Bit#(9) esubcode, Addr pc);
+  method ActionValue#(Addr) raiseException(Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv);
   method ActionValue#(Addr) returnFromException;
   method ActionValue#(CpuToHostData) cpuToHost;
   method Bool cpuToHostValid;
 endinterface
+
+function Bool updateBadvOnException(Bit#(6) ecode);
+  return (ecode == `ECODE_ADE) || (ecode == `ECODE_ALE);
+endfunction
 
 module mkCsrFile(CsrFile);
   Reg#(Bool) startReg <- mkReg(False);
@@ -69,19 +73,6 @@ module mkCsrFile(CsrFile);
 
   rule count (startReg);
     cycles <= cycles + 1;
-  endrule
-
-  rule timerCount (startReg && csr_tcfg[`CSR_TCFG_EN] == 1
-    && csr_tval[0] != 0);
-    let next = csr_tval[0] - 1;
-    if (next == 0) begin
-      timerInt[0] <= True;
-      if (csr_tcfg[`CSR_TCFG_PERIOD] == 1)
-      csr_tval[0] <= {csr_tcfg[`CSR_TCFG_INITV], 2'b0};
-      else
-      csr_tval[0] <= 0;
-    end else
-    csr_tval[0] <= next;
   endrule
 
   method Action start if (!startReg);
@@ -177,7 +168,7 @@ module mkCsrFile(CsrFile);
   endmethod
 
   method DiffArchCsrState diffSnapshotAfterWrite(Maybe#(CsrIndx) csrIdx, Data val, Bool raiseExcp,
-      Bit#(6) ecode, Bit#(9) esubcode, Addr pc);
+      Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv);
     Data next_crmd = csr_crmd;
     Data next_prmd = csr_prmd;
     Data next_euen = csr_euen;
@@ -206,6 +197,8 @@ module mkCsrFile(CsrFile);
     Data next_dmw0 = csr_dmw0;
     Data next_dmw1 = csr_dmw1;
     Data next_estat_raw = csr_estat;
+    Bool wrote_tcfg = False;
+    Bool cleared_timer_int = False;
 
     if (raiseExcp) begin
       next_crmd[`CSR_CRMD_PLV] = 2'b0;
@@ -215,6 +208,9 @@ module mkCsrFile(CsrFile);
       next_estat_raw[`CSR_ESTAT_ECODE] = ecode;
       next_estat_raw[`CSR_ESTAT_ESUBCODE] = esubcode;
       next_era = pc;
+      if (updateBadvOnException(ecode)) begin
+        next_badv = badv;
+      end
     end else if (csrIdx matches tagged Valid .idx) begin
       case (idx)
         `CSR_CRMD: next_crmd = (val & 32'h000001FF) | (next_crmd & 32'hFFFFFE00);
@@ -240,9 +236,16 @@ module mkCsrFile(CsrFile);
         `CSR_TCFG: begin
           next_tcfg = val;
           next_tval = {val[`CSR_TCFG_INITV], 2'b0};
+          wrote_tcfg = True;
+          if (val[`CSR_TCFG_EN] == 1 && val[`CSR_TCFG_INITV] == 0) begin
+            next_timerInt = True;
+          end
         end
         `CSR_TICLR: begin
-          if (val[`CSR_TICLR_CLR] == 1) next_timerInt = False;
+          if (val[`CSR_TICLR_CLR] == 1) begin
+            next_timerInt = False;
+            cleared_timer_int = True;
+          end
         end
         `CSR_LLBCTL: begin
           if (val[1] == 1) next_llbit = False;
@@ -253,6 +256,21 @@ module mkCsrFile(CsrFile);
         `CSR_DMW1: next_dmw1 = (val & 32'hEE000039) | (next_dmw1 & 32'h11FFFFC6);
         default: begin end
       endcase
+    end
+
+    if (!raiseExcp && !wrote_tcfg && !cleared_timer_int && next_tcfg[`CSR_TCFG_EN] == 1) begin
+      if (next_tval != 0) begin
+        let tval_next = next_tval - 1;
+        if (tval_next == 0) begin
+          next_timerInt = True;
+          if (next_tcfg[`CSR_TCFG_PERIOD] == 1)
+            next_tval = {next_tcfg[`CSR_TCFG_INITV], 2'b0};
+          else
+            next_tval = 0;
+        end else begin
+          next_tval = tval_next;
+        end
+      end
     end
 
     return DiffArchCsrState{
@@ -287,6 +305,8 @@ module mkCsrFile(CsrFile);
   `endif
 
   method Action wr(Maybe#(CsrIndx) csrIdx, Data val);
+    Bool wrote_tcfg = False;
+    Bool cleared_timer_int = False;
     if (csrIdx matches tagged Valid .idx) begin
       case (idx)
         `CSR_CRMD: csr_crmd <= (val & 32'h000001FF) | (csr_crmd   &
@@ -340,11 +360,17 @@ module mkCsrFile(CsrFile);
         `CSR_TCFG: begin
           csr_tcfg <= val;
           csr_tval[1] <= {val[`CSR_TCFG_INITV], 2'b0};
+          wrote_tcfg = True;
+          if (val[`CSR_TCFG_EN] == 1 && val[`CSR_TCFG_INITV] == 0) begin
+            timerInt[1] <= True;
+          end
         end
 
         `CSR_TICLR: begin
-          if (val[`CSR_TICLR_CLR] == 1)
-          timerInt[1] <= False;
+          if (val[`CSR_TICLR_CLR] == 1) begin
+            timerInt[1] <= False;
+            cleared_timer_int = True;
+          end
         end
 
         `CSR_LLBCTL: begin
@@ -363,10 +389,24 @@ module mkCsrFile(CsrFile);
           32'h11FFFFC6);
         endcase
       end
+      if (!wrote_tcfg && !cleared_timer_int && startReg && csr_tcfg[`CSR_TCFG_EN] == 1) begin
+        if (csr_tval[1] != 0) begin
+          let tval_next = csr_tval[1] - 1;
+          if (tval_next == 0) begin
+            timerInt[1] <= True;
+            if (csr_tcfg[`CSR_TCFG_PERIOD] == 1)
+              csr_tval[1] <= {csr_tcfg[`CSR_TCFG_INITV], 2'b0};
+            else
+              csr_tval[1] <= 0;
+          end else begin
+            csr_tval[1] <= tval_next;
+          end
+        end
+      end
       numInsts <= numInsts + 1;
     endmethod
 
-    method ActionValue#(Addr) raiseException(Bit#(6) ecode, Bit#(9) esubcode, Addr pc);
+    method ActionValue#(Addr) raiseException(Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv);
       Data curCrmd = csr_crmd;
       Data nextCrmd = curCrmd;
       nextCrmd[`CSR_CRMD_PLV] = 2'b0;
@@ -384,6 +424,9 @@ module mkCsrFile(CsrFile);
       csr_prmd <= nextPrmd;
       csr_estat <= nextEstat;
       csr_era <= pc;
+      if (ecode == `ECODE_ADE || ecode == `ECODE_ALE) begin
+        csr_badv <= badv;
+      end
       return csr_eentry;
     endmethod
 

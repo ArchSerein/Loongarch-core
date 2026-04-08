@@ -42,6 +42,7 @@ endfunction
 interface ICache;
   method Action req(Addr a);
   method ActionValue#(Instruction) resp;
+  method Action invalidate;
   interface AxiMemMaster axiMem;
 endinterface
 
@@ -239,6 +240,14 @@ module mkICache(ICache);
     let d = respQ.first;
     respQ.deq;
     return d;
+  endmethod
+
+  method Action invalidate;
+    for (Integer s = 0; s < valueOf(ICacheSets); s = s + 1) begin
+      for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
+        validStore[s][w] <= False;
+      end
+    end
   endmethod
 
   interface AxiMemMaster axiMem;

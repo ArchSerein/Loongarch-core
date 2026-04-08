@@ -304,7 +304,7 @@ private:
       goto good;
     } else if ((addr >> 24) == 0x1c) {
       goto good;
-    } else if ((addr >> 24) == 0x00) {
+    } else if ((addr >> 24) == 0x00 || (addr >> 24) == 0x80 || (addr >> 24) == 0xa0) {
       goto good;
     } else goto bad;
   good:

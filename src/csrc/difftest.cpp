@@ -226,9 +226,19 @@ int Difftest::step(std::uint64_t main_time) {
         ++idx_commit_;
     }
 
-    if (idx_commit_ == 0 && !dut.excp.excp_valid) {
-        return STATE_RUNNING;
-    }
+  if (idx_commit_ == 0 && !dut.excp.excp_valid) {
+    return STATE_RUNNING;
+  }
+
+  if (dut.excp.excp_valid && (dut.excp.exceptionPC == 0x1c0723ac ||
+      dut.excp.exceptionPC == 0x1c074fb4 ||
+      (dut.excp.exceptionPC >= 0x1c074f00 && dut.excp.exceptionPC <= 0x1c075020))) {
+    std::fprintf(stderr,
+                 "[DIFFDBG] idx_commit=%u commit0_valid=%u commit0_pc=0x%08x "
+                 "excp_valid=%u intr=0x%08x exc=0x%08x this_pc=0x%08x\n",
+                 idx_commit_, dut.commit[0].valid, dut.commit[0].pc, dut.excp.excp_valid,
+                 dut.excp.interrupt, dut.excp.exception, dut.csr.this_pc);
+  }
 
     if (idx_commit_ > 0) {
         dut.csr.this_pc = dut.commit[idx_commit_ - 1].pc;
@@ -255,11 +265,16 @@ int Difftest::step(std::uint64_t main_time) {
         dut.commit[index].valid = 0;
     }
 
-    if (dut.excp.excp_valid && dut.excp.exception == 0) {
-        if (dut.excp.interrupt != 0 && proxy->raise_intr != nullptr) {
-            proxy->raise_intr(dut.excp.interrupt);
-            return STATE_RUNNING;
-        }
+  if (dut.excp.excp_valid && dut.excp.exception == 0) {
+    if (dut.excp.interrupt != 0 && proxy->raise_intr != nullptr) {
+      if (dut.excp.exceptionPC == 0x1c0723ac || dut.excp.exceptionPC == 0x1c074fb4 ||
+          (dut.excp.exceptionPC >= 0x1c074f00 && dut.excp.exceptionPC <= 0x1c075020)) {
+        std::fprintf(stderr, "[DIFFDBG] raise_intr intr=0x%08x at pc=0x%08x\n",
+                     dut.excp.interrupt, dut.excp.exceptionPC);
+      }
+      proxy->raise_intr(dut.excp.interrupt);
+      return STATE_RUNNING;
+    }
         if ((dut.csr.estat & 0x3) != 0) {
             return STATE_RUNNING;
         }

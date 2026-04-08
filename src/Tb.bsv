@@ -71,6 +71,12 @@ endrule
 `ifdef CONFIG_DIFFTEST
 rule drainDiffTrace (started && core.diffTraceValid);
   let t <- core.diffTrace;
+  if (t.commit.pc == 32'h1c074fb4) begin
+    $fwrite(stdout,
+      "[TBDIFF] pc:%x cvalid:%0d excpValid:%0d intr:%x exc:%x era:%x crmd:%x estat:%x\n",
+      t.commit.pc, pack(t.commit.valid), pack(t.excp.excpValid), t.excp.interrupt,
+      t.excp.exception, t.csr.era, t.csr.crmd, t.csr.estat);
+  end
   indication.difftest_greg_state(
     t.regs.gpr[0], t.regs.gpr[1], t.regs.gpr[2], t.regs.gpr[3],
     t.regs.gpr[4], t.regs.gpr[5], t.regs.gpr[6], t.regs.gpr[7],
