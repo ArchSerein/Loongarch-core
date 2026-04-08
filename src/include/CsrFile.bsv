@@ -12,6 +12,7 @@ interface CsrFile;
   method Bool started;
   method Bool hasInterrupt;
   method Data rd(CsrIndx idx);
+  method Bit#(64) stableCounterValue;
 `ifdef CONFIG_DIFFTEST
     method DiffArchCsrState diffSnapshot;
     method DiffArchCsrState diffSnapshotAfterWrite(Maybe#(CsrIndx) idx, Data val, Bool raiseExcp, Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv);
@@ -31,7 +32,7 @@ module mkCsrFile(CsrFile);
   Reg#(Bool) startReg <- mkReg(False);
 
   Reg#(Data) numInsts <- mkReg(0);
-  Reg#(Data)   cycles <- mkReg(0);
+  Reg#(Bit#(64)) cycles <- mkReg(0);
 
   Fifo#(2, CpuToHostData) toHostFifo <- mkCFFifo;
 
@@ -133,6 +134,10 @@ module mkCsrFile(CsrFile);
         default: res = 0;
     endcase
     return res;
+  endmethod
+
+  method Bit#(64) stableCounterValue;
+    return cycles;
   endmethod
 
 `ifdef CONFIG_DIFFTEST

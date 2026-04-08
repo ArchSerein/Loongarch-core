@@ -70,6 +70,8 @@ function ExecInst exec(DecodedInst dInst, Data rVal1, Data rVal2, Addr pc, Addr 
                  csrVal :
                dInst.iType == Csrxchg ?
                  csrVal :
+               dInst.iType == RdCntId ?
+                 csrVal :
                (dInst.iType == St || dInst.iType == Sc) ?
                  rVal2 :
                (dInst.iType == J || dInst.iType == Jr) ?

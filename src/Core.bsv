@@ -245,6 +245,10 @@ module mkCore(Core);
           endcase
         end
 
+        if (rrfPkt.rInst.iType == RdTimeL) begin
+          eInst.data = truncate(csrf.stableCounterValue);
+        end
+
         if (eInst.mispredict) begin
           exeEpoch[2] <= !exeEpoch[2];
           pcReg[2] <= eInst.addr;

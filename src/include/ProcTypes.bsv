@@ -135,6 +135,8 @@ typedef enum {
   Csrr, // CSRRD
   Csrw, // CSRWR
   Csrxchg, // CSRXCHG
+  RdTimeL, // RDTIMEL.W rd, r0
+  RdCntId, // RDTIMEL.W r0, rj (Counter ID writeback only)
 
   Fence, // DBAR / IBAR
 
@@ -277,6 +279,16 @@ function Fmt showInst(Instruction inst);
       default: $format("unsup-shift 0x%0x", inst);
     endcase;
     ret = ret + $format(" r%0d, r%0d, %0d", rd, rj, inst[14:10]);
+  end
+  else if (op4 == 4'b0000 && op2 == 2'b00 && op5 == 5'h00 && rk == 5'h18) begin
+    if (rd != 0 && rj == 0)
+      ret = $format("rdtimel.w r%0d, r%0d", rd, rj);
+    else if (rd == 0 && rj != 0)
+      ret = $format("rdtimel.w r%0d, r%0d", rd, rj);
+    else if (rd == 0 && rj == 0)
+      ret = $format("rdtimel.w r0, r0");
+    else
+      ret = $format("unsup-rdtimel-dual 0x%0x", inst);
   end
   else begin
     ret = case (op4)
