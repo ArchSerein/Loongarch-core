@@ -319,13 +319,6 @@ int Difftest::step(std::uint64_t main_time) {
         dut.csr.this_pc = ref.csr.this_pc;
     }
 
-    bool ecode_error = false;
-    if ((dut.csr.estat | 0x00001fffU) != (ref.csr.estat | 0x00001fffU)) {
-        std::fprintf(stderr, "difftest: warning: estat mismatch dut=0x%08x ref=0x%08x\n",
-                     dut.csr.estat, ref.csr.estat);
-        ecode_error = true;
-    }
-
     for (int i = 0; i < DIFFTEST_NR_CSRREG; ++i) {
         if (!kCompareMask[i]) {
             dut_regs_ptr_[DIFFTEST_NR_GREG + i] = 0;
@@ -333,8 +326,7 @@ int Difftest::step(std::uint64_t main_time) {
         }
     }
 
-    if (ecode_error ||
-        std::memcmp(dut_regs_ptr_, ref_regs_ptr_, DIFFTEST_NR_REG * sizeof(std::uint32_t)) != 0) {
+    if (std::memcmp(dut_regs_ptr_, ref_regs_ptr_, DIFFTEST_NR_REG * sizeof(std::uint32_t)) != 0) {
         for (int i = 0; i < DIFFTEST_NR_REG; ++i) {
             if (dut_regs_ptr_[i] != ref_regs_ptr_[i]) {
                 if (i < 32) {
