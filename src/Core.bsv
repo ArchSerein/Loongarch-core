@@ -592,6 +592,10 @@ module mkCore(Core);
       m2wFifo.clear();
       csrSb.clear();
       sb.clear();
+      // A flushed younger mul/div may have started the iterative unit but never
+      // reach the retire path that clears these in-flight flags.
+      mulInFlight <= False;
+      divInFlight <= False;
       fenceInFlight <= False;
       fenceFrontStall <= False;
     end else if (wbRetire) begin
