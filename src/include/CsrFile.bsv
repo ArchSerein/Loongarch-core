@@ -340,6 +340,90 @@ module mkCsrFile(CsrFile);
       estat: next_estat_raw | (next_timerInt ? 32'h00000800 : 0)
     };
   endmethod
+
+  method DiffArchCsrState diffSnapshotAfterTlbrd;
+    Bit#(3) tlbIndex = truncate(csr_tlbidx[`CSR_TLBIDX_INDEX]);
+    Data next_crmd = csr_crmd;
+    Data next_prmd = csr_prmd;
+    Data next_euen = csr_euen;
+    Data next_ecfg = csr_ecfg;
+    Data next_era = csr_era;
+    Data next_badv = csr_badv;
+    Data next_eentry = csr_eentry;
+    Data next_tlbidx = zeroExtend(tlbIndex);
+    Data next_tlbehi = 0;
+    Data next_tlbelo0 = 0;
+    Data next_tlbelo1 = 0;
+    Data next_asid = csr_asid;
+    Data next_pgdl = csr_pgdl;
+    Data next_pgdh = csr_pgdh;
+    Data next_save0 = csr_save0;
+    Data next_save1 = csr_save1;
+    Data next_save2 = csr_save2;
+    Data next_save3 = csr_save3;
+    Data next_tid = csr_tid;
+    Data next_tcfg = csr_tcfg;
+    Data next_tval = csr_tval[1];
+    Bool next_timerInt = timerInt[1];
+    Data next_tlbrentry = csr_tlbrentry;
+    Data next_dmw0 = csr_dmw0;
+    Data next_dmw1 = csr_dmw1;
+    Data next_estat_raw = csr_estat;
+
+    if (tlb_ne[tlbIndex]) begin
+      next_tlbidx[31] = 1'b1;
+    end else begin
+      next_tlbidx[29:24] = tlb_ps[tlbIndex];
+      next_tlbehi = tlb_ehi[tlbIndex];
+      next_tlbelo0 = tlb_elo0[tlbIndex];
+      next_tlbelo1 = tlb_elo1[tlbIndex];
+      next_asid = (next_asid & 32'hFFFFFC00) | (tlb_asid[tlbIndex] & 32'h000003FF);
+    end
+
+    if (next_tcfg[`CSR_TCFG_EN] == 1) begin
+      if (next_tval != 0) begin
+        let tval_next = next_tval - 1;
+        if (tval_next == 0) begin
+          next_timerInt = True;
+          if (next_tcfg[`CSR_TCFG_PERIOD] == 1)
+            next_tval = {next_tcfg[`CSR_TCFG_INITV], 2'b0};
+          else
+            next_tval = 0;
+        end else begin
+          next_tval = tval_next;
+        end
+      end
+    end
+
+    return DiffArchCsrState{
+      crmd: next_crmd,
+      prmd: next_prmd,
+      euen: next_euen,
+      ecfg: next_ecfg,
+      era: next_era,
+      badv: next_badv,
+      eentry: next_eentry,
+      tlbidx: next_tlbidx,
+      tlbehi: next_tlbehi,
+      tlbelo0: next_tlbelo0,
+      tlbelo1: next_tlbelo1,
+      asid: next_asid,
+      pgdl: next_pgdl,
+      pgdh: next_pgdh,
+      save0: next_save0,
+      save1: next_save1,
+      save2: next_save2,
+      save3: next_save3,
+      tid: next_tid,
+      tcfg: next_tcfg,
+      tval: next_tval,
+      llbctl: {29'b0, pack(llbctlKlo), 1'b0, pack(llbit)},
+      tlbrentry: next_tlbrentry,
+      dmw0: next_dmw0,
+      dmw1: next_dmw1,
+      estat: next_estat_raw | (next_timerInt ? 32'h00000800 : 0)
+    };
+  endmethod
   `endif
 
   method Action wr(Maybe#(CsrIndx) csrIdx, Data val);

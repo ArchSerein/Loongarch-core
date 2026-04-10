@@ -34,6 +34,44 @@ static std::unique_ptr<SimRequestProxy> g_request = nullptr;
 static volatile int g_run = 1;
 static std::uint32_t g_exit_code = 1;
 
+#ifdef CONFIG_DIFFTEST
+enum class CounterInstKind {
+  None,
+  TimeLow,
+  CounterId,
+  TimeHigh,
+};
+
+CounterInstKind decode_counter_inst(std::uint32_t inst) {
+  const std::uint32_t op_31_26 = (inst >> 26) & 0x3f;
+  const std::uint32_t op_25_22 = (inst >> 22) & 0xf;
+  const std::uint32_t op_21_20 = (inst >> 20) & 0x3;
+  const std::uint32_t op_19_15 = (inst >> 15) & 0x1f;
+  const std::uint32_t rk = (inst >> 10) & 0x1f;
+  const std::uint32_t rj = (inst >> 5) & 0x1f;
+  const std::uint32_t rd = inst & 0x1f;
+
+  if (op_31_26 != 0 || op_25_22 != 0 || op_21_20 != 0 || op_19_15 != 0) {
+    return CounterInstKind::None;
+  }
+
+  if (rk == 0x18) {
+    if (rd == 0 && rj != 0) {
+      return CounterInstKind::CounterId;
+    }
+    if (rj == 0) {
+      return CounterInstKind::TimeLow;
+    }
+  }
+
+  if (rk == 0x19 && rj == 0) {
+    return CounterInstKind::TimeHigh;
+  }
+
+  return CounterInstKind::None;
+}
+#endif
+
 Options parse_args(int argc, char** argv) {
   Options opts;
 #ifdef CONFIG_DIFFTEST
@@ -278,6 +316,29 @@ public:
     commit->wen = (wen != 0) ? 1 : 0;
     commit->wdest = wdest;
     commit->wdata = wdata;
+    commit->is_CNTinst = 0;
+    commit->timer_64_value = last_timer_64_value;
+
+    switch (decode_counter_inst(inst)) {
+      case CounterInstKind::TimeLow:
+        last_timer_64_value =
+            (last_timer_64_value & 0xffffffff00000000ULL) | static_cast<std::uint64_t>(wdata);
+        commit->is_CNTinst = 1;
+        commit->timer_64_value = last_timer_64_value;
+        break;
+      case CounterInstKind::CounterId:
+        commit->is_CNTinst = 1;
+        commit->timer_64_value = last_timer_64_value;
+        break;
+      case CounterInstKind::TimeHigh:
+        last_timer_64_value =
+            (static_cast<std::uint64_t>(wdata) << 32) | (last_timer_64_value & 0xffffffffULL);
+        commit->is_CNTinst = 1;
+        commit->timer_64_value = last_timer_64_value;
+        break;
+      case CounterInstKind::None:
+        break;
+    }
 
     const int state = difftest->step(diff_main_time);
     ++diff_main_time;
@@ -295,6 +356,7 @@ private:
 #ifdef CONFIG_DIFFTEST
   Difftest* difftest = nullptr;
   std::uint64_t diff_main_time = 0;
+  std::uint64_t last_timer_64_value = 0;
 #endif
 
   void check_memory_bound(std::uint32_t addr, bool is_write) {

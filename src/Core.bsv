@@ -548,6 +548,19 @@ module mkCore(Core);
             end
           end
  
+        let diffCsrState =
+          (mInst.iType == Tlbrd) ?
+            csrf.diffSnapshotAfterTlbrd :
+            csrf.diffSnapshotAfterWrite(
+              diffCsrIdx,
+              diffCsrVal,
+              wb_has_excp,
+              wb_ecode,
+              wb_esubcode,
+              memPkt.pc,
+              wbExcp.badv
+            );
+
         diffTraceFifo.enq(DiffTrace{
           commit: DiffCommit{
             valid: !wb_has_excp,
@@ -560,15 +573,7 @@ module mkCore(Core);
             skip: False
           },
           regs: rf.diffSnapshotAfterWrite(diffDst, mInst.data),
-          csr: csrf.diffSnapshotAfterWrite(
-            diffCsrIdx,
-            diffCsrVal,
-            wb_has_excp,
-            wb_ecode,
-            wb_esubcode,
-            memPkt.pc,
-            wbExcp.badv
-          ),
+          csr: diffCsrState,
           excp: DiffExcpEvent{
             excpValid: wb_has_excp,
             eret: (mInst.iType == Ertn),
