@@ -1,6 +1,7 @@
 import Types::*;
 import ProcTypes::*;
 import Vector::*;
+`include "CsrAddr.bsv"
 
 (* noinline *)
 function DecodedInst decode(Instruction inst);
@@ -94,6 +95,44 @@ function DecodedInst decode(Instruction inst);
           default: dInst.iType = Unsupported;
         endcase
       end
+      else if (op_25_22 == 4'b0000 && op_21_20 == 2'b00 &&
+               op_19_15 == 5'h00 && rk == 5'h18) begin
+        // This core has a single GPR writeback port, so only accept the
+        // RDTIMEL.W forms where one architectural destination is r0.
+        if (rd == 5'd0 && rj != 5'd0) begin
+          dInst.iType = RdCntId;
+          dInst.dst   = tagged Valid rj;
+          dInst.csr   = tagged Valid `CSR_TID;
+        end
+        else if (rj == 5'd0) begin
+          dInst.iType = RdTimeL;
+          if (rd != 5'd0) begin
+            dInst.dst = tagged Valid rd;
+          end
+        end
+        else begin
+          dInst.iType = Unsupported;
+        end
+      end
+      else if (op_25_22 == 4'b0000 && op_21_20 == 2'b00 &&
+               op_19_15 == 5'h00 && rk == 5'h19) begin
+        if (rj == 5'd0) begin
+          dInst.iType = RdTimeH;
+          if (rd != 5'd0) begin
+            dInst.dst = tagged Valid rd;
+          end
+        end
+        else begin
+          dInst.iType = Unsupported;
+        end
+      end
+      else if (op_25_22 == 4'b0000 && op_21_20 == 2'b00 && inst[10:6] == 5'b00000) begin
+        case (inst[5:0])
+          6'h0c: dInst.iType = Syscall;
+          6'h0d: dInst.iType = Break;
+          default: dInst.iType = Unsupported;
+        endcase
+      end
       else if (op_25_22 == 4'b0001 && op_21_20 == 2'b00) begin
         dInst.iType = Alu;
         dInst.dst   = tagged Valid rd;
@@ -126,8 +165,20 @@ function DecodedInst decode(Instruction inst);
 
     6'b000001: begin
       if (op_25_22 == 4'h9 && op_21_20 == 2'h0 && op_19_15 == 5'h10 &&
-          rk == 5'h0e && rj == 5'd0 && rd == 5'd0) begin
-        dInst.iType = Ertn;
+          rj == 5'd0 && rd == 5'd0) begin
+        case (rk)
+          5'h0b: dInst.iType = Tlbrd;
+          5'h0c: dInst.iType = Tlbwr;
+          5'h0e: dInst.iType = Ertn;
+          default: dInst.iType = Unsupported;
+        endcase
+      end
+      else if (op_25_22 == 4'h8 && op_21_20 == 2'h0 && op_19_15 == 5'h00) begin
+        // CACOP: treat as cache maintenance fence in this core model.
+        dInst.iType = Fence;
+        dInst.aluFunc = tagged Valid AddW;
+        dInst.src1 = tagged Valid rj;
+        dInst.imm = tagged Valid si12;
       end
       else begin
         case ({inst[25], inst[24]})
