@@ -3,6 +3,7 @@ import ProcTypes::*;
 import Ehr::*;
 import ConfigReg::*;
 import Fifo::*;
+import Vector::*;
 `include "CsrAddr.bsv"
 `include "Autoconf.bsv"
 
@@ -16,8 +17,11 @@ interface CsrFile;
 `ifdef CONFIG_DIFFTEST
     method DiffArchCsrState diffSnapshot;
     method DiffArchCsrState diffSnapshotAfterWrite(Maybe#(CsrIndx) idx, Data val, Bool raiseExcp, Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv);
+    method DiffArchCsrState diffSnapshotAfterTlbrd;
 `endif
   method Action wr(Maybe#(CsrIndx) idx, Data val);
+  method Action tlbwr;
+  method Action tlbrd;
   method ActionValue#(Addr) raiseException(Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv);
   method ActionValue#(Addr) returnFromException;
   method ActionValue#(CpuToHostData) cpuToHost;
@@ -26,6 +30,28 @@ endinterface
 
 function Bool updateBadvOnException(Bit#(6) ecode);
   return (ecode == `ECODE_ADE) || (ecode == `ECODE_ALE);
+endfunction
+
+function Data updateTimerView(Data tcfg, Data tval, Bool timerInt, Bool wrote_tcfg, Bool cleared_timer_int);
+  Data next_tval = tval;
+  Bool next_timerInt = timerInt;
+
+  if (!wrote_tcfg && !cleared_timer_int && tcfg[`CSR_TCFG_EN] == 1) begin
+    if (next_tval != 0) begin
+      let tval_next = next_tval - 1;
+      if (tval_next == 0) begin
+        next_timerInt = True;
+        if (tcfg[`CSR_TCFG_PERIOD] == 1)
+          next_tval = {tcfg[`CSR_TCFG_INITV], 2'b0};
+        else
+          next_tval = 0;
+      end else begin
+        next_tval = tval_next;
+      end
+    end
+  end
+
+  return (next_timerInt ? 32'h80000000 : 32'h0) | next_tval;
 endfunction
 
 module mkCsrFile(CsrFile);
@@ -71,6 +97,13 @@ module mkCsrFile(CsrFile);
   Reg#(Data) csr_ctag <- mkReg(0);
   Reg#(Data) csr_dmw0 <- mkReg(0);
   Reg#(Data) csr_dmw1 <- mkReg(0);
+
+  Vector#(8, Reg#(Bool)) tlb_ne <- replicateM(mkReg(True));
+  Vector#(8, Reg#(Bit#(6))) tlb_ps <- replicateM(mkReg(0));
+  Vector#(8, Reg#(Data)) tlb_ehi <- replicateM(mkReg(0));
+  Vector#(8, Reg#(Data)) tlb_elo0 <- replicateM(mkReg(0));
+  Vector#(8, Reg#(Data)) tlb_elo1 <- replicateM(mkReg(0));
+  Vector#(8, Reg#(Data)) tlb_asid <- replicateM(mkReg(0));
 
   rule count (startReg);
     cycles <= cycles + 1;
@@ -409,6 +442,43 @@ module mkCsrFile(CsrFile);
         end
       end
       numInsts <= numInsts + 1;
+    endmethod
+
+    method Action tlbwr;
+      Bit#(3) tlbIndex = truncate(csr_tlbidx[`CSR_TLBIDX_INDEX]);
+      Bool isNotExist = unpack(csr_tlbidx[`CSR_TLBIDX_NE]);
+      tlb_ne[tlbIndex] <= isNotExist;
+      if (isNotExist) begin
+        tlb_ps[tlbIndex] <= 0;
+        tlb_ehi[tlbIndex] <= 0;
+        tlb_elo0[tlbIndex] <= 0;
+        tlb_elo1[tlbIndex] <= 0;
+        tlb_asid[tlbIndex] <= 0;
+      end else begin
+        tlb_ps[tlbIndex] <= csr_tlbidx[`CSR_TLBIDX_PS];
+        tlb_ehi[tlbIndex] <= csr_tlbehi;
+        tlb_elo0[tlbIndex] <= csr_tlbelo0;
+        tlb_elo1[tlbIndex] <= csr_tlbelo1;
+        tlb_asid[tlbIndex] <= csr_asid;
+      end
+    endmethod
+
+    method Action tlbrd;
+      Bit#(3) tlbIndex = truncate(csr_tlbidx[`CSR_TLBIDX_INDEX]);
+      Data next_tlbidx = zeroExtend(tlbIndex);
+      if (tlb_ne[tlbIndex]) begin
+        next_tlbidx[31] = 1'b1;
+        csr_tlbehi <= 0;
+        csr_tlbelo0 <= 0;
+        csr_tlbelo1 <= 0;
+      end else begin
+        next_tlbidx[29:24] = tlb_ps[tlbIndex];
+        csr_tlbehi <= tlb_ehi[tlbIndex];
+        csr_tlbelo0 <= tlb_elo0[tlbIndex];
+        csr_tlbelo1 <= tlb_elo1[tlbIndex];
+        csr_asid <= (csr_asid & 32'hFFFFFC00) | (tlb_asid[tlbIndex] & 32'h000003FF);
+      end
+      csr_tlbidx <= next_tlbidx;
     endmethod
 
     method ActionValue#(Addr) raiseException(Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv);

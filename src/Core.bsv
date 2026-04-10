@@ -247,6 +247,8 @@ module mkCore(Core);
 
         if (rrfPkt.rInst.iType == RdTimeL) begin
           eInst.data = truncate(csrf.stableCounterValue);
+        end else if (rrfPkt.rInst.iType == RdTimeH) begin
+          eInst.data = truncateLSB(csrf.stableCounterValue);
         end
 
         if (eInst.mispredict) begin
@@ -458,6 +460,7 @@ module mkCore(Core);
 
       if (wbReady) begin
         Bool wen = False;
+        Bool wbIsCsrWrite = (mInst.iType == Csrw || mInst.iType == Csrxchg);
         if (wb_has_excp) begin
           Addr exEntry <- csrf.raiseException(wb_ecode, wb_esubcode, memPkt.pc, wbExcp.badv);
           exeEpoch[3] <= !exeEpoch[3];
@@ -478,8 +481,13 @@ module mkCore(Core);
             exeEpoch[3] <= !exeEpoch[3];
             pcReg[3] <= era;
             wbFlush = True;
+          end else if (mInst.iType == Tlbwr) begin
+            csrf.tlbwr;
+            csrf.wr(Invalid, mInst.data);
+          end else if (mInst.iType == Tlbrd) begin
+            csrf.tlbrd;
+            csrf.wr(Invalid, mInst.data);
           end else begin
-            Bool wbIsCsrWrite = (mInst.iType == Csrw || mInst.iType == Csrxchg);
             csrf.wr(wbIsCsrWrite ? mInst.csr : Invalid, wbIsCsrWrite ? mInst.addr : mInst.data);
           end
         end

@@ -136,9 +136,13 @@ typedef enum {
   Csrw, // CSRWR
   Csrxchg, // CSRXCHG
   RdTimeL, // RDTIMEL.W rd, r0
+  RdTimeH, // RDTIMEH.W rd, r0
   RdCntId, // RDTIMEL.W r0, rj (Counter ID writeback only)
 
   Fence, // DBAR / IBAR
+
+  Tlbrd, // TLBRD
+  Tlbwr, // TLBWR
 
   Syscall, // SYSCALL exception
   Ertn, // ERTN return from exception
