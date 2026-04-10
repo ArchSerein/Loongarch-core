@@ -1,267 +1,280 @@
 #!/usr/bin/env python3
 """
-Generate a wrapper module to adapt mkCoreAxiTop AXI signals to standard AXI4 interface.
+Generate a fixed chiplab adapter for mkCoreAxiTop.
+
+Input:
+  src/build/verilog/mkCoreAxiTop.v
+
+Output:
+  chiplab/IP/myCPU/mycpu_top.v   (module name fixed: core_top)
 """
 
-import re
-import sys
-
-MK_CORE_AXI_TOP_V = '/root/Loongarch-core/src/build/verilog/mkCoreAxiTop.v'
-OUTPUT_V = '/root/Loongarch-core/src/build/verilog/mkCoreAxiTop_wrapper.v'
-
-AXI_BUNDLED_SIGNALS = {
-    'araddr': {'width': 45, 'split': [
-        ('arid', 44, 41),
-        ('araddr', 40, 9),
-        ('arlen', 8, 1),
-    ]},
-    'awaddr': {'width': 45, 'split': [
-        ('awid', 44, 41),
-        ('awaddr', 40, 9),
-        ('awlen', 8, 1),
-    ]},
-    'wdata': {'width': 37, 'split': [
-        ('wdata', 36, 5),
-        ('wstrb', 4, 1),
-        ('wlast', 0, 0),
-    ]},
-}
-
-STANDARD_AXI_SIGNALS = [
-    ('input', '', 'clk', 'Clock'),
-    ('input', '', 'reset', 'Reset (active high)'),
-    ('input', '[31:0]', 'intrpt', 'Interrupt'),
-    ('input', '', 'intrpt_en', 'Interrupt enable'),
-    ('output', '', 'hostToCpu_rdy', 'Host to CPU ready'),
-    ('output', '[17:0]', 'cpuToHost', 'CPU to host data'),
-    ('output', '', 'cpuToHostValid', 'CPU to host valid'),
-    ('input', '', 'cpuToHost_rdy', 'CPU to host ready'),
-    ('input', '', 'cpuToHostValid_rdy', 'CPU to host valid ready'),
-    ('input', '', 'EN_cpuToHost', 'Enable CPU to host'),
-    ('output', '[101:0]', 'debug_commit', 'Debug commit'),
-    ('output', '', 'debug_commitValid', 'Debug commit valid'),
-    ('input', '', 'debug_commit_rdy', 'Debug commit ready'),
-    ('input', '', 'debug_commitValid_rdy', 'Debug commit valid ready'),
-    ('input', '', 'EN_debug_commit', 'Enable debug commit'),
-    ('', '', '', ''),
-    ('output', '[3:0]', 'arid', 'AXI Read ID'),
-    ('output', '[31:0]', 'araddr', 'AXI Read Address'),
-    ('output', '[7:0]', 'arlen', 'AXI Read Length'),
-    ('output', '[2:0]', 'arsize', 'AXI Read Size'),
-    ('output', '[1:0]', 'arburst', 'AXI Read Burst'),
-    ('output', '[1:0]', 'arlock', 'AXI Read Lock'),
-    ('output', '[3:0]', 'arcache', 'AXI Read Cache'),
-    ('output', '[2:0]', 'arprot', 'AXI Read Protection'),
-    ('output', '', 'arvalid', 'AXI Read Valid'),
-    ('input', '', 'arready', 'AXI Read Ready'),
-    ('', '', '', ''),
-    ('input', '[3:0]', 'rid', 'AXI Read Response ID'),
-    ('input', '[31:0]', 'rdata', 'AXI Read Data'),
-    ('input', '[1:0]', 'rresp', 'AXI Read Response'),
-    ('input', '', 'rlast', 'AXI Read Last'),
-    ('input', '', 'rvalid', 'AXI Read Valid'),
-    ('output', '', 'rready', 'AXI Read Ready'),
-    ('', '', '', ''),
-    ('output', '[3:0]', 'awid', 'AXI Write ID'),
-    ('output', '[31:0]', 'awaddr', 'AXI Write Address'),
-    ('output', '[7:0]', 'awlen', 'AXI Write Length'),
-    ('output', '[2:0]', 'awsize', 'AXI Write Size'),
-    ('output', '[1:0]', 'awburst', 'AXI Write Burst'),
-    ('output', '[1:0]', 'awlock', 'AXI Write Lock'),
-    ('output', '[3:0]', 'awcache', 'AXI Write Cache'),
-    ('output', '[2:0]', 'awprot', 'AXI Write Protection'),
-    ('output', '', 'awvalid', 'AXI Write Valid'),
-    ('input', '', 'awready', 'AXI Write Ready'),
-    ('', '', '', ''),
-    ('output', '[3:0]', 'wid', 'AXI Write Data ID'),
-    ('output', '[31:0]', 'wdata', 'AXI Write Data'),
-    ('output', '[3:0]', 'wstrb', 'AXI Write Strobe'),
-    ('output', '', 'wlast', 'AXI Write Last'),
-    ('output', '', 'wvalid', 'AXI Write Valid'),
-    ('input', '', 'wready', 'AXI Write Ready'),
-    ('', '', '', ''),
-    ('input', '[3:0]', 'bid', 'AXI Write Response ID'),
-    ('input', '[1:0]', 'bresp', 'AXI Write Response'),
-    ('input', '', 'bvalid', 'AXI Write Response Valid'),
-    ('output', '', 'bready', 'AXI Write Response Ready'),
-]
-
-PORT_MAPPING = {
-    'CLK': 'clk',
-    'RST_N': 'reset',
-    'hostToCpu_startpc': 'intrpt',
-    'EN_hostToCpu': 'intrpt_en',
-    'RDY_hostToCpu': 'hostToCpu_rdy',
-    'cpuToHost': 'cpuToHost',
-    'cpuToHostValid': 'cpuToHostValid',
-    'RDY_cpuToHost': 'cpuToHost_rdy',
-    'RDY_cpuToHostValid': 'cpuToHostValid_rdy',
-    'EN_cpuToHost': 'EN_cpuToHost',
-    'axiMem_rdAddrValid': 'arvalid',
-    'RDY_axiMem_rdAddrValid': 'arready',
-    'EN_axiMem_rdAddr': 'EN_araddr',
-    'axiMem_rdAddr': 'araddr_bundled',
-    'RDY_axiMem_rdAddr': 'araddr_rdy',
-    'axiMem_rdData_d': 'rdata',
-    'EN_axiMem_rdData': 'rready',
-    'RDY_axiMem_rdData': 'rdata_rdy',
-    'axiMem_wrAddrValid': 'awvalid',
-    'RDY_axiMem_wrAddrValid': 'awready',
-    'EN_axiMem_wrAddr': 'EN_awaddr',
-    'axiMem_wrAddr': 'awaddr_bundled',
-    'RDY_axiMem_wrAddr': 'awaddr_rdy',
-    'axiMem_wrDataValid': 'wvalid',
-    'RDY_axiMem_wrDataValid': 'wready',
-    'EN_axiMem_wrData': 'EN_wdata',
-    'axiMem_wrData': 'wdata_bundled',
-    'RDY_axiMem_wrData': 'wdata_rdy',
-    'axiMem_wrResp_r': 'bresp',
-    'EN_axiMem_wrResp': 'bready',
-    'RDY_axiMem_wrResp': 'bresp_rdy',
-    'diffCommit': 'debug_commit',
-    'diffCommitValid': 'debug_commitValid',
-    'RDY_diffCommit': 'debug_commit_rdy',
-    'RDY_diffCommitValid': 'debug_commitValid_rdy',
-    'EN_diffCommit': 'EN_debug_commit',
-}
+from pathlib import Path
 
 
-def generate_wrapper():
-    port_decls = []
-    for direction, width, name, comment in STANDARD_AXI_SIGNALS:
-        if name == '':
-            port_decls.append('')
-        elif direction == '':
-            port_decls.append(f"    {name},")
-        elif width:
-            port_decls.append(f"    {direction:6s}  {width:8s} {name},")
-        else:
-            port_decls.append(f"    {direction:6s}            {name},")
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
 
-    wrapper = f"""module mkCoreAxiTop_wrapper (
-{chr(10).join(port_decls)}
+
+def require_ports(text: str, ports: list[str]) -> None:
+    missing = [p for p in ports if p not in text]
+    if missing:
+        miss = ", ".join(missing)
+        raise RuntimeError(f"mkCoreAxiTop.v missing required ports: {miss}")
+
+
+def render_wrapper(enable_diffcommit: bool) -> str:
+    diff_decl = ""
+    diff_conn = ""
+    diff_logic = """
+  assign ws_valid          = 1'b0;
+  assign debug0_wb_pc      = 32'b0;
+  assign debug0_wb_rf_wen  = 4'b0;
+  assign debug0_wb_rf_wnum = 5'b0;
+  assign debug0_wb_rf_wdata= 32'b0;
+  assign debug0_wb_inst    = 32'b0;
+"""
+    if enable_diffcommit:
+        diff_decl = """
+  wire [101:0] diffCommit;
+  wire         diffCommitValid;
+"""
+        diff_conn = """
+    .diffCommit      (diffCommit),
+    .diffCommitValid (diffCommitValid),
+    .EN_diffCommit   (diffCommitValid),
+"""
+        diff_logic = """
+  assign ws_valid          = diffCommitValid;
+  assign debug0_wb_pc      = diffCommit[101:70];
+  assign debug0_wb_inst    = diffCommit[69:38];
+  assign debug0_wb_rf_wen  = {4{diffCommit[37]}};
+  assign debug0_wb_rf_wnum = diffCommit[36:32];
+  assign debug0_wb_rf_wdata= diffCommit[31:0];
+"""
+
+    return f"""// Auto-generated by src/scripts/gen_axi_wrapper.py
+// Do not edit this file manually.
+
+module core_top
+#(
+  parameter TLBNUM   = 32,
+  parameter START_PC = 32'h1c000000
+)
+(
+    input           aclk,
+    input           aresetn,
+    input    [ 7:0] intrpt,
+    // AXI interface
+    // read request
+    output   [ 3:0] arid,
+    output   [31:0] araddr,
+    output   [ 7:0] arlen,
+    output   [ 2:0] arsize,
+    output   [ 1:0] arburst,
+    output   [ 1:0] arlock,
+    output   [ 3:0] arcache,
+    output   [ 2:0] arprot,
+    output          arvalid,
+    input           arready,
+    // read back
+    input    [ 3:0] rid,
+    input    [31:0] rdata,
+    input    [ 1:0] rresp,
+    input           rlast,
+    input           rvalid,
+    output          rready,
+    // write request
+    output   [ 3:0] awid,
+    output   [31:0] awaddr,
+    output   [ 7:0] awlen,
+    output   [ 2:0] awsize,
+    output   [ 1:0] awburst,
+    output   [ 1:0] awlock,
+    output   [ 3:0] awcache,
+    output   [ 2:0] awprot,
+    output          awvalid,
+    input           awready,
+    // write data
+    output   [ 3:0] wid,
+    output   [31:0] wdata,
+    output   [ 3:0] wstrb,
+    output          wlast,
+    output          wvalid,
+    input           wready,
+    // write back
+    input    [ 3:0] bid,
+    input    [ 1:0] bresp,
+    input           bvalid,
+    output          bready,
+
+    // debug
+    input           break_point,
+    input           infor_flag,
+    input  [ 4:0]   reg_num,
+    output          ws_valid,
+    output [31:0]   rf_rdata,
+
+    output [31:0] debug0_wb_pc,
+    output [ 3:0] debug0_wb_rf_wen,
+    output [ 4:0] debug0_wb_rf_wnum,
+    output [31:0] debug0_wb_rf_wdata,
+    output [31:0] debug0_wb_inst
 );
 
-    wire [44:0] araddr_bundled;
-    wire [44:0] awaddr_bundled;
-    wire [36:0] wdata_bundled;
-    wire        arvalid_int, awvalid_int, wvalid_int;
-    wire        arready_int, awready_int, wready_int;
-    wire        bresp_int;
+  wire        core_rdAddrValid;
+  wire [44:0] core_rdAddr;
+  wire        core_rdAddrRdy;
+  wire        core_rdDataRdy;
 
-    mkCoreAxiTop u_core (
-        .aclk                   (clk),
-        .aresetn                (reset),
+  wire        core_wrAddrValid;
+  wire [44:0] core_wrAddr;
+  wire        core_wrAddrRdy;
 
-        .EN_cpuToHost           (EN_cpuToHost),
-        .cpuToHost              (cpuToHost),
-        .cpuToHost_rdy          (cpuToHost_rdy),
+  wire        core_wrDataValid;
+  wire [36:0] core_wrData;
+  wire        core_wrDataRdy;
 
-        .cpuToHostValid         (cpuToHostValid),
-        .cpuToHostValid_rdy     (cpuToHostValid_rdy),
+  wire        core_wrRespRdy;
 
-        .EN_debug_commit        (EN_debug_commit),
-        .debug_commit           (debug_commit),
-        .debug_commit_rdy       (debug_commit_rdy),
+  wire [17:0] cpuToHost;
+  wire        cpuToHostRdy;
+  wire        cpuToHostValid;
+  wire        cpuToHostValidRdy;
 
-        .debug_commitValid      (debug_commitValid),
-        .debug_commitValid_rdy  (debug_commitValid_rdy),
+  wire        rdAddrValidRdy;
+  wire        wrAddrValidRdy;
+  wire        wrDataValidRdy;
 
-        .intrpt                 (intrpt),
-        .intrpt_en              (intrpt_en),
-        .hostToCpu_rdy         (hostToCpu_rdy),
+  reg host_started;
+  always @(posedge aclk) begin
+    if (!aresetn) begin
+      host_started <= 1'b0;
+    end else if (!host_started && host_to_cpu_en) begin
+      host_started <= 1'b1;
+    end
+  end
 
-        .arvalid                (arvalid_int),
-        .arready                (arready),
-        .araddr                (araddr_bundled),
-        .araddr_rdy           (arready),
+  wire host_to_cpu_en = !host_started && host_to_cpu_rdy;
+  wire host_to_cpu_rdy;
 
-        .rdata                 (rdata),
-        .rready                (rready),
-        .rdata_rdy             (rvalid),
+  wire [34:0] core_rdData = {{rdata, rresp, rlast}};
 
-        .awvalid               (awvalid_int),
-        .awready               (awready),
-        .awaddr               (awaddr_bundled),
-        .awaddr_rdy           (awready),
+{diff_decl}
+  mkCoreAxiTop u_core (
+    .CLK                (aclk),
+    .RST_N              (aresetn),
 
-        .wvalid                (wvalid_int),
-        .wready                (wready),
-        .wdata                (wdata_bundled),
-        .wdata_rdy            (wready),
+    .hostToCpu_startpc  (START_PC),
+    .EN_hostToCpu       (host_to_cpu_en),
+    .RDY_hostToCpu      (host_to_cpu_rdy),
 
-        .bresp                (bresp_int),
-        .bready               (bready),
-        .bresp_rdy            (bvalid)
-    );
+    .cpuToHost          (cpuToHost),
+    .EN_cpuToHost       (cpuToHostRdy),
+    .RDY_cpuToHost      (cpuToHostRdy),
+    .cpuToHostValid     (cpuToHostValid),
+    .RDY_cpuToHostValid (cpuToHostValidRdy),
 
-    assign arid      = araddr_bundled[44:41];
-    assign araddr    = araddr_bundled[40: 9];
-    assign arlen     = araddr_bundled[ 8: 1];
-    assign arsize    = {{1'b0, araddr_bundled[0]}};
-    assign arburst   = 2'b01;
-    assign arlock    = 2'b00;
-    assign arcache   = 4'b0011;
-    assign arprot    = 3'b000;
-    assign arvalid   = arvalid_int;
+    .axiMem_rdAddrValid (core_rdAddrValid),
+    .RDY_axiMem_rdAddrValid (rdAddrValidRdy),
+    .axiMem_rdAddr      (core_rdAddr),
+    .EN_axiMem_rdAddr   (core_rdAddrValid && arready),
+    .RDY_axiMem_rdAddr  (core_rdAddrRdy),
 
-    assign awid      = awaddr_bundled[44:41];
-    assign awaddr    = awaddr_bundled[40: 9];
-    assign awlen     = awaddr_bundled[ 8: 1];
-    assign awsize    = {{1'b0, awaddr_bundled[0]}};
-    assign awburst   = 2'b01;
-    assign awlock    = 2'b00;
-    assign awcache   = 4'b0011;
-    assign awprot    = 3'b000;
-    assign awvalid   = awvalid_int;
+    .axiMem_rdData_d    (core_rdData),
+    .EN_axiMem_rdData   (rvalid && core_rdDataRdy),
+    .RDY_axiMem_rdData  (core_rdDataRdy),
 
-    assign wdata     = wdata_bundled[36: 5];
-    assign wstrb     = wdata_bundled[ 4: 1];
-    assign wlast     = wdata_bundled[ 0];
-    assign wvalid    = wvalid_int;
+    .axiMem_wrAddrValid (core_wrAddrValid),
+    .RDY_axiMem_wrAddrValid (wrAddrValidRdy),
+    .axiMem_wrAddr      (core_wrAddr),
+    .EN_axiMem_wrAddr   (core_wrAddrValid && awready),
+    .RDY_axiMem_wrAddr  (core_wrAddrRdy),
 
-    assign bresp     = bresp_int;
+    .axiMem_wrDataValid (core_wrDataValid),
+    .RDY_axiMem_wrDataValid (wrDataValidRdy),
+    .axiMem_wrData      (core_wrData),
+    .EN_axiMem_wrData   (core_wrDataValid && wready),
+    .RDY_axiMem_wrData  (core_wrDataRdy),
+
+    .axiMem_wrResp_r    (bresp),
+    .EN_axiMem_wrResp   (bvalid && core_wrRespRdy),
+    .RDY_axiMem_wrResp  (core_wrRespRdy){diff_conn}
+  );
+
+  // AxiReadAddr = {{addr[31:0], len[7:0], size[2:0], burst[1:0]}}
+  assign arid    = 4'b0;
+  assign araddr  = core_rdAddr[44:13];
+  assign arlen   = core_rdAddr[12:5];
+  assign arsize  = core_rdAddr[4:2];
+  assign arburst = core_rdAddr[1:0];
+  assign arlock  = 2'b0;
+  assign arcache = 4'b0;
+  assign arprot  = 3'b0;
+  assign arvalid = core_rdAddrValid;
+  assign rready  = core_rdDataRdy;
+
+  // AxiWriteAddr = {{addr[31:0], len[7:0], size[2:0], burst[1:0]}}
+  assign awid    = 4'b0;
+  assign awaddr  = core_wrAddr[44:13];
+  assign awlen   = core_wrAddr[12:5];
+  assign awsize  = core_wrAddr[4:2];
+  assign awburst = core_wrAddr[1:0];
+  assign awlock  = 2'b0;
+  assign awcache = 4'b0;
+  assign awprot  = 3'b0;
+  assign awvalid = core_wrAddrValid;
+
+  // AxiWriteData = {{data[31:0], strb[3:0], last}}
+  assign wid     = 4'b0;
+  assign wdata   = core_wrData[36:5];
+  assign wstrb   = core_wrData[4:1];
+  assign wlast   = core_wrData[0];
+  assign wvalid  = core_wrDataValid;
+
+  assign bready  = core_wrRespRdy;
+
+  // Keep interface compatible with chiplab mycpu template.
+  assign rf_rdata = 32'b0;
+{diff_logic}
+
+  wire _unused_ok = &{{1'b0, rid, bid, break_point, infor_flag, reg_num, cpuToHost, cpuToHostValid,
+                       core_rdAddrRdy, core_wrAddrRdy, core_wrDataRdy,
+                       cpuToHostValidRdy, rdAddrValidRdy, wrAddrValidRdy, wrDataValidRdy}};
 
 endmodule
 """
-    return wrapper
 
 
-def rename_original_core():
-    """Rename signals in the original mkCoreAxiTop.v file."""
-    with open(MK_CORE_AXI_TOP_V, 'r') as f:
-        content = f.read()
+def main() -> None:
+    root = repo_root()
+    mk_core_axi_top_v = root / "src" / "build" / "verilog" / "mkCoreAxiTop.v"
+    output_v = root / "chiplab" / "IP" / "myCPU" / "mycpu_top.v"
 
-    content = content.replace('module mkCoreAxiTop(CLK,\n\t\t    RST_N,', 
-                              'module mkCoreAxiTop(clk,\n\t\t    reset,')
+    if not mk_core_axi_top_v.exists():
+        raise FileNotFoundError(f"Input not found: {mk_core_axi_top_v}")
 
-    for old_name, new_name in PORT_MAPPING.items():
-        content = re.sub(r'\b' + re.escape(old_name) + r'\b', new_name, content)
+    text = mk_core_axi_top_v.read_text(encoding="utf-8", errors="ignore")
+    require_ports(
+        text,
+        [
+            "module mkCoreAxiTop(",
+            "axiMem_rdAddr",
+            "axiMem_wrAddr",
+            "axiMem_wrData",
+            "axiMem_rdData_d",
+            "axiMem_wrResp_r",
+            "hostToCpu_startpc",
+        ],
+    )
 
-    content = content.replace('input  CLK;', 'input  clk;')
-    content = content.replace('input  RST_N;', 'input  reset;')
+    enable_diffcommit = "diffCommit" in text and "diffCommitValid" in text
+    wrapper = render_wrapper(enable_diffcommit)
+    output_v.write_text(wrapper, encoding="utf-8")
 
-    return content
-
-
-def main():
-    print("Step 1: Generating mkCoreAxiTop_wrapper.v...")
-    wrapper = generate_wrapper()
-    with open(OUTPUT_V, 'w') as f:
-        f.write(wrapper)
-    print(f"  Created: {OUTPUT_V}")
-
-    print("\nStep 2: Generating renamed mkCoreAxiTop.v...")
-    renamed_content = rename_original_core()
-    renamed_path = '/root/Loongarch-core/src/build/verilog/mkCoreAxiTop_renamed.v'
-    with open(renamed_path, 'w') as f:
-        f.write(renamed_content)
-    print(f"  Created: {renamed_path}")
-
-    print("\nDone!")
-    print(f"\nUse the wrapper as:")
-    print(f"  mkCoreAxiTop_wrapper u_core (.*);")
+    print(f"Generated: {output_v}")
+    print(f"DiffCommit debug bridge: {'enabled' if enable_diffcommit else 'disabled'}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
