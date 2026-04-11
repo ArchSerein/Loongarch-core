@@ -24,7 +24,6 @@ module mkDiv(Div_ifc);
         Bit#(33) next_partial_rem_step = partial_rem_val + partial_rem_add;
         Bit#(32) quotient_val = {quotient[30:0], 1'b0};
         Bit#(32) next_quotient = {quotient_val[31:1], ~next_partial_rem_step[32]};
-        
         partial_rem <= next_partial_rem_step;
         quotient <= next_quotient;
         counter <= counter + 1;
@@ -36,11 +35,10 @@ module mkDiv(Div_ifc);
         counter <= counter + 1;
     endrule
 
-    rule clear (counter == 34);
-        counter <= 0;
-    endrule
-
-    method Action start(Bool is_signed, Bit#(32) dividend, Bit#(32) divisor) if (counter == 0);
+    // Keep finish sticky until the caller launches the next divide.
+    // Otherwise Core can miss the single-cycle done pulse and stall forever
+    // with divInFlight still asserted.
+    method Action start(Bool is_signed, Bit#(32) dividend, Bit#(32) divisor) if (counter == 0 || counter >= 34);
         Bit#(1) dividend_sign = dividend[31];
         Bit#(1) divisor_sign = divisor[31];
         
@@ -57,7 +55,6 @@ module mkDiv(Div_ifc);
         div_neg <= ~div_abs + 1;
         partial_rem <= 0;
         quotient <= dvd_abs;
-        
         counter <= 1;
     endmethod
 
@@ -68,7 +65,7 @@ module mkDiv(Div_ifc);
     endmethod
 
     method Bool finish();
-        return (counter == 34);
+        return (counter >= 34);
     endmethod
 
 endmodule

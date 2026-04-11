@@ -10,14 +10,25 @@ macro definitions. It handles:
 - Hex value conversion: 0x... -> 32'h...
 - Decimal value handling
 - Function-like macros
-- Conditional compilation helper macros for value-less defines
-  e.g., `define CONFIG_DIFFTEST -> generates `IFDEF_DIFFTEST(x) x
 """
 
 import re
 import argparse
 import sys
 from pathlib import Path
+
+
+def parse_config_bool(value: str):
+    """Parse config-like booleans: y/1/yes/true or n/0/no/false."""
+    if value is None:
+        return None
+
+    normalized = value.strip().strip('"').lower()
+    if normalized in {"y", "1", "yes", "true"}:
+        return True
+    if normalized in {"n", "0", "no", "false"}:
+        return False
+    return None
 
 
 def load_config_values(config_path: str) -> dict:
@@ -32,9 +43,20 @@ def load_config_values(config_path: str) -> dict:
     with open(config_path, "r") as f:
         for line in f:
             line = line.strip()
-            # Skip comments and empty lines
-            if not line or line.startswith("#"):
+            # Skip empty lines
+            if not line:
                 continue
+
+            # Parse disabled config form: '# CONFIG_FOO is not set'
+            not_set_match = re.match(r"^#\s*(CONFIG_\w+)\s+is\s+not\s+set$", line)
+            if not_set_match:
+                config_values[not_set_match.group(1)] = "n"
+                continue
+
+            # Skip other comments
+            if line.startswith("#"):
+                continue
+
             # Parse CONFIG_NAME=value
             if "=" in line:
                 key, value = line.split("=", 1)
@@ -103,6 +125,8 @@ def convert_define_line(line: str, default_width: int = 32, config_values: dict 
         args = func_match.group(2)
         value = func_match.group(3)
         converted_value = convert_value(value, default_width, config_values, macro_name)
+        if converted_value is None:
+            return ""
         return f"`define {macro_name}({args}) {converted_value}{trailing}"
 
     # Try simple macro
@@ -111,6 +135,8 @@ def convert_define_line(line: str, default_width: int = 32, config_values: dict 
         macro_name = simple_match.group(1)
         value = simple_match.group(2)
         converted_value = convert_value(value, default_width, config_values, macro_name)
+        if converted_value is None:
+            return ""
         if converted_value == "":
             return f"`define {macro_name}{trailing}"
         return f"`define {macro_name} {converted_value}{trailing}"
@@ -125,17 +151,20 @@ def convert_define_line(line: str, default_width: int = 32, config_values: dict 
     return line
 
 
-def convert_value(value: str, default_width: int = 32, config_values: dict = None, macro_name: str = None) -> str:
+def convert_value(value: str, default_width: int = 32, config_values: dict = None, macro_name: str = None):
     """Convert a value from C to Verilog format."""
     if config_values is None:
         config_values = {}
     value = value.strip()
 
-    # Check if this macro is set to y/n in .config
+    # Check if this macro is set in .config.
     if macro_name and macro_name in config_values:
-        config_val = config_values[macro_name]
-        if config_val == "y" or config_val == "n":
+        config_val = parse_config_bool(config_values[macro_name])
+        if config_val is True:
             return ""
+        if config_val is False:
+            # Disabled bool/tristate symbol: do not emit the define line.
+            return None
 
     # Hex literal
     if value.startswith("0x") or value.startswith("0X"):
@@ -228,39 +257,6 @@ def convert_line(line: str, default_width: int = 32, config_values: dict = None)
     return result_line
 
 
-def generate_ifdef_helper(macro_name: str) -> str:
-    """
-    Generate conditional compilation helper macro for a value-less define.
-    
-    For `define CONFIG_DIFFTEST, generates:
-    `ifdef CONFIG_DIFFTEST
-      `define IFDEF_DIFFTEST(x) x
-    `else
-      `define IFDEF_DIFFTEST(x)
-    `endif
-    
-    Args:
-        macro_name: The macro name (e.g., CONFIG_DIFFTEST)
-    
-    Returns:
-        The helper macro definition string
-    """
-    # Extract the suffix after CONFIG_ prefix
-    if macro_name.startswith("CONFIG_"):
-        suffix = macro_name[7:]  # Remove "CONFIG_" prefix
-    else:
-        suffix = macro_name
-    
-    helper_name = f"IFDEF_{suffix}"
-    
-    return f"""`ifdef {macro_name}
-  `define {helper_name}(x) x
-`else
-  `define {helper_name}(x)
-`endif
-"""
-
-
 def convert_file(
     input_path: str, output_path: str = None, default_width: int = 32, config_path: str = None
 ) -> str:
@@ -282,7 +278,6 @@ def convert_file(
         lines = f.readlines()
 
     converted_lines = []
-    valueless_macros = []  # Collect value-less macros for helper generation
     in_multiline_comment = False
 
     for line in lines:
@@ -299,33 +294,8 @@ def convert_file(
 
         converted_line = convert_line(line, default_width, config_values)
         converted_lines.append(converted_line)
-        
-        # Track value-less defines for helper macro generation
-        stripped = line.strip()
-        if stripped.startswith("#define"):
-            # Check if it's a value-less define
-            empty_pattern = r"^\s*#define\s+(\w+)\s*$"
-            empty_match = re.match(empty_pattern, stripped)
-            if empty_match:
-                valueless_macros.append(empty_match.group(1))
-            else:
-                # Also check for defines that become value-less due to config y/n
-                simple_pattern = r"^\s*#define\s+(\w+)\s+(.+)$"
-                simple_match = re.match(simple_pattern, stripped)
-                if simple_match:
-                    macro_name = simple_match.group(1)
-                    if macro_name in config_values:
-                        config_val = config_values[macro_name]
-                        if config_val == "y" or config_val == "n":
-                            valueless_macros.append(macro_name)
 
     content = "".join(converted_lines)
-    
-    # Append helper macros for value-less defines
-    if valueless_macros:
-        content += "\n// Conditional compilation helper macros\n"
-        for macro_name in valueless_macros:
-            content += generate_ifdef_helper(macro_name)
 
     if output_path:
         with open(output_path, "w") as f:

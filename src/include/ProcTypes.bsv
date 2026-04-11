@@ -1,5 +1,7 @@
 import Types::*;
 import FShow::*;
+import Vector::*;
+`include "Autoconf.bsv"
 
 typedef enum {
   ExitCode = 2'd0,
@@ -13,14 +15,90 @@ typedef struct {
   Bit#(16) data;
 } CpuToHostData deriving(Bits, Eq, FShow);
 
+`ifdef CONFIG_DIFFTEST
 typedef struct {
+  Bool valid;
   Addr pc;
   Addr nextPc;
   Instruction inst;
   Bool wen;
   Bit#(5) wdest;
   Data wdata;
+  Bool skip;  // Reserved for compatibility, currently hardwired to 0.
 } DiffCommit deriving(Bits, Eq, FShow);
+
+typedef struct {
+  Vector#(32, Data) gpr;
+} DiffArchGRegState deriving(Bits, Eq);
+
+typedef struct {
+  Data crmd;
+  Data prmd;
+  Data euen;
+  Data ecfg;
+  Data era;
+  Data badv;
+  Data eentry;
+  Data tlbidx;
+  Data tlbehi;
+  Data tlbelo0;
+  Data tlbelo1;
+  Data asid;
+  Data pgdl;
+  Data pgdh;
+  Data save0;
+  Data save1;
+  Data save2;
+  Data save3;
+  Data tid;
+  Data tcfg;
+  Data tval;
+  Data llbctl;
+  Data tlbrentry;
+  Data dmw0;
+  Data dmw1;
+  Data estat;
+} DiffArchCsrState deriving(Bits, Eq);
+
+typedef struct {
+  Bool excpValid;
+  Bool eret;
+  Data interrupt;
+  Data exception;
+  Addr exceptionPC;
+  Instruction exceptionInst;
+} DiffExcpEvent deriving(Bits, Eq);
+
+typedef struct {
+  Bool valid;
+  Bit#(64) paddr;
+  Bit#(64) vaddr;
+  Bit#(64) data;
+} DiffStoreEvent deriving(Bits, Eq);
+
+typedef struct {
+  Bool valid;
+  Bit#(64) paddr;
+  Bit#(64) vaddr;
+} DiffLoadEvent deriving(Bits, Eq);
+
+typedef struct {
+  Bool isLoad;
+  Bool isStore;
+  Bool isSc;
+  Addr addr;
+  Data storeData;
+} DiffMemOp deriving(Bits, Eq);
+
+typedef struct {
+  DiffCommit commit;
+  DiffArchGRegState regs;
+  DiffArchCsrState csr;
+  DiffExcpEvent excp;
+  DiffStoreEvent store;
+  DiffLoadEvent load;
+} DiffTrace deriving(Bits, Eq);
+`endif
 
 typedef Bit#(5) RIndx;
 
@@ -57,8 +135,14 @@ typedef enum {
   Csrr, // CSRRD
   Csrw, // CSRWR
   Csrxchg, // CSRXCHG
+  RdTimeL, // RDTIMEL.W rd, r0
+  RdTimeH, // RDTIMEH.W rd, r0
+  RdCntId, // RDTIMEL.W r0, rj (Counter ID writeback only)
 
   Fence, // DBAR / IBAR
+
+  Tlbrd, // TLBRD
+  Tlbwr, // TLBWR
 
   Syscall, // SYSCALL exception
   Ertn, // ERTN return from exception
@@ -199,6 +283,16 @@ function Fmt showInst(Instruction inst);
       default: $format("unsup-shift 0x%0x", inst);
     endcase;
     ret = ret + $format(" r%0d, r%0d, %0d", rd, rj, inst[14:10]);
+  end
+  else if (op4 == 4'b0000 && op2 == 2'b00 && op5 == 5'h00 && rk == 5'h18) begin
+    if (rd != 0 && rj == 0)
+      ret = $format("rdtimel.w r%0d, r%0d", rd, rj);
+    else if (rd == 0 && rj != 0)
+      ret = $format("rdtimel.w r%0d, r%0d", rd, rj);
+    else if (rd == 0 && rj == 0)
+      ret = $format("rdtimel.w r0, r0");
+    else
+      ret = $format("unsup-rdtimel-dual 0x%0x", inst);
   end
   else begin
     ret = case (op4)

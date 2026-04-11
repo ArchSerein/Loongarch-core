@@ -66,13 +66,16 @@ BSVPATH += \
 
 # C++ Sources for Connectal simulation
 CPPFILES += $(ROOT_DIR)/csrc/bsim_main.cpp  \
-            $(ROOT_DIR)/csrc/tb_memory.cpp   \
-            $(ROOT_DIR)/csrc/difftest.cpp
+            $(ROOT_DIR)/csrc/tb_memory.cpp
 
 # C++ Sources for Verilator simulation
 VERILATOR_CPPFILES = $(ROOT_DIR)/csrc/sim_main.cpp  \
-            $(ROOT_DIR)/csrc/tb_memory.cpp   \
-            $(ROOT_DIR)/csrc/difftest.cpp
+            $(ROOT_DIR)/csrc/tb_memory.cpp
+
+ifeq ($(CONFIG_DIFFTEST),y)
+CPPFILES += $(ROOT_DIR)/csrc/difftest.cpp
+VERILATOR_CPPFILES += $(ROOT_DIR)/csrc/difftest.cpp
+endif
 
 LDLIBS += -ldl
 
@@ -142,6 +145,21 @@ verilator-sim: $(SIM_BIN)
 
 # Generate core RTL with AXI top-level wrapper.
 core-verilog: $(VDIR)/$(CORE_AXI_TOP).v
+	find build/verilog -type f -name "*.v" \
+		-exec sed -i '/`ifdef BSV_NO_INITIAL_BLOCKS/,/`endif/d' {} +
+# 	find build/verilog -type f -name "*.v" \
+# 		-exec sed -i '/`ifdef BSV_ASSIGNMENT_DELAY/,/`endif/d' {} +
+	find build/verilog -type f -name "*.v" \
+		-exec sed -i '/`ifdef BSV_POSITIVE_RESET/,/`endif/c\
+`define BSV_RESET_VALUE 1'\''b1\
+`define BSV_RESET_EDGE posedge' {} +
+	@echo "==== Updating myCPU Verilog files ===="
+	rm -rf $(ROOT_DIR)/../chiplab/IP/myCPU/*
+	cp build/verilog/*.v $(ROOT_DIR)/../chiplab/IP/myCPU/
+	cp  /opt/bsc/lib/Verilog/RevertReg.v \
+    	/opt/bsc/lib/Verilog/FIFO*.v \
+    	/opt/bsc/lib/Verilog/RegFile*.v \
+    	/opt/bsc/lib/Verilog/CReg*.v $(ROOT_DIR)/../chiplab/IP/myCPU/
 	python3 $(ROOT_DIR)/scripts/gen_axi_wrapper.py
 
 # Build a software test image and record the resolved bin path in build/test-bin.<test>.path.

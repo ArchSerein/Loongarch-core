@@ -160,6 +160,7 @@ module mkDCache(DCache);
 
   Reg#(Bool) lrValid <- mkReg(False);
   Reg#(Addr) lrAddr <- mkRegU;
+  Reg#(Bool) fenceFlushWait <- mkReg(False);
 
   Fifo#(2, MemReq) reqQ <- mkCFFifo;
   Fifo#(2, Data)   respQ <- mkCFFifo;
@@ -185,7 +186,40 @@ module mkDCache(DCache);
     reqQ.deq;
 
     if (r.op == Fence) begin
-      // Writeback all dirty data
+      let tag = getDTag(r.addr);
+      let idx = getDIndex(r.addr);
+      let wsel = getDWordSel(r.addr);
+      Bool hit = False;
+      Data hitData = 0;
+      DCacheWayIdx hitWay = 0;
+      for (Integer w = 0; w < valueOf(DCacheWays); w = w + 1) begin
+        if (validStore[idx][w] && tagStore[idx][w] == tag) begin
+          hit = True;
+          hitData = dataStore[idx][w][wsel];
+          hitWay = fromInteger(w);
+        end
+      end
+`ifdef CONFIG_MTRACE
+      $fwrite(stdout, "[DCDBG] FENCE addr:%x hit:%0d dirty:%0d data:%x\n",
+        r.addr, pack(hit), pack(hit && dirtyStore[idx][hitWay]), hitData);
+`endif
+      if (hit && dirtyStore[idx][hitWay]) begin
+`ifdef CONFIG_MTRACE
+        $fwrite(stdout, "[DCDBG] FENCE-WB addr:%x data:%x\n", r.addr, hitData);
+`endif
+        missReq <= MemReq{
+          op: St,
+          addr: r.addr,
+          data: hitData,
+          byteEn: 4'b1111
+        };
+        fenceFlushWait <= True;
+        state <= SendUncacheReq;
+      end else begin
+        // Fence completes immediately if no dirty line needs writeback.
+        respQ.enq(0);
+        fenceFlushWait <= False;
+      end
     end else begin
       let tag = getDTag(r.addr);
       let idx = getDIndex(r.addr);
@@ -399,6 +433,10 @@ module mkDCache(DCache);
       bQ.deq;
       dynamicAssert(beat.resp == AxiRespOkay ||
                     beat.resp == AxiRespExOkay, "write resp has fault");
+      if (fenceFlushWait) begin
+        respQ.enq(0);
+        fenceFlushWait <= False;
+      end
     end
     state <= Ready;
   endrule
