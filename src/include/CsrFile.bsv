@@ -57,7 +57,7 @@ endfunction
 module mkCsrFile(CsrFile);
   Reg#(Bool) startReg <- mkReg(False);
 
-  Reg#(Data) numInsts <- mkReg(0);
+  Reg#(Bit#(64)) commitInsts <- mkReg(0);
   Reg#(Bit#(64)) cycles <- mkReg(0);
 
   Fifo#(2, CpuToHostData) toHostFifo <- mkCFFifo;
@@ -112,9 +112,11 @@ module mkCsrFile(CsrFile);
   method Action start if (!startReg);
     startReg <= True;
     cycles <= 0;
+    commitInsts <= 0;
   endmethod
 
   method Action finish;
+    $display("[CSR] commit instructions: %0d", commitInsts);
     toHostFifo.enq(CpuToHostData{
       c2hType: ExitCode,
       data: 16'b0});
@@ -525,7 +527,7 @@ module mkCsrFile(CsrFile);
           end
         end
       end
-      numInsts <= numInsts + 1;
+      commitInsts <= commitInsts + 1;
     endmethod
 
     method Action tlbwr;
