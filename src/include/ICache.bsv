@@ -57,7 +57,7 @@ endinterface
 // -------- LRU replacement --------
 module mkICacheReplaceLRU(ICacheReplace);
   Vector#(ICacheSets, Vector#(ICacheWays, Reg#(ICacheWayIdx)))
-    ages <- replicateM(replicateM(mkReg(0)));
+    ages <- replicateM(replicateM(mkRegU));
 
   method ICacheWayIdx replace(ICacheIndex setIdx);
     ICacheWayIdx victim = 0;
@@ -85,7 +85,7 @@ endmodule
 // Requires ICacheWays to be a power of two and >= 2
 module mkICacheReplacePLRU(ICacheReplace);
   Vector#(ICacheSets, Reg#(Bit#(TSub#(ICacheWays, 1))))
-    treeBits <- replicateM(mkReg(0));
+    treeBits <- replicateM(mkRegU);
 
   method ICacheWayIdx replace(ICacheIndex setIdx);
     Bit#(TSub#(ICacheWays, 1)) t = treeBits[setIdx];
@@ -146,8 +146,8 @@ module mkICache(ICache);
 
   Reg#(ICacheState) state    <- mkReg(Ready);
   Reg#(Addr)        missAddr <- mkRegU;
-  Reg#(Bit#(8))     beatIdx  <- mkReg(0);
-  Reg#(ICacheLine)  refillLine <- mkReg(replicate(0));
+  Reg#(Bit#(8))     beatIdx  <- mkRegU;
+  Reg#(ICacheLine)  refillLine <- mkRegU;
 
   Fifo#(2, Addr)        reqQ  <- mkCFFifo;
   Fifo#(2, Instruction) respQ <- mkCFFifo;

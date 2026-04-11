@@ -16,9 +16,9 @@ provisos(
     NumAlias#(TSub#(TSub#(AddrSz, 2), indexSize), tagSize)
 );
   Vector#(TExp#(indexSize), Reg#(Addr))          targets <-
-    replicateM(mkReg(0));
+    replicateM(mkRegU);
   Vector#(TExp#(indexSize), Reg#(Bit#(tagSize)))    tags <-
-    replicateM(mkReg(0));
+    replicateM(mkRegU);
   Vector#(TExp#(indexSize), Reg#(Bool))            valid <-
     replicateM(mkReg(False));
 

@@ -81,10 +81,10 @@ module mkCsrFile(CsrFile);
   Reg#(Data) csr_pgdh <- mkReg(0);
   Reg#(Data) csr_tlbrentry <- mkReg(0);
 
-  Reg#(Data) csr_save0 <- mkReg(0);
-  Reg#(Data) csr_save1 <- mkReg(0);
-  Reg#(Data) csr_save2 <- mkReg(0);
-  Reg#(Data) csr_save3 <- mkReg(0);
+  Reg#(Data) csr_save0 <- mkRegU;
+  Reg#(Data) csr_save1 <- mkRegU;
+  Reg#(Data) csr_save2 <- mkRegU;
+  Reg#(Data) csr_save3 <- mkRegU;
 
   Reg#(Data)    csr_tid <- mkReg(0);
   Reg#(Data)    csr_tcfg <- mkReg(0);

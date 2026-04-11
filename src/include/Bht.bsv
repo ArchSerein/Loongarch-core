@@ -8,7 +8,7 @@ interface Bht#(numeric type indexSize);
 endinterface
 
 module mkBht(Bht#(indexSize)) provisos(Add#(a__, indexSize, 32));
-  Vector#(TExp#(indexSize), Ehr#(2, Bit#(2))) bhtArr <- replicateM(mkEhr(2'b01));
+  Vector#(TExp#(indexSize), Ehr#(2, Bit#(2))) bhtArr <- replicateM(mkEhrU);
 
   function Bit#(indexSize) getBhtIndex(Addr pc);
     return truncate(pc >> 2);

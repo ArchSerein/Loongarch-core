@@ -17,7 +17,7 @@ typedef 100000000 TbMaxCycles;
 
 module mkTbCore#(SimIndication indication)(SimRequest);
   Reg#(Bool) started <- mkReg(False);
-  Reg#(Bit#(16)) printIntLow <- mkReg(0);
+  Reg#(Bit#(16)) printIntLow <- mkRegU;
   Reg#(Bit#(64)) cycles <- mkReg(0);
 
   Fifo#(32, Data) readRespQ <- mkCFFifo;

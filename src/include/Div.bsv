@@ -11,10 +11,10 @@ endinterface
 (* synthesize *)
 module mkDiv(Div_ifc);
     Reg#(Bit#(6)) counter <- mkReg(0);
-    Reg#(Bit#(33)) partial_rem <- mkReg(0);
-    Reg#(Bit#(32)) div_pos <- mkReg(0);
-    Reg#(Bit#(32)) div_neg <- mkReg(0);
-    Reg#(Bit#(32)) quotient <- mkReg(0);
+    Reg#(Bit#(33)) partial_rem <- mkRegU;
+    Reg#(Bit#(32)) div_pos <- mkRegU;
+    Reg#(Bit#(32)) div_neg <- mkRegU;
+    Reg#(Bit#(32)) quotient <- mkRegU;
     Reg#(Bool) sign_q <- mkReg(False);
     Reg#(Bool) sign_r <- mkReg(False);
 

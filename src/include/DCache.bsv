@@ -154,9 +154,9 @@ module mkDCache(DCache);
   Reg#(DCacheState) state <- mkReg(Ready);
   Reg#(MemReq)      missReq <- mkRegU;
   Reg#(DCacheWayIdx) victimWay <- mkRegU;
-  Reg#(DCacheLine)   wbLine <- mkReg(replicate(0));
-  Reg#(Bit#(8))      beatIdx <- mkReg(0);
-  Reg#(DCacheLine)   fillLine <- mkReg(replicate(0));
+  Reg#(DCacheLine)   wbLine <- mkRegU;
+  Reg#(Bit#(8))      beatIdx <- mkRegU;
+  Reg#(DCacheLine)   fillLine <- mkRegU;
 
   Reg#(Bool) lrValid <- mkReg(False);
   Reg#(Addr) lrAddr <- mkRegU;

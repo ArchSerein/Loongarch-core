@@ -11,9 +11,9 @@ endinterface
 (* synthesize *)
 module mkMul(Mul_ifc);
     Reg#(Bit#(5)) counter <- mkReg(0);
-    Reg#(Bit#(69)) p <- mkReg(0);
-    Reg#(Bit#(69)) m_pos <- mkReg(0);
-    Reg#(Bit#(69)) m_neg <- mkReg(0);
+    Reg#(Bit#(69)) p <- mkRegU;
+    Reg#(Bit#(69)) m_pos <- mkRegU;
+    Reg#(Bit#(69)) m_neg <- mkRegU;
 
     rule step (counter > 0 && counter <= 17);
         Bit#(3) pr = p[2:0];
