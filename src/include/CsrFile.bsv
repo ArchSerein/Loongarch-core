@@ -54,6 +54,7 @@ function Data updateTimerView(Data tcfg, Data tval, Bool timerInt, Bool wrote_tc
   return (next_timerInt ? 32'h80000000 : 32'h0) | next_tval;
 endfunction
 
+(* synthesize *)
 module mkCsrFile(CsrFile);
   Reg#(Bool) startReg <- mkReg(False);
 
