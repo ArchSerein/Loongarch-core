@@ -53,6 +53,7 @@ function Bool isCsrConflict(Maybe#(CsrIndx) pendingWrite, Maybe#(CsrIndx) curAcc
   end
 endfunction
 
+(* synthesize *)
 module mkCore(Core);
   Ehr#(4, Addr)         pcReg <- mkEhr(startpc);
   CsrFile                csrf <- mkCsrFile;

@@ -58,6 +58,7 @@ interface DCacheReplace;
   method Action       access(DCacheIndex setIdx, DCacheWayIdx wayIdx);
 endinterface
 
+(* synthesize *)
 module mkDCacheReplaceLRU(DCacheReplace);
   Vector#(DCacheSets, Vector#(DCacheWays, Reg#(DCacheWayIdx)))
   ages <- replicateM(replicateM(mkReg(0)));
@@ -84,6 +85,7 @@ module mkDCacheReplaceLRU(DCacheReplace);
   endmethod
 endmodule
 
+(* synthesize *)
 module mkDCacheReplacePLRU(DCacheReplace);
   Vector#(DCacheSets, Reg#(Bit#(TSub#(DCacheWays, 1))))
   treeBits <- replicateM(mkReg(0));
@@ -122,6 +124,7 @@ module mkDCacheReplacePLRU(DCacheReplace);
   endmethod
 endmodule
 
+(* synthesize *)
 module mkDCacheReplaceRandom(DCacheReplace);
   Reg#(DCacheWayIdx) cnt <- mkReg(0);
 
@@ -145,6 +148,7 @@ typedef enum {
   WaitUncacheResp
 } DCacheState deriving(Bits, Eq);
 
+(* synthesize *)
 module mkDCache(DCache);
   Vector#(DCacheSets, Vector#(DCacheWays, Reg#(DCacheTag)))   tagStore <- replicateM(replicateM(mkRegU));
   Vector#(DCacheSets, Vector#(DCacheWays, Reg#(DCacheLine)))  dataStore <- replicateM(replicateM(mkRegU));
