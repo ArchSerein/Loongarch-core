@@ -192,7 +192,8 @@ run:
 	fi; \
 	echo "==> Launching: $(BSIM_RUNNER) --mem-image $$mem_image --start-pc $(RUN_START_PC)"; \
 	"$(BSIM_RUNNER)" --mem-image "$$mem_image" --start-pc "$(RUN_START_PC)"
-
+	rm -f "$(TEST_BIN_INFO)"
+	
 $(BSIM_RUNNER):
 	@echo "==> Building Bluesim runner"
 	@$(MAKE) bsim
