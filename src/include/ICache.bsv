@@ -55,7 +55,6 @@ interface ICacheReplace;
 endinterface
 
 // -------- LRU replacement --------
-(* synthesize *)
 module mkICacheReplaceLRU(ICacheReplace);
   Vector#(ICacheSets, Vector#(ICacheWays, Reg#(ICacheWayIdx)))
     ages <- replicateM(replicateM(mkRegU));
@@ -84,7 +83,6 @@ endmodule
 
 // -------- Pseudo-LRU (tree-based) replacement --------
 // Requires ICacheWays to be a power of two and >= 2
-(* synthesize *)
 module mkICacheReplacePLRU(ICacheReplace);
   Vector#(ICacheSets, Reg#(Bit#(TSub#(ICacheWays, 1))))
     treeBits <- replicateM(mkRegU);
@@ -124,7 +122,6 @@ module mkICacheReplacePLRU(ICacheReplace);
 endmodule
 
 // -------- Random (round-robin) replacement --------
-(* synthesize *)
 module mkICacheReplaceRandom(ICacheReplace);
   Reg#(ICacheWayIdx) cnt <- mkReg(0);
 

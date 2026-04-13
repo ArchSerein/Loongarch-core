@@ -476,7 +476,7 @@ module mkCore(Core);
           wbFlush = True;
         end else begin
           if (wb_finish_on_syscall) begin
-            $fwrite(stdout, "this syscall 0x11, finish simulation\n");
+            $display("this syscall 0x11, finish simulation");
             csrf.finish;
           end
           if (isValid(mInst.dst)) begin
