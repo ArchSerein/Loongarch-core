@@ -111,13 +111,15 @@ BSC_FLAGS := -u -verilog -vsim $(VERILATOR) -g $(VERILATOR_TOP) \
              -p +:$(ROOT_DIR)/include \
              -bdir $(BDIR) \
              -info-dir $(IDIR) \
-             -vdir $(VDIR)
+             -vdir $(VDIR) \
+             -verilog-filter $(ROOT_DIR)/scripts/filter_bsv.sh
 
 BSC_CORE_FLAGS := -u -verilog -vsim $(VERILATOR) -g $(CORE_AXI_TOP) \
                   -p +:$(ROOT_DIR)/include \
                   -bdir $(BDIR) \
                   -info-dir $(IDIR) \
-                  -vdir $(VDIR)
+                  -vdir $(VDIR) \
+                   -verilog-filter $(ROOT_DIR)/scripts/filter_bsv.sh
 
 VERILATOR_FLAGS := -Wno-STMTDLY --no-timing --cc --exe --build -j $(shell nproc) --trace -y $(shell dirname $(shell which bsc))/../lib/Verilog \
                    --top-module $(VERILATOR_TOP) \
@@ -161,9 +163,6 @@ core-verilog: $(VDIR)/$(CORE_AXI_TOP).v
 	find build/verilog -type f -name "*.v" \
 		-exec sed -i '/`ifdef BSV_NO_INITIAL_BLOCKS/,/`endif/d' {} +
 	find build/verilog -type f -name "*.v" \
- 		-exec sed -i '/`ifdef BSV_ASSIGNMENT_DELAY/,/`endif/d' {} + \
-                -exec sed -i 's/`BSV_ASSIGNMENT_DELAY//g' {} +
-	find build/verilog -type f -name "*.v" \
 		-exec sed -i '/`ifdef BSV_POSITIVE_RESET/,/`endif/c\
 `define BSV_RESET_VALUE 1'\''b1\
 `define BSV_RESET_EDGE posedge' {} +
@@ -174,6 +173,7 @@ core-verilog: $(VDIR)/$(CORE_AXI_TOP).v
     	/opt/bsc/lib/Verilog/FIFO*.v \
     	/opt/bsc/lib/Verilog/RegFile*.v \
     	/opt/bsc/lib/Verilog/CReg*.v $(ROOT_DIR)/../chiplab/IP/myCPU/
+	find $(ROOT_DIR)/../chiplab/IP/myCPU/ -type f -name "*.v" -exec $(ROOT_DIR)/scripts/filter_bsv.sh {} +
 	python3 $(ROOT_DIR)/scripts/gen_axi_wrapper.py
 
 # Build a software test image and record the resolved bin path in build/test-bin.<test>.path.
