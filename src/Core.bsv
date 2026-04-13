@@ -368,7 +368,16 @@ module mkCore(Core);
       Bool memNeedResp = (mInst.iType == Ld || mInst.iType == Ll ||
         mInst.iType == Sc || mInst.iType == Fence);
 
-      Data pendingInterruptBits = csrf.rd(`CSR_ESTAT) & csrf.rd(`CSR_ECFG) & 32'h00001fff;
+      Data wbCrmd = csrf.crmd;
+      Data wbPrmd = csrf.prmd;
+      Data wbEcfg = csrf.ecfg;
+      Data wbEstat = csrf.estat;
+    `ifdef CONFIG_MTRACE
+      Data wbTcfg = csrf.tcfg;
+      Data wbTval = csrf.tval;
+    `endif
+
+      Data pendingInterruptBits = wbEstat & wbEcfg & 32'h00001fff;
       Bool timerPending = ((pendingInterruptBits & 32'h00000800) != 0);
       Bool softPending = ((pendingInterruptBits & 32'h00000003) != 0);
       Bool delayInterrupt = timerPending && !softPending;
@@ -385,11 +394,9 @@ module mkCore(Core);
       Addr ertnTarget = 0;
       Data ertnNextCrmd = 0;
       if (commitErtn) begin
-        Data curCrmd = csrf.rd(`CSR_CRMD);
-        Data prmd = csrf.rd(`CSR_PRMD);
-        ertnNextCrmd = curCrmd;
-        ertnNextCrmd[`CSR_CRMD_PLV] = prmd[`CSR_PRMD_PPLV];
-        ertnNextCrmd[`CSR_CRMD_IE] = prmd[`CSR_PRMD_PIE];
+        ertnNextCrmd = wbCrmd;
+        ertnNextCrmd[`CSR_CRMD_PLV] = wbPrmd[`CSR_PRMD_PPLV];
+        ertnNextCrmd[`CSR_CRMD_IE] = wbPrmd[`CSR_PRMD_PIE];
       end
 
 `ifdef CONFIG_MTRACE
@@ -399,19 +406,19 @@ module mkCore(Core);
         $fwrite(stdout,
           "[CSRDBG] pc:%x type:%x csr:%x wval:%x old:%x hasIntRaw:%0d hasInt:%0d crmd:%x ecfg:%x estat:%x tcfg:%x tval:%x\n",
           memPkt.pc, pack(mInst.iType), fromMaybe(0, mInst.csr), mInst.addr, mInst.data,
-          has_int_raw, has_int, csrf.rd(`CSR_CRMD), csrf.rd(`CSR_ECFG), csrf.rd(`CSR_ESTAT),
-          csrf.rd(`CSR_TCFG), csrf.rd(`CSR_TVAL));
+          has_int_raw, has_int, wbCrmd, wbEcfg, wbEstat,
+          wbTcfg, wbTval);
       end
       if (inTiWindow && has_int) begin
         $fwrite(stdout, "[INTDBG] pc:%x intBits:%x intrNo:%x crmd:%x ecfg:%x estat:%x tcfg:%x tval:%x\n",
-          memPkt.pc, interruptBits, interruptNo, csrf.rd(`CSR_CRMD), csrf.rd(`CSR_ECFG),
-          csrf.rd(`CSR_ESTAT), csrf.rd(`CSR_TCFG), csrf.rd(`CSR_TVAL));
+          memPkt.pc, interruptBits, interruptNo, wbCrmd, wbEcfg,
+          wbEstat, wbTcfg, wbTval);
       end
       if (memPkt.pc == 32'h1c0723ac || memPkt.pc == 32'h1c0725ac ||
           memPkt.pc == 32'h1c0725b0 || memPkt.pc == 32'h1c074fb4) begin
         $fwrite(stdout, "[LOOPDBG] pc:%x hasIntPrev:%0d hasIntRaw:%0d hasInt:%0d crmd:%x ecfg:%x estat:%x tcfg:%x tval:%x\n",
-          memPkt.pc, hasIntPrev, has_int_raw, has_int, csrf.rd(`CSR_CRMD), csrf.rd(`CSR_ECFG),
-          csrf.rd(`CSR_ESTAT), csrf.rd(`CSR_TCFG), csrf.rd(`CSR_TVAL));
+          memPkt.pc, hasIntPrev, has_int_raw, has_int, wbCrmd, wbEcfg,
+          wbEstat, wbTcfg, wbTval);
       end
 `endif
 
@@ -478,17 +485,14 @@ module mkCore(Core);
           end
           if (mInst.iType == Ertn) begin
             Addr era <- csrf.returnFromException;
-            csrf.wr(Invalid, mInst.data);
             ertnTarget = era;
             exeEpoch[3] <= !exeEpoch[3];
             pcReg[3] <= era;
             wbFlush = True;
           end else if (mInst.iType == Tlbwr) begin
             csrf.tlbwr;
-            csrf.wr(Invalid, mInst.data);
           end else if (mInst.iType == Tlbrd) begin
             csrf.tlbrd;
-            csrf.wr(Invalid, mInst.data);
           end else begin
             csrf.wr(wbIsCsrWrite ? mInst.csr : Invalid, wbIsCsrWrite ? mInst.addr : mInst.data);
           end

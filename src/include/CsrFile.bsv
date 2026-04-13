@@ -12,6 +12,12 @@ interface CsrFile;
   method Action finish;
   method Bool started;
   method Bool hasInterrupt;
+  method Data crmd;
+  method Data prmd;
+  method Data ecfg;
+  method Data estat;
+  method Data tcfg;
+  method Data tval;
   method Data rd(CsrIndx idx);
   method Bit#(64) stableCounterValue;
 `ifdef CONFIG_DIFFTEST
@@ -110,6 +116,26 @@ module mkCsrFile(CsrFile);
     cycles <= cycles + 1;
   endrule
 
+  function Action retireBookkeeping(Bool wrote_tcfg, Bool cleared_timer_int);
+    action
+      if (!wrote_tcfg && !cleared_timer_int && startReg && csr_tcfg[`CSR_TCFG_EN] == 1) begin
+        if (csr_tval[1] != 0) begin
+          let tval_next = csr_tval[1] - 1;
+          if (tval_next == 0) begin
+            timerInt[1] <= True;
+            if (csr_tcfg[`CSR_TCFG_PERIOD] == 1)
+              csr_tval[1] <= {csr_tcfg[`CSR_TCFG_INITV], 2'b0};
+            else
+              csr_tval[1] <= 0;
+          end else begin
+            csr_tval[1] <= tval_next;
+          end
+        end
+      end
+      commitInsts <= commitInsts + 1;
+    endaction
+  endfunction
+
   method Action start if (!startReg);
     startReg <= True;
     cycles <= 0;
@@ -132,6 +158,30 @@ module mkCsrFile(CsrFile);
     Bool ieEnabled = (csr_crmd[`CSR_CRMD_IE] == 1'b1);
     Bool pending = ((estatWithTimer[`CSR_ECFG_LIE] & csr_ecfg[`CSR_ECFG_LIE]) != 0);
     return startReg && ieEnabled && pending;
+  endmethod
+
+  method Data crmd;
+    return csr_crmd;
+  endmethod
+
+  method Data prmd;
+    return csr_prmd;
+  endmethod
+
+  method Data ecfg;
+    return csr_ecfg;
+  endmethod
+
+  method Data estat;
+    return csr_estat | (timerInt[1] ? 32'h00000800 : 0);
+  endmethod
+
+  method Data tcfg;
+    return csr_tcfg;
+  endmethod
+
+  method Data tval;
+    return csr_tval[1];
   endmethod
 
   method Data rd(CsrIndx idx);
@@ -514,21 +564,7 @@ module mkCsrFile(CsrFile);
           32'h11FFFFC6);
         endcase
       end
-      if (!wrote_tcfg && !cleared_timer_int && startReg && csr_tcfg[`CSR_TCFG_EN] == 1) begin
-        if (csr_tval[1] != 0) begin
-          let tval_next = csr_tval[1] - 1;
-          if (tval_next == 0) begin
-            timerInt[1] <= True;
-            if (csr_tcfg[`CSR_TCFG_PERIOD] == 1)
-              csr_tval[1] <= {csr_tcfg[`CSR_TCFG_INITV], 2'b0};
-            else
-              csr_tval[1] <= 0;
-          end else begin
-            csr_tval[1] <= tval_next;
-          end
-        end
-      end
-      commitInsts <= commitInsts + 1;
+      retireBookkeeping(wrote_tcfg, cleared_timer_int);
     endmethod
 
     method Action tlbwr;
@@ -548,6 +584,7 @@ module mkCsrFile(CsrFile);
         tlb_elo1[tlbIndex] <= csr_tlbelo1;
         tlb_asid[tlbIndex] <= csr_asid;
       end
+      retireBookkeeping(False, False);
     endmethod
 
     method Action tlbrd;
@@ -566,6 +603,7 @@ module mkCsrFile(CsrFile);
         csr_asid <= (csr_asid & 32'hFFFFFC00) | (tlb_asid[tlbIndex] & 32'h000003FF);
       end
       csr_tlbidx <= next_tlbidx;
+      retireBookkeeping(False, False);
     endmethod
 
     method ActionValue#(Addr) raiseException(Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv);
@@ -597,6 +635,7 @@ module mkCsrFile(CsrFile);
       nextCrmd[`CSR_CRMD_PLV] = csr_prmd[`CSR_PRMD_PPLV];
       nextCrmd[`CSR_CRMD_IE] = csr_prmd[`CSR_PRMD_PIE];
       csr_crmd <= nextCrmd;
+      retireBookkeeping(False, False);
       return csr_era;
     endmethod
 
