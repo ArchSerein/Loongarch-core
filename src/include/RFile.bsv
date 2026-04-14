@@ -16,7 +16,13 @@ endinterface
 
 (* synthesize *)
 module mkRFile(RFile);
-  Vector#(32, Reg#(Data)) rfile <- replicateM(mkReg(0));
+  Vector#(32, Reg#(Data)) rfile = newVector;
+  for (Integer i = 0; i < 32; i = i + 1) begin
+    if (i == 0)
+      rfile[i] <- mkReg(0);
+    else
+      rfile[i] <- mkRegU;
+  end
 
   function Data read(RIndx rindx);
     return rfile[rindx];
@@ -55,7 +61,13 @@ endmodule
 
 (* synthesize *)
 module mkBypassRFile(RFile);
-  Vector#(32, Ehr#(2, Data)) rfile <- replicateM(mkEhr(0));
+  Vector#(32, Ehr#(2, Data)) rfile = newVector;
+  for (Integer i = 0; i < 32; i = i + 1) begin
+    if (i == 0)
+      rfile[i] <- mkEhr(0);
+    else
+      rfile[i] <- mkEhrU;
+  end
 
   function Data read(RIndx rindx);
     return rfile[rindx][1];
