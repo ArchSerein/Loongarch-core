@@ -79,7 +79,7 @@
 
 `define CSR_TICLR_CLR   0 // W1 clear timer interrupt
 
-`define CSR_TLBIDX_INDEX 3: 0 // TLB index
+`define CSR_TLBIDX_INDEX 4: 0 // TLB index
 `define CSR_TLBIDX_NE    31 // Not-exist flag (RO)
 `define CSR_TLBIDX_PS    29: 24 // Page size
 

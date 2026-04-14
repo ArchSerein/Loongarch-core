@@ -1,5 +1,6 @@
 import Types::*;
 import ProcTypes::*;
+import Tlb::*;
 import Ehr::*;
 import ConfigReg::*;
 import Fifo::*;
@@ -26,7 +27,11 @@ interface CsrFile;
     method DiffArchCsrState diffSnapshotAfterTlbrd;
 `endif
   method Action wr(Maybe#(CsrIndx) idx, Data val);
+  method Data tlbsrchResult;
+  method Action tlbsrch;
+  method Action invtlb(Bit#(5) op, Data asidVal, Data vaVal);
   method Action tlbwr;
+  method Action tlbfill;
   method Action tlbrd;
   method ActionValue#(Addr) raiseException(Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv);
   method ActionValue#(Addr) returnFromException;
@@ -104,13 +109,7 @@ module mkCsrFile(CsrFile);
   Reg#(Data) csr_ctag <- mkReg(0);
   Reg#(Data) csr_dmw0 <- mkReg(0);
   Reg#(Data) csr_dmw1 <- mkReg(0);
-
-  Vector#(8, Reg#(Bool)) tlb_ne <- replicateM(mkReg(True));
-  Vector#(8, Reg#(Bit#(6))) tlb_ps <- replicateM(mkReg(0));
-  Vector#(8, Reg#(Data)) tlb_ehi <- replicateM(mkReg(0));
-  Vector#(8, Reg#(Data)) tlb_elo0 <- replicateM(mkReg(0));
-  Vector#(8, Reg#(Data)) tlb_elo1 <- replicateM(mkReg(0));
-  Vector#(8, Reg#(Data)) tlb_asid <- replicateM(mkReg(0));
+  TlbArray tlb <- mkTlb;
 
   rule count (startReg);
     cycles <= cycles + 1;
@@ -312,7 +311,7 @@ module mkCsrFile(CsrFile);
         `CSR_ERA: next_era = val;
         `CSR_BADV: next_badv = val;
         `CSR_EENTRY: next_eentry = (val & 32'hFFFFFFC0) | (next_eentry & 32'h0000003F);
-        `CSR_TLBIDX: next_tlbidx = (val & 32'hBF00000F) | (next_tlbidx & 32'h40FFFFF0);
+        `CSR_TLBIDX: next_tlbidx = (val & 32'hBF00001F) | (next_tlbidx & 32'h40FFFFE0);
         `CSR_TLBEHI: next_tlbehi = (val & 32'hFFFFE000) | (next_tlbehi & 32'h00001FFF);
         `CSR_TLBEL0: next_tlbelo0 = (val & 32'h0FFFFF7F) | (next_tlbelo0 & 32'hF0000080);
         `CSR_TLBEL1: next_tlbelo1 = (val & 32'h0FFFFF7F) | (next_tlbelo1 & 32'hF0000080);
@@ -395,7 +394,8 @@ module mkCsrFile(CsrFile);
   endmethod
 
   method DiffArchCsrState diffSnapshotAfterTlbrd;
-    Bit#(3) tlbIndex = truncate(csr_tlbidx[`CSR_TLBIDX_INDEX]);
+    Bit#(5) tlbIndex = csr_tlbidx[`CSR_TLBIDX_INDEX];
+    let tlbRead = tlb.readEntry(tlbIndex);
     Data next_crmd = csr_crmd;
     Data next_prmd = csr_prmd;
     Data next_euen = csr_euen;
@@ -423,14 +423,15 @@ module mkCsrFile(CsrFile);
     Data next_dmw1 = csr_dmw1;
     Data next_estat_raw = csr_estat;
 
-    if (tlb_ne[tlbIndex]) begin
+    if (tlbRead.ne) begin
       next_tlbidx[31] = 1'b1;
+      next_asid = next_asid & 32'hFFFFFC00;
     end else begin
-      next_tlbidx[29:24] = tlb_ps[tlbIndex];
-      next_tlbehi = tlb_ehi[tlbIndex];
-      next_tlbelo0 = tlb_elo0[tlbIndex];
-      next_tlbelo1 = tlb_elo1[tlbIndex];
-      next_asid = (next_asid & 32'hFFFFFC00) | (tlb_asid[tlbIndex] & 32'h000003FF);
+      next_tlbidx[29:24] = tlbRead.ps;
+      next_tlbehi = tlbRead.ehi;
+      next_tlbelo0 = tlbRead.elo0;
+      next_tlbelo1 = tlbRead.elo1;
+      next_asid = (next_asid & 32'hFFFFFC00) | (tlbRead.asid & 32'h000003FF);
     end
 
     if (next_tcfg[`CSR_TCFG_EN] == 1) begin
@@ -477,6 +478,7 @@ module mkCsrFile(CsrFile);
       estat: next_estat_raw | (next_timerInt ? 32'h00000800 : 0)
     };
   endmethod
+
   `endif
 
   method Action wr(Maybe#(CsrIndx) csrIdx, Data val);
@@ -506,8 +508,8 @@ module mkCsrFile(CsrFile);
         `CSR_EENTRY: csr_eentry <= (val & 32'hFFFFFFC0) | (csr_eentry &
           32'h0000003F);
 
-        `CSR_TLBIDX: csr_tlbidx <= (val & 32'hBF00000F) | (csr_tlbidx &
-          32'h40FFFFF0);
+        `CSR_TLBIDX: csr_tlbidx <= (val & 32'hBF00001F) | (csr_tlbidx &
+          32'h40FFFFE0);
 
         `CSR_TLBEHI: csr_tlbehi <= (val & 32'hFFFFE000) | (csr_tlbehi &
           32'h00001FFF);
@@ -567,6 +569,18 @@ module mkCsrFile(CsrFile);
       retireBookkeeping(wrote_tcfg, cleared_timer_int);
     endmethod
 
+    method Data tlbsrchResult;
+      return tlb.searchResult(csr_tlbehi, csr_asid);
+    endmethod
+
+    method Action tlbsrch;
+      csr_tlbidx <= tlb.searchResult(csr_tlbehi, csr_asid);
+    endmethod
+
+    method Action invtlb(Bit#(5) op, Data asidVal, Data vaVal);
+      tlb.invtlb(op, asidVal, vaVal);
+    endmethod
+
     method Action tlbwr;
       Bit#(3) tlbIndex = truncate(csr_tlbidx[`CSR_TLBIDX_INDEX]);
       Bool isNotExist = unpack(csr_tlbidx[`CSR_TLBIDX_NE]);
@@ -588,19 +602,21 @@ module mkCsrFile(CsrFile);
     endmethod
 
     method Action tlbrd;
-      Bit#(3) tlbIndex = truncate(csr_tlbidx[`CSR_TLBIDX_INDEX]);
+      Bit#(5) tlbIndex = csr_tlbidx[`CSR_TLBIDX_INDEX];
+      let tlbRead = tlb.readEntry(tlbIndex);
       Data next_tlbidx = zeroExtend(tlbIndex);
-      if (tlb_ne[tlbIndex]) begin
+      if (tlbRead.ne) begin
         next_tlbidx[31] = 1'b1;
         csr_tlbehi <= 0;
         csr_tlbelo0 <= 0;
         csr_tlbelo1 <= 0;
+        csr_asid <= csr_asid & 32'hFFFFFC00;
       end else begin
-        next_tlbidx[29:24] = tlb_ps[tlbIndex];
-        csr_tlbehi <= tlb_ehi[tlbIndex];
-        csr_tlbelo0 <= tlb_elo0[tlbIndex];
-        csr_tlbelo1 <= tlb_elo1[tlbIndex];
-        csr_asid <= (csr_asid & 32'hFFFFFC00) | (tlb_asid[tlbIndex] & 32'h000003FF);
+        next_tlbidx[29:24] = tlbRead.ps;
+        csr_tlbehi <= tlbRead.ehi;
+        csr_tlbelo0 <= tlbRead.elo0;
+        csr_tlbelo1 <= tlbRead.elo1;
+        csr_asid <= (csr_asid & 32'hFFFFFC00) | (tlbRead.asid & 32'h000003FF);
       end
       csr_tlbidx <= next_tlbidx;
       retireBookkeeping(False, False);

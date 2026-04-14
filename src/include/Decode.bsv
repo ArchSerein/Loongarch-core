@@ -167,8 +167,10 @@ function DecodedInst decode(Instruction inst);
       if (op_25_22 == 4'h9 && op_21_20 == 2'h0 && op_19_15 == 5'h10 &&
           rj == 5'd0 && rd == 5'd0) begin
         case (rk)
+          5'h0a: dInst.iType = Tlbsrch;
           5'h0b: dInst.iType = Tlbrd;
           5'h0c: dInst.iType = Tlbwr;
+          5'h0d: dInst.iType = Tlbfill;
           5'h0e: dInst.iType = Ertn;
           default: dInst.iType = Unsupported;
         endcase
@@ -179,6 +181,13 @@ function DecodedInst decode(Instruction inst);
         dInst.aluFunc = tagged Valid AddW;
         dInst.src1 = tagged Valid rj;
         dInst.imm = tagged Valid si12;
+      end
+      else if (op_25_22 == 4'h9 && op_21_20 == 2'h0 && op_19_15 == 5'h13 &&
+               rd <= 5'd6) begin
+        dInst.iType = Invtlb;
+        dInst.src1 = tagged Valid rj;
+        dInst.src2 = tagged Valid rk;
+        dInst.imm = tagged Valid zeroExtend(rd);
       end
       else begin
         case ({inst[25], inst[24]})

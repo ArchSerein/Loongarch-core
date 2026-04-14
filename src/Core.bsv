@@ -147,10 +147,14 @@ module mkCore(Core);
     end else begin
       let rInst = decodePkt.dInst;
       Bool isCsrWrite = (rInst.iType == Csrw || rInst.iType == Csrxchg);
+      Bool isTlbSerial = (rInst.iType == Tlbsrch || rInst.iType == Tlbrd ||
+        rInst.iType == Tlbwr || rInst.iType == Tlbfill || rInst.iType == Invtlb);
       Bool csrConflict = isValid(rInst.csr) && csrSb.search(rInst.csr);
       Bool isFence = (rInst.iType == Fence);
+      Bool noOlderInFlight = !r2eFifo.notEmpty && !e2mFifo.notEmpty && !m2wFifo.notEmpty;
       if (!sb.search1(rInst.src1) && !sb.search2(rInst.src2) &&
-          !csrConflict && !fenceInFlight) begin
+          !csrConflict && !fenceInFlight &&
+          (!isTlbSerial || noOlderInFlight)) begin
         Data    rVal1 = rf.rd1(fromMaybe(?, rInst.src1));
         Data    rVal2 = rf.rd2(fromMaybe(?, rInst.src2));
         Data    csrVal = csrf.rd(fromMaybe(?, rInst.csr));
@@ -169,8 +173,11 @@ module mkCore(Core);
         csrSb.enq(isCsrWrite ? rInst.csr : tagged Invalid);
         sb.insert(rInst.dst);
         d2rFifo.deq();
-        if (isFence) begin
+        if (isFence || isTlbSerial) begin
           fenceInFlight <= True;
+        end
+        if (isFence) begin
+          fenceFrontStall <= True;
         end
       end
     end
@@ -489,6 +496,12 @@ module mkCore(Core);
             exeEpoch[3] <= !exeEpoch[3];
             pcReg[3] <= era;
             wbFlush = True;
+          end else if (mInst.iType == Tlbsrch) begin
+            csrf.tlbsrch;
+            csrf.wr(Invalid, mInst.data);
+          end else if (mInst.iType == Invtlb) begin
+            csrf.invtlb(truncate(fromMaybe(0, mInst.imm)), mInst.data, mInst.addr);
+            csrf.wr(Invalid, mInst.data);
           end else if (mInst.iType == Tlbwr) begin
             csrf.tlbwr;
           end else if (mInst.iType == Tlbrd) begin
@@ -512,6 +525,9 @@ module mkCore(Core);
           if (mInst.iType == Ertn) begin
             diffCsrIdx = tagged Valid `CSR_CRMD;
             diffCsrVal = ertnNextCrmd;
+          end else if (mInst.iType == Tlbsrch) begin
+            diffCsrIdx = tagged Valid `CSR_TLBIDX;
+            diffCsrVal = csrf.tlbsrchResult;
           end else if (mInst.iType == Csrw || mInst.iType == Csrxchg) begin
             diffCsrIdx = mInst.csr;
             diffCsrVal = mInst.addr;
@@ -614,9 +630,15 @@ module mkCore(Core);
       fenceInFlight <= False;
       fenceFrontStall <= False;
     end else if (wbRetire) begin
-      if (isValid(memPkt.mInst) && fromMaybe(?, memPkt.mInst).iType == Fence) begin
-        fenceInFlight <= False;
-        fenceFrontStall <= False;
+      if (isValid(memPkt.mInst)) begin
+        let retiredType = fromMaybe(?, memPkt.mInst).iType;
+        if (retiredType == Fence || retiredType == Tlbsrch || retiredType == Tlbrd ||
+            retiredType == Tlbwr || retiredType == Tlbfill || retiredType == Invtlb) begin
+          fenceInFlight <= False;
+        end
+        if (retiredType == Fence) begin
+          fenceFrontStall <= False;
+        end
       end
       m2wFifo.deq();
       csrSb.deq();

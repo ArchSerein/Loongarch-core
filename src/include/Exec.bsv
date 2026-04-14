@@ -62,6 +62,7 @@ function ExecInst exec(DecodedInst dInst, Data rVal1, Data rVal2, Addr pc, Addr 
   eInst.iType = dInst.iType;
   eInst.dst = dInst.dst;
   eInst.csr = dInst.csr;
+  eInst.imm = dInst.imm;
   eInst.mask = dInst.mask;
 
   eInst.data = dInst.iType == Csrr ?
@@ -74,6 +75,8 @@ function ExecInst exec(DecodedInst dInst, Data rVal1, Data rVal2, Addr pc, Addr 
                  csrVal :
                (dInst.iType == St || dInst.iType == Sc) ?
                  rVal2 :
+               dInst.iType == Invtlb ?
+                 rVal1 :
                (dInst.iType == J || dInst.iType == Jr) ?
                  (pc + 4) :
                dInst.iType == Lu12i ?
@@ -95,6 +98,7 @@ function ExecInst exec(DecodedInst dInst, Data rVal1, Data rVal2, Addr pc, Addr 
 
   if (dInst.iType != Csrw && dInst.iType != Csrxchg) begin
     eInst.addr = (case(dInst.iType)
+      Invtlb: rVal2;
       Ld, St, Ll, Sc, Fence: execRes;
       default: brAddr;
     endcase);

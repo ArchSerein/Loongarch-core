@@ -141,8 +141,11 @@ typedef enum {
 
   Fence, // DBAR / IBAR
 
+  Tlbsrch, // TLBSRCH
   Tlbrd, // TLBRD
   Tlbwr, // TLBWR
+  Tlbfill, // TLBFILL
+  Invtlb, // INVTLB
 
   Syscall, // SYSCALL exception
   Ertn, // ERTN return from exception
@@ -211,6 +214,7 @@ typedef struct {
   IType            iType;
   Maybe#(RIndx)    dst;
   Maybe#(CsrIndx)  csr;
+  Maybe#(Data)     imm;
   Data             data;
   Maybe#(ByteMask) mask;
   Addr             addr;
@@ -340,9 +344,19 @@ end
   end
 
   6'b000001: begin
-    if (op4 == 4'b1001 && op2 == 2'b00 && op5 == 5'h10 && rk == 5'h0e &&
+    if (op4 == 4'b1001 && op2 == 2'b00 && op5 == 5'h10 &&
         rj == 5'd0 && rd == 5'd0) begin
-      ret = $format("ertn");
+      ret = case (rk)
+        5'h0a: $format("tlbsrch");
+        5'h0b: $format("tlbrd");
+        5'h0c: $format("tlbwr");
+        5'h0d: $format("tlbfill");
+        5'h0e: $format("ertn");
+        default: $format("unsup-priv 0x%0x", inst);
+      endcase;
+    end
+    else if (op4 == 4'b1001 && op2 == 2'b00 && op5 == 5'h13 && rd <= 5'd6) begin
+      ret = $format("invtlb 0x%0x, r%0d, r%0d", rd, rj, rk);
     end
     else if (inst[25:24] == 2'b00) begin
       if (rj == 5'd0)
