@@ -180,8 +180,8 @@ endfunction
 // ============================================================
 // Pipelined search: log2(N) stages using binary tree reduction
 //
-// Stage 0 (searchReq): all entries compare in parallel → pipeRegs[0]
-// Stage k (rule doSearchPipe): merge pairs from pipeRegs[k-1] → pipeRegs[k]
+// Stage 0 (searchReq): all entries compare in parallel -> pipeRegs[0]
+// Stage k (rule doSearchPipe): merge pairs from pipeRegs[k-1] -> pipeRegs[k]
 // After log2(N) stages, the final single result is in searchResult.
 // ============================================================
 
@@ -228,7 +228,7 @@ module mkTlb(TlbArray);
         let stage = searchStage;
         Vector#(TlbNumEntries, TlbSearchEntry) cur = pipeRegs[stage];
 
-        // Merge pairs: cur[2i] and cur[2i+1] → pickSearchWinner → next[i]
+        // Merge pairs: cur[2i] and cur[2i+1] -> pickSearchWinner -> next[i]
         Vector#(TlbNumEntries, TlbSearchEntry) next = replicate(noSearchHit);
         for (Integer i = 0; i < valueOf(TlbNumEntries) / 2; i = i + 1)
             next[i] = pickSearchWinner(cur[2*i], cur[2*i + 1]);
