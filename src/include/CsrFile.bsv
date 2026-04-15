@@ -9,9 +9,6 @@ import Vector::*;
 `include "Autoconf.bsv"
 
 interface CsrFile;
-  method Action start;
-  method Action finish;
-  method Bool started;
   method Bool hasInterrupt;
   method Data crmd;
   method Data prmd;
@@ -28,6 +25,8 @@ interface CsrFile;
 `endif
   method Action wr(Maybe#(CsrIndx) idx, Data val);
   method Data tlbsrchResult;
+  method ActionValue#(Data) tlbsrchResultVal;
+  method Bool tlbsrchRespValid;
   method Action tlbsrch;
   method Action invtlb(Bit#(5) op, Data asidVal, Data vaVal);
   method Action tlbwr;
@@ -67,8 +66,6 @@ endfunction
 
 (* synthesize *)
 module mkCsrFile(CsrFile);
-  Reg#(Bool) startReg <- mkReg(False);
-
   Reg#(Bit#(64)) commitInsts <- mkReg(0);
   Reg#(Bit#(64)) cycles <- mkReg(0);
 
@@ -111,13 +108,15 @@ module mkCsrFile(CsrFile);
   Reg#(Data) csr_dmw1 <- mkReg(0);
   TlbArray tlb <- mkTlb;
 
-  rule count (startReg);
+  Reg#(Data) lastTlbSrchResult <- mkReg(32'h80000000);
+
+  rule count;
     cycles <= cycles + 1;
   endrule
 
   function Action retireBookkeeping(Bool wrote_tcfg, Bool cleared_timer_int);
     action
-      if (!wrote_tcfg && !cleared_timer_int && startReg && csr_tcfg[`CSR_TCFG_EN] == 1) begin
+      if (!wrote_tcfg && !cleared_timer_int && csr_tcfg[`CSR_TCFG_EN] == 1) begin
         if (csr_tval[1] != 0) begin
           let tval_next = csr_tval[1] - 1;
           if (tval_next == 0) begin
@@ -135,28 +134,11 @@ module mkCsrFile(CsrFile);
     endaction
   endfunction
 
-  method Action start if (!startReg);
-    startReg <= True;
-    cycles <= 0;
-    commitInsts <= 0;
-  endmethod
-
-  method Action finish;
-    $display("[CSR] commit instructions: %0d", commitInsts);
-    toHostFifo.enq(CpuToHostData{
-      c2hType: ExitCode,
-      data: 16'b0});
-  endmethod
-
-  method Bool started;
-    return startReg;
-  endmethod
-
   method Bool hasInterrupt;
     Data estatWithTimer = csr_estat | (timerInt[1] ? 32'h00000800 : 0);
     Bool ieEnabled = (csr_crmd[`CSR_CRMD_IE] == 1'b1);
     Bool pending = ((estatWithTimer[`CSR_ECFG_LIE] & csr_ecfg[`CSR_ECFG_LIE]) != 0);
-    return startReg && ieEnabled && pending;
+    return ieEnabled && pending;
   endmethod
 
   method Data crmd;
@@ -570,11 +552,21 @@ module mkCsrFile(CsrFile);
     endmethod
 
     method Data tlbsrchResult;
-      return tlb.searchResult(csr_tlbehi, csr_asid);
+      return lastTlbSrchResult;
+    endmethod
+
+    method ActionValue#(Data) tlbsrchResultVal;
+      let res <- tlb.searchResp;
+      lastTlbSrchResult <= res;
+      return res;
+    endmethod
+
+    method Bool tlbsrchRespValid;
+      return tlb.searchRespValid;
     endmethod
 
     method Action tlbsrch;
-      csr_tlbidx <= tlb.searchResult(csr_tlbehi, csr_asid);
+      tlb.searchReq(csr_tlbehi, csr_asid);
     endmethod
 
     method Action invtlb(Bit#(5) op, Data asidVal, Data vaVal);
@@ -582,22 +574,12 @@ module mkCsrFile(CsrFile);
     endmethod
 
     method Action tlbwr;
-      Bit#(3) tlbIndex = truncate(csr_tlbidx[`CSR_TLBIDX_INDEX]);
-      Bool isNotExist = unpack(csr_tlbidx[`CSR_TLBIDX_NE]);
-      tlb_ne[tlbIndex] <= isNotExist;
-      if (isNotExist) begin
-        tlb_ps[tlbIndex] <= 0;
-        tlb_ehi[tlbIndex] <= 0;
-        tlb_elo0[tlbIndex] <= 0;
-        tlb_elo1[tlbIndex] <= 0;
-        tlb_asid[tlbIndex] <= 0;
-      end else begin
-        tlb_ps[tlbIndex] <= csr_tlbidx[`CSR_TLBIDX_PS];
-        tlb_ehi[tlbIndex] <= csr_tlbehi;
-        tlb_elo0[tlbIndex] <= csr_tlbelo0;
-        tlb_elo1[tlbIndex] <= csr_tlbelo1;
-        tlb_asid[tlbIndex] <= csr_asid;
-      end
+      tlb.writeEntry(csr_tlbidx, csr_tlbehi, csr_tlbelo0, csr_tlbelo1, csr_asid);
+      retireBookkeeping(False, False);
+    endmethod
+
+    method Action tlbfill;
+      tlb.fillEntry(csr_tlbidx, csr_tlbehi, csr_tlbelo0, csr_tlbelo1, csr_asid);
       retireBookkeeping(False, False);
     endmethod
 

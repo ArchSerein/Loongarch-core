@@ -15,18 +15,21 @@ typedef `CONFIG_DCACHE_LINE_WORDS DCacheLineWords; // words per cache line
 typedef TLog#(DCacheLineWords)                              DCacheWordSelSz;
 typedef TAdd#(DCacheWordSelSz, 2)                           DCacheOffsetSz;
 typedef TLog#(DCacheSets)                                   DCacheIndexSz;
+typedef TAdd#(DCacheOffsetSz, DCacheIndexSz)                DCacheWaySelOffSz;
 typedef TSub#(AddrSz, TAdd#(DCacheIndexSz, DCacheOffsetSz)) DCacheTagSz;
 
 typedef Bit#(DCacheWordSelSz)   DCacheWordSel;
 typedef Bit#(DCacheIndexSz)     DCacheIndex;
 typedef Bit#(DCacheTagSz)       DCacheTag;
 typedef Bit#(TLog#(DCacheWays)) DCacheWayIdx;
+typedef Bit#(2)                 DCacheOpType;
 
 typedef Vector#(DCacheLineWords, Data) DCacheLine;
 
 function DCacheTag     getDTag(Addr a) = truncateLSB(a);
 function DCacheIndex   getDIndex(Addr a) = truncate(a >> valueOf(DCacheOffsetSz));
 function DCacheWordSel getDWordSel(Addr a) = truncate(a >> 2);
+function DCacheWayIdx  getDWaySel(Addr a) = truncate(a >> valueOf(DCacheWaySelOffSz));
 function Addr getDBlockBase(Addr a);
   Bit#(TSub#(AddrSz, DCacheOffsetSz)) upper = truncateLSB(a);
   Bit#(DCacheOffsetSz) lower = 0;
@@ -162,6 +165,10 @@ module mkDCache(DCache);
   Reg#(Bool) lrValid <- mkReg(False);
   Reg#(Addr) lrAddr <- mkRegU;
   Reg#(Bool) fenceFlushWait <- mkReg(False);
+  Reg#(Bool) cacheMaintWait <- mkReg(False);
+  Reg#(DCacheIndex) cacheMaintIdx <- mkRegU;
+  Reg#(DCacheWayIdx) cacheMaintWay <- mkRegU;
+  Reg#(Addr) cacheMaintBlockAddr <- mkRegU;
 
   Fifo#(2, MemReq) reqQ <- mkCFFifo;
   Fifo#(2, Data)   respQ <- mkCFFifo;
@@ -186,7 +193,7 @@ module mkDCache(DCache);
     let r = reqQ.first;
     reqQ.deq;
 
-    if (r.op == Fence) begin
+    if (r.op == Barrier) begin
       let tag = getDTag(r.addr);
       let idx = getDIndex(r.addr);
       let wsel = getDWordSel(r.addr);
@@ -201,25 +208,97 @@ module mkDCache(DCache);
         end
       end
 `ifdef CONFIG_MTRACE
-      $fwrite(stdout, "[DCDBG] FENCE addr:%x hit:%0d dirty:%0d data:%x\n",
+      $fwrite(stdout, "[DCDBG] BARRIER addr:%x hit:%0d dirty:%0d data:%x\n",
         r.addr, pack(hit), pack(hit && dirtyStore[idx][hitWay]), hitData);
 `endif
       if (hit && dirtyStore[idx][hitWay]) begin
 `ifdef CONFIG_MTRACE
-        $fwrite(stdout, "[DCDBG] FENCE-WB addr:%x data:%x\n", r.addr, hitData);
+        $fwrite(stdout, "[DCDBG] BARRIER-WB addr:%x data:%x\n", r.addr, hitData);
 `endif
         missReq <= MemReq{
           op: St,
           addr: r.addr,
           data: hitData,
-          byteEn: 4'b1111
+          byteEn: 4'b1111,
+          cacheOp: 5'b0
         };
         fenceFlushWait <= True;
         state <= SendUncacheReq;
       end else begin
-        // Fence completes immediately if no dirty line needs writeback.
+        // Barrier completes immediately if no dirty line needs writeback.
         respQ.enq(0);
         fenceFlushWait <= False;
+      end
+    end else if (r.op == Cacop) begin
+      DCacheOpType opType = r.cacheOp[4:3];
+      let idx = getDIndex(r.addr);
+      let tag = getDTag(r.addr);
+      let way = getDWaySel(r.addr);
+      let ctag = r.data;
+
+      Bool hit = False;
+      DCacheWayIdx hitWay = 0;
+      for (Integer w = 0; w < valueOf(DCacheWays); w = w + 1) begin
+        if (validStore[idx][w] && tagStore[idx][w] == tag) begin
+          hit = True;
+          hitWay = fromInteger(w);
+        end
+      end
+
+      if (r.cacheOp[2:0] != 3'b001) begin
+        respQ.enq(0);
+      end else if (opType == 2'b00) begin
+        // This core uses an implementation-defined CTAG layout:
+        // ctag[0] drives valid, ctag[1] drives dirty, upper bits drive tag.
+        tagStore[idx][way] <= truncateLSB(ctag);
+        validStore[idx][way] <= ctag[0] == 1'b1;
+        dirtyStore[idx][way] <= (ctag[0] == 1'b1) && (ctag[1] == 1'b1);
+        if (lrValid && getDBlockBase(lrAddr) == getDBlockBase(r.addr)) begin
+          lrValid <= False;
+        end
+        respQ.enq(0);
+      end else begin
+        Bool targetValid = False;
+        Bool targetDirty = False;
+        DCacheWayIdx targetWay = way;
+        Addr targetBlockAddr = getDBlockBase(r.addr);
+
+        if (opType == 2'b01) begin
+          targetValid = validStore[idx][way];
+          targetDirty = dirtyStore[idx][way];
+        end else if (opType == 2'b10 && hit) begin
+          targetWay = hitWay;
+          targetValid = True;
+          targetDirty = dirtyStore[idx][hitWay];
+          Bit#(DCacheOffsetSz) zeroOff = 0;
+          targetBlockAddr = { tagStore[idx][hitWay], idx, zeroOff };
+        end
+
+        if (!targetValid) begin
+          respQ.enq(0);
+        end else if (targetDirty) begin
+          Bit#(DCacheOffsetSz) zeroOff = 0;
+          wbLine <= dataStore[idx][targetWay];
+          awQ.enq(AxiWriteAddr{
+            addr: { tagStore[idx][targetWay], idx, zeroOff },
+            len: fromInteger(valueOf(DCacheLineWords) - 1),
+            size: 3'd2,
+            burst: AxiBurstIncr
+          });
+          beatIdx <= 0;
+          cacheMaintWait <= True;
+          cacheMaintIdx <= idx;
+          cacheMaintWay <= targetWay;
+          cacheMaintBlockAddr <= targetBlockAddr;
+          state <= SendWbData;
+        end else begin
+          validStore[idx][targetWay] <= False;
+          dirtyStore[idx][targetWay] <= False;
+          if (lrValid && getDBlockBase(lrAddr) == targetBlockAddr) begin
+            lrValid <= False;
+          end
+          respQ.enq(0);
+        end
       end
     end else begin
       let tag = getDTag(r.addr);
@@ -329,7 +408,18 @@ module mkDCache(DCache);
 
   rule doWaitWbResp (state == WaitWbResp && bQ.notEmpty);
     bQ.deq;
-    state <= SendFillAddr;
+    if (cacheMaintWait) begin
+      validStore[cacheMaintIdx][cacheMaintWay] <= False;
+      dirtyStore[cacheMaintIdx][cacheMaintWay] <= False;
+      if (lrValid && getDBlockBase(lrAddr) == cacheMaintBlockAddr) begin
+        lrValid <= False;
+      end
+      cacheMaintWait <= False;
+      respQ.enq(0);
+      state <= Ready;
+    end else begin
+      state <= SendFillAddr;
+    end
   endrule
 
   rule doSendFillAddr (state == SendFillAddr);

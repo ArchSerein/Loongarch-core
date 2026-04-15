@@ -15,6 +15,7 @@ function DecodedInst decode(Instruction inst);
     src2: tagged Invalid,
     csr: tagged Invalid,
     imm: tagged Invalid,
+    cacheOp: tagged Invalid,
     mask: tagged Invalid
   };
 
@@ -176,11 +177,12 @@ function DecodedInst decode(Instruction inst);
         endcase
       end
       else if (op_25_22 == 4'h8 && op_21_20 == 2'h0 && op_19_15 == 5'h00) begin
-        // CACOP: treat as cache maintenance fence in this core model.
-        dInst.iType = Fence;
+        dInst.iType = Cacop;
         dInst.aluFunc = tagged Valid AddW;
         dInst.src1 = tagged Valid rj;
+        dInst.csr = tagged Valid `CSR_CTAG;
         dInst.imm = tagged Valid si12;
+        dInst.cacheOp = tagged Valid rd;
       end
       else if (op_25_22 == 4'h9 && op_21_20 == 2'h0 && op_19_15 == 5'h13 &&
                rd <= 5'd6) begin
@@ -303,7 +305,8 @@ function DecodedInst decode(Instruction inst);
     6'b001110: begin
       if (op_25_22 == 4'b0001 && op_21_20 == 2'b11) begin
         case (op_19_15)
-          5'b00100, 5'b00101: dInst.iType = Fence;
+          5'b00100: dInst.iType = Dbar;
+          5'b00101: dInst.iType = Ibar;
           default: dInst.iType = Unsupported;
         endcase
       end

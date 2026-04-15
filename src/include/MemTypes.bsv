@@ -4,12 +4,13 @@ import Memory::*;
 
 typedef Data MemResp;
 
-typedef enum{Ld, St, Lr, Sc, Fence} MemOp deriving(Eq, Bits, FShow);
+typedef enum{Ld, St, Lr, Sc, Barrier, Cacop} MemOp deriving(Eq, Bits, FShow);
 typedef struct{
     MemOp op;
     Addr  addr;
     Data  data;
     Bit#(WordSz) byteEn;
+    Bit#(5) cacheOp;
 } MemReq deriving(Eq, Bits, FShow);
 
 typedef struct {

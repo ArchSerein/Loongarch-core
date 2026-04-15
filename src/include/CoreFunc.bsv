@@ -1,3 +1,5 @@
+`include "CsrAddr.bsv"
+
 function ExcpInfo mkNoExcp;
   return ExcpInfo{valid: False, ecode: 0, esubcode: 0, badv: 0};
 endfunction
@@ -54,4 +56,24 @@ function Tuple2#(Bit#(4), Data) selectStoreData(Data d, Bit#(2) offset, Bit#(4) 
     end
   endcase
   return tuple2(byteEn, wData);
+endfunction
+
+function Bool isTimerRelatedCsr(CsrIndx idx);
+  return idx == `CSR_TCFG || idx == `CSR_TVAL || idx == `CSR_TICLR ||
+    idx == `CSR_ESTAT;
+endfunction
+
+function Bool isFetchAddrLegal(Addr a);
+  return (a[31:24] == 8'h1c) || (a[31:24] == 8'h00) ||
+    (a[31:24] == 8'h80) || (a[31:24] == 8'ha0);
+endfunction
+
+function Bool isCsrConflict(Maybe#(CsrIndx) pendingWrite, Maybe#(CsrIndx) curAccess);
+  if (pendingWrite matches tagged Valid .w &&& curAccess matches tagged Valid .a) begin
+    Bool sameCsr = (w == a);
+    Bool timerSideEffectConflict = isTimerRelatedCsr(w) && isTimerRelatedCsr(a);
+    return sameCsr || timerSideEffectConflict;
+  end else begin
+    return False;
+  end
 endfunction

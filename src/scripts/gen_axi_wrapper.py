@@ -146,16 +146,21 @@ module core_top
   wire        wrAddrValidRdy;
   wire        wrDataValidRdy;
 
+  reg reset;
   reg host_started;
   always @(posedge aclk) begin
-    if (!aresetn) begin
+    reset <= ~aresetn;
+  end
+
+  always @(posedge aclk) begin
+    if (reset) begin
       host_started <= 1'b0;
     end else if (!host_started && host_to_cpu_en) begin
       host_started <= 1'b1;
     end
   end
 
-  wire host_to_cpu_en = !host_started && host_to_cpu_rdy;
+  wire host_to_cpu_en = !reset && !host_started && host_to_cpu_rdy;
   wire host_to_cpu_rdy;
 
   wire [34:0] core_rdData = {{rdata, rresp, rlast}};
@@ -163,7 +168,7 @@ module core_top
 {diff_decl}
   mkCoreAxiTop u_core (
     .CLK                (aclk),
-    .RST_N              (aresetn),
+    .RST_N              (reset),
 
     .hostToCpu_startpc  (START_PC),
     .EN_hostToCpu       (host_to_cpu_en),

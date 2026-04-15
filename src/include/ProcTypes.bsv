@@ -139,7 +139,9 @@ typedef enum {
   RdTimeH, // RDTIMEH.W rd, r0
   RdCntId, // RDTIMEL.W r0, rj (Counter ID writeback only)
 
-  Fence, // DBAR / IBAR
+  Cacop, // CACOP
+  Dbar, // DBAR
+  Ibar, // IBAR
 
   Tlbsrch, // TLBSRCH
   Tlbrd, // TLBRD
@@ -207,6 +209,7 @@ typedef struct {
   Maybe#(RIndx)       src2;
   Maybe#(CsrIndx)     csr;
   Maybe#(Data)        imm;
+  Maybe#(Bit#(5))     cacheOp;
   Maybe#(ByteMask)    mask;
 } DecodedInst deriving(Bits, Eq, FShow);
 
@@ -215,6 +218,7 @@ typedef struct {
   Maybe#(RIndx)    dst;
   Maybe#(CsrIndx)  csr;
   Maybe#(Data)     imm;
+  Maybe#(Bit#(5))  cacheOp;
   Data             data;
   Maybe#(ByteMask) mask;
   Addr             addr;
@@ -357,6 +361,9 @@ end
     end
     else if (op4 == 4'b1001 && op2 == 2'b00 && op5 == 5'h13 && rd <= 5'd6) begin
       ret = $format("invtlb 0x%0x, r%0d, r%0d", rd, rj, rk);
+    end
+    else if (op4 == 4'b1000 && op2 == 2'b00 && op5 == 5'h00) begin
+      ret = $format("cacop 0x%0x, r%0d, 0x%0x", rd, rj, si12);
     end
     else if (inst[25:24] == 2'b00) begin
       if (rj == 5'd0)

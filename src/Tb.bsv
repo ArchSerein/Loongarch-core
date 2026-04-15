@@ -7,7 +7,7 @@ import MemTypes::*;
 import MemoryService::*;
 import SimInterfaces::*;
 import AxiMem::*;
-import CoreAxiTop::*;
+import Core::*;
 
 `include "Autoconf.bsv"
 
@@ -40,7 +40,7 @@ module mkTbCore#(SimIndication indication)(SimRequest);
   endmethod
 endinterface;
 
-CoreAxiTop core <- mkCoreAxiTop;
+Core core <- mkCore;
 Empty _axiMemSim <- mkAxiMemSimBridge(core.axiMem, memSvc);
 
 rule countCycles (started && cycles != fromInteger(valueOf(TbMaxCycles) - 1));
@@ -139,7 +139,11 @@ method Action read_mem_resp(Data data);
 endmethod
 endmodule
 
-(* synthesize *)
+module mkSimConnectalWrapper#(SimIndication indication)(SimConnectalWrapper);
+  SimRequest coreReq <- mkTbCore(indication);
+  interface request = coreReq;
+endmodule
+
 module mkTb(SimTop);
   Fifo#(8, Bit#(32)) haltQ <- mkCFFifo;
   Fifo#(64, Bit#(32)) readMemReqQ <- mkCFFifo;

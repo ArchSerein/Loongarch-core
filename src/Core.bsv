@@ -33,28 +33,33 @@ interface Core;
   interface AxiMemMaster axiMem;
 endinterface
 
-function Bool isTimerRelatedCsr(CsrIndx idx);
+function Bool coreIsTimerRelatedCsr(CsrIndx idx);
   return idx == `CSR_TCFG || idx == `CSR_TVAL || idx == `CSR_TICLR ||
     idx == `CSR_ESTAT;
 endfunction
 
-function Bool isFetchAddrLegal(Addr a);
+function Bool coreIsFetchAddrLegal(Addr a);
   return (a[31:24] == 8'h1c) || (a[31:24] == 8'h00) ||
     (a[31:24] == 8'h80) || (a[31:24] == 8'ha0);
 endfunction
 
-function Bool isCsrConflict(Maybe#(CsrIndx) pendingWrite, Maybe#(CsrIndx) curAccess);
+function Bool coreIsCsrConflict(Maybe#(CsrIndx) pendingWrite, Maybe#(CsrIndx) curAccess);
   if (pendingWrite matches tagged Valid .w &&& curAccess matches tagged Valid .a) begin
     Bool sameCsr = (w == a);
-    Bool timerSideEffectConflict = isTimerRelatedCsr(w) && isTimerRelatedCsr(a);
+    Bool timerSideEffectConflict = coreIsTimerRelatedCsr(w) && coreIsTimerRelatedCsr(a);
     return sameCsr || timerSideEffectConflict;
   end else begin
     return False;
   end
 endfunction
 
+function Bool coreIsBarrier(IType t);
+  return t == Dbar || t == Ibar;
+endfunction
+
 (* synthesize *)
 module mkCore(Core);
+  Reg#(Bool)        startedReg <- mkReg(False);
   Ehr#(4, Addr)         pcReg <- mkEhr(startpc);
   CsrFile                csrf <- mkCsrFile;
   RFile                    rf <- mkRFile;
@@ -68,7 +73,7 @@ module mkCore(Core);
   Btb#(6)                 btb <- mkBtb; // 64-entry BTB
   Bht#(8)                 bht <- mkBht;
   Scoreboard#(6)           sb <- mkCFScoreboard;
-  SFifo#(6, Maybe#(CsrIndx), Maybe#(CsrIndx)) csrSb <- mkCFSFifo(isCsrConflict);
+  SFifo#(6, Maybe#(CsrIndx), Maybe#(CsrIndx)) csrSb <- mkCFSFifo(coreIsCsrConflict);
   Reg#(Bool)       hasIntPrev <- mkReg(False);
   Reg#(Bool)    fenceInFlight <- mkReg(False);
   Reg#(Bool)   fenceFrontStall <- mkReg(False);
@@ -80,19 +85,20 @@ module mkCore(Core);
   Fifo#(2, R2E)           r2eFifo <- mkCFFifo;
   Fifo#(2, E2M)           e2mFifo <- mkCFFifo;
   Fifo#(2, M2W)           m2wFifo <- mkCFFifo;
+  Fifo#(2, CpuToHostData) toHostFifo <- mkCFFifo;
   Reg#(Bool)      wbMemReqIssued <- mkReg(False);
 `ifdef CONFIG_DIFFTEST
   Fifo#(2, DiffTrace) diffTraceFifo <- mkCFFifo;
 `endif
 
-  rule doFetch (csrf.started && !fenceFrontStall);
+  rule doFetch (startedReg && !fenceFrontStall);
     Addr predPc = btb.predPc(pcReg[0]);
     Bool bhtPred = bht.predict(pcReg[0]);
     Addr dnpc = bhtPred ? predPc : pcReg[0] + 4;
     ExcpInfo fExcp = mkNoExcp;
     if (pcReg[0][1:0] != 2'b00) begin
       fExcp = mkExcp(`ECODE_ADE, `ESUBCODE_ADEF, pcReg[0]);
-    end else if (!isFetchAddrLegal(pcReg[0])) begin
+    end else if (!coreIsFetchAddrLegal(pcReg[0])) begin
       fExcp = mkExcp(`ECODE_ADE, `ESUBCODE_ADEF, pcReg[0]);
     end
 
@@ -104,7 +110,7 @@ module mkCore(Core);
     f2dFifo.enq(F2D{pc: pcReg[0], predPc: dnpc, fEpoch: exeEpoch[0], excp: fExcp});
   endrule
 
-  rule doDecode (csrf.started && !fenceFrontStall);
+  rule doDecode (startedReg && !fenceFrontStall);
     let fetchPkt = f2dFifo.first();
     f2dFifo.deq();
     Instruction inst = 0;
@@ -132,13 +138,13 @@ module mkCore(Core);
       d2rFifo.enq(D2R{pc: fetchPkt.pc, predPc: fetchPkt.predPc, dEpoch: fetchPkt.fEpoch,
         dInst: dInst, excp: dExcp});
 `endif
-      if (dInst.iType == Fence) begin
+      if (coreIsBarrier(dInst.iType) || dInst.iType == Cacop) begin
         fenceFrontStall <= True;
       end
     end
   endrule
 
-  rule doRrf (csrf.started);
+  rule doRrf (startedReg);
     let decodePkt = d2rFifo.first();
 
     if (decodePkt.dEpoch != exeEpoch[1]) begin
@@ -146,11 +152,12 @@ module mkCore(Core);
       d2rFifo.deq();
     end else begin
       let rInst = decodePkt.dInst;
-      Bool isCsrWrite = (rInst.iType == Csrw || rInst.iType == Csrxchg);
+      Bool isCsrWrite = (rInst.iType == Csrw || rInst.iType == Csrxchg || rInst.iType == Tlbsrch);
+      Maybe#(CsrIndx) targetCsr = (rInst.iType == Tlbsrch) ? tagged Valid `CSR_TLBIDX : rInst.csr;
       Bool isTlbSerial = (rInst.iType == Tlbsrch || rInst.iType == Tlbrd ||
         rInst.iType == Tlbwr || rInst.iType == Tlbfill || rInst.iType == Invtlb);
-      Bool csrConflict = isValid(rInst.csr) && csrSb.search(rInst.csr);
-      Bool isFence = (rInst.iType == Fence);
+      Bool csrConflict = isValid(targetCsr) && csrSb.search(targetCsr);
+      Bool isBarrier = coreIsBarrier(rInst.iType) || rInst.iType == Cacop;
       Bool noOlderInFlight = !r2eFifo.notEmpty && !e2mFifo.notEmpty && !m2wFifo.notEmpty;
       if (!sb.search1(rInst.src1) && !sb.search2(rInst.src2) &&
           !csrConflict && !fenceInFlight &&
@@ -170,20 +177,20 @@ module mkCore(Core);
           rVal2: rVal2, csrVal: csrVal,
           rInst: rInst, excp: decodePkt.excp});
 `endif
-        csrSb.enq(isCsrWrite ? rInst.csr : tagged Invalid);
+        csrSb.enq(isCsrWrite ? targetCsr : tagged Invalid);
         sb.insert(rInst.dst);
         d2rFifo.deq();
-        if (isFence || isTlbSerial) begin
+        if (isBarrier || isTlbSerial) begin
           fenceInFlight <= True;
         end
-        if (isFence) begin
+        if (isBarrier) begin
           fenceFrontStall <= True;
         end
       end
     end
   endrule
 
-  rule doExec (csrf.started);
+  rule doExec (startedReg);
     let rrfPkt = r2eFifo.first();
 
     if (rrfPkt.rEpoch != exeEpoch[2]) begin
@@ -291,7 +298,7 @@ module mkCore(Core);
     end
   endrule
 
-  rule doMemory (csrf.started);
+  rule doMemory (startedReg);
     let execPkt = e2mFifo.first();
     e2mFifo.deq();
 
@@ -354,7 +361,7 @@ module mkCore(Core);
     end
   endrule
 
-  rule doWriteback (csrf.started);
+  rule doWriteback (startedReg);
     let memPkt = m2wFifo.first();
     Bool has_int_raw = csrf.hasInterrupt;
     Bool wbRetire = False;
@@ -369,11 +376,13 @@ module mkCore(Core);
       let storePkt = selectStoreData(mInst.data, mInst.addr[1:0], m[3:0]);
       Bit#(WordSz) byteEn = tpl_1(storePkt);
       Data wData = tpl_2(storePkt);
+      Bool isBarrier = coreIsBarrier(mInst.iType);
 
       Bool isMemOp = (mInst.iType == Ld || mInst.iType == Ll || mInst.iType == St ||
-        mInst.iType == Sc || mInst.iType == Fence);
+        mInst.iType == Sc || isBarrier);
       Bool memNeedResp = (mInst.iType == Ld || mInst.iType == Ll ||
-        mInst.iType == Sc || mInst.iType == Fence);
+        mInst.iType == Sc || isBarrier);
+      Bool isCacop = (mInst.iType == Cacop);
 
       Data wbCrmd = csrf.crmd;
       Data wbPrmd = csrf.prmd;
@@ -429,20 +438,58 @@ module mkCore(Core);
       end
 `endif
 
-      if (!wb_has_excp && isMemOp) begin
+      if (!wb_has_excp && isCacop) begin
+        Bit#(5) cacheOp = fromMaybe(0, mInst.cacheOp);
+        Data ctagVal = mInst.data;
+        Data cacheOpTrace = zeroExtend(cacheOp);
+        if (cacheOp[2:0] == 3'b000) begin
+          iCache.cacop(cacheOp, mInst.addr, ctagVal);
+          wbMemReqIssued <= False;
+`ifdef CONFIG_MTRACE
+          $fwrite(stdout, "[MTRACE] CACOP-I pc:%x op:%x addr:%x ctag:%x\n",
+            memPkt.pc, cacheOpTrace, mInst.addr, ctagVal);
+`endif
+        end else begin
+          if (!wbMemReqIssued) begin
+            dCache.req(MemReq {
+              op: Cacop,
+              addr: mInst.addr,
+              data: ctagVal,
+              byteEn: 4'b0000,
+              cacheOp: cacheOp
+            });
+            wbMemReqIssued <= True;
+            wbReady = False;
+`ifdef CONFIG_MTRACE
+            $fwrite(stdout, "[MTRACE] CACOP-D pc:%x op:%x addr:%x ctag:%x\n",
+              memPkt.pc, cacheOpTrace, mInst.addr, ctagVal);
+`endif
+          end else begin
+            let _ <- dCache.resp();
+            wbMemReqIssued <= False;
+          end
+        end
+      end else if (!wb_has_excp && isMemOp) begin
         if (memNeedResp) begin
           if (!wbMemReqIssued) begin
             MemOp op = (mInst.iType == Ll) ? Lr :
               ((mInst.iType == Sc) ? Sc :
-              ((mInst.iType == Fence) ? Fence : Ld));
-            dCache.req(MemReq { op: op, addr: mInst.addr, data: wData, byteEn: byteEn });
+              (isBarrier ? Barrier : Ld));
+            dCache.req(MemReq {
+              op: op,
+              addr: mInst.addr,
+              data: wData,
+              byteEn: byteEn,
+              cacheOp: 5'b0
+            });
             wbMemReqIssued <= True;
 `ifdef CONFIG_MTRACE
             case (mInst.iType)
               Ld: $fwrite(stdout, "[MTRACE] LD pc:%x addr:%x be:%x\n", memPkt.pc, mInst.addr, byteEn);
               Ll: $fwrite(stdout, "[MTRACE] LL pc:%x addr:%x be:%x\n", memPkt.pc, mInst.addr, byteEn);
               Sc: $fwrite(stdout, "[MTRACE] SC pc:%x addr:%x be:%x data:%x raw:%x\n", memPkt.pc, mInst.addr, byteEn, wData, mInst.data);
-              Fence: $fwrite(stdout, "[MTRACE] FENCE pc:%x addr:%x\n", memPkt.pc, mInst.addr);
+              Dbar: $fwrite(stdout, "[MTRACE] DBAR pc:%x addr:%x\n", memPkt.pc, mInst.addr);
+              Ibar: $fwrite(stdout, "[MTRACE] IBAR pc:%x addr:%x\n", memPkt.pc, mInst.addr);
               default: noAction;
             endcase
 `endif
@@ -456,18 +503,38 @@ module mkCore(Core);
             mInst.data = rData;
           end
         end else begin
-          MemOp op = (mInst.iType == St) ? St : Fence;
-          if (mInst.iType == Fence) begin
+          MemOp op = (mInst.iType == St) ? St : Barrier;
+          if (mInst.iType == Ibar) begin
             iCache.invalidate;
           end
-          dCache.req(MemReq { op: op, addr: mInst.addr, data: wData, byteEn: byteEn });
+          dCache.req(MemReq {
+            op: op,
+            addr: mInst.addr,
+            data: wData,
+            byteEn: byteEn,
+            cacheOp: 5'b0
+          });
 `ifdef CONFIG_MTRACE
           case (mInst.iType)
             St: $fwrite(stdout, "[MTRACE] ST pc:%x addr:%x be:%x data:%x raw:%x\n", memPkt.pc, mInst.addr, byteEn, wData, mInst.data);
-            Fence: $fwrite(stdout, "[MTRACE] FENCE pc:%x addr:%x\n", memPkt.pc, mInst.addr);
+            Dbar: $fwrite(stdout, "[MTRACE] DBAR pc:%x addr:%x\n", memPkt.pc, mInst.addr);
+            Ibar: $fwrite(stdout, "[MTRACE] IBAR pc:%x addr:%x\n", memPkt.pc, mInst.addr);
             default: noAction;
           endcase
 `endif
+        end
+      end else if (!wb_has_excp && mInst.iType == Tlbsrch) begin
+        if (!wbMemReqIssued) begin
+          csrf.tlbsrch;
+          wbMemReqIssued <= True;
+          wbReady = False;
+        end else if (csrf.tlbsrchRespValid) begin
+          let res <- csrf.tlbsrchResultVal;
+          csrf.wr(tagged Valid `CSR_TLBIDX, res);
+          wbMemReqIssued <= False;
+          wbReady = True;
+        end else begin
+          wbReady = False;
         end
       end else begin
         wbMemReqIssued <= False;
@@ -484,7 +551,10 @@ module mkCore(Core);
         end else begin
           if (wb_finish_on_syscall) begin
             $display("this syscall 0x11, finish simulation");
-            csrf.finish;
+            toHostFifo.enq(CpuToHostData{
+              c2hType: ExitCode,
+              data: 16'b0
+            });
           end
           if (isValid(mInst.dst)) begin
             rf.wr(fromMaybe(?, mInst.dst), mInst.data);
@@ -497,11 +567,9 @@ module mkCore(Core);
             pcReg[3] <= era;
             wbFlush = True;
           end else if (mInst.iType == Tlbsrch) begin
-            csrf.tlbsrch;
-            csrf.wr(Invalid, mInst.data);
+            noAction;
           end else if (mInst.iType == Invtlb) begin
             csrf.invtlb(truncate(fromMaybe(0, mInst.imm)), mInst.data, mInst.addr);
-            csrf.wr(Invalid, mInst.data);
           end else if (mInst.iType == Tlbwr) begin
             csrf.tlbwr;
           end else if (mInst.iType == Tlbrd) begin
@@ -632,11 +700,11 @@ module mkCore(Core);
     end else if (wbRetire) begin
       if (isValid(memPkt.mInst)) begin
         let retiredType = fromMaybe(?, memPkt.mInst).iType;
-        if (retiredType == Fence || retiredType == Tlbsrch || retiredType == Tlbrd ||
+        if (coreIsBarrier(retiredType) || retiredType == Cacop || retiredType == Tlbsrch || retiredType == Tlbrd ||
             retiredType == Tlbwr || retiredType == Tlbfill || retiredType == Invtlb) begin
           fenceInFlight <= False;
         end
-        if (retiredType == Fence) begin
+        if (coreIsBarrier(retiredType) || retiredType == Cacop) begin
           fenceFrontStall <= False;
         end
       end
@@ -646,8 +714,12 @@ module mkCore(Core);
     end
   endrule
 
-  method ActionValue#(CpuToHostData) cpuToHost = csrf.cpuToHost;
-  method Bool cpuToHostValid = csrf.cpuToHostValid;
+  method ActionValue#(CpuToHostData) cpuToHost if (toHostFifo.notEmpty);
+    let ret = toHostFifo.first;
+    toHostFifo.deq;
+    return ret;
+  endmethod
+  method Bool cpuToHostValid = toHostFifo.notEmpty;
 
 `ifdef CONFIG_DIFFTEST
   method ActionValue#(DiffTrace) diffTrace if (diffTraceFifo.notEmpty);
@@ -658,9 +730,8 @@ module mkCore(Core);
   method Bool diffTraceValid = diffTraceFifo.notEmpty;
 `endif
 
-  // TODO: this method will be remove
-  method Action hostToCpu(Addr startpc) if (!csrf.started);
-    csrf.start;
+  method Action hostToCpu(Addr startpc) if (!startedReg);
+    startedReg <= True;
     pcReg[0] <= startpc;
   endmethod
 

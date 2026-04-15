@@ -18,14 +18,23 @@ typedef `CONFIG_ICACHE_LINE_WORDS ICacheLineWords; // words per cache line
 typedef TLog#(ICacheLineWords)                              ICacheWordSelSz;
 typedef TAdd#(ICacheWordSelSz, 2)                           ICacheOffsetSz;
 typedef TLog#(ICacheSets)                                   ICacheIndexSz;
+typedef TAdd#(ICacheOffsetSz, ICacheIndexSz)                ICacheWaySelOffSz;
 typedef TSub#(AddrSz, TAdd#(ICacheIndexSz, ICacheOffsetSz)) ICacheTagSz;
 
 typedef Bit#(ICacheWordSelSz)   ICacheWordSel;
 typedef Bit#(ICacheIndexSz)     ICacheIndex;
 typedef Bit#(ICacheTagSz)       ICacheTag;
 typedef Bit#(TLog#(ICacheWays)) ICacheWayIdx;
+typedef Bit#(2)                 ICacheOpType;
 
 typedef Vector#(ICacheLineWords, Data) ICacheLine;
+typedef enum { ICacheMaintInvalidate, ICacheMaintCacop } ICacheMaintKind deriving (Bits, Eq);
+typedef struct {
+  ICacheMaintKind kind;
+  Bit#(5)         op;
+  Addr            va;
+  Data            ctag;
+} ICacheMaintReq deriving (Bits, Eq);
 
 // ============================================================
 // Address decomposition
@@ -33,6 +42,7 @@ typedef Vector#(ICacheLineWords, Data) ICacheLine;
 function ICacheTag     getITag(Addr a)     = truncateLSB(a);
 function ICacheIndex   getIIndex(Addr a)   = truncate(a >> valueOf(ICacheOffsetSz));
 function ICacheWordSel getIWordSel(Addr a) = truncate(a >> 2);
+function ICacheWayIdx  getIWaySel(Addr a)  = truncate(a >> valueOf(ICacheWaySelOffSz));
 function Addr getIBlockBase(Addr a);
   Bit#(TSub#(AddrSz, ICacheOffsetSz)) upper = truncateLSB(a);
   Bit#(ICacheOffsetSz) lower = 0;
@@ -43,6 +53,7 @@ interface ICache;
   method Action req(Addr a);
   method ActionValue#(Instruction) resp;
   method Action invalidate;
+  method Action cacop(Bit#(5) op, Addr va, Data ctag);
   interface AxiMemMaster axiMem;
 endinterface
 
@@ -152,6 +163,7 @@ module mkICache(ICache);
 
   Fifo#(2, Addr)        reqQ  <- mkCFFifo;
   Fifo#(2, Instruction) respQ <- mkCFFifo;
+  Fifo#(2, ICacheMaintReq) maintQ <- mkCFFifo;
 
   Fifo#(2, AxiReadAddr) arQ <- mkCFFifo;
   Fifo#(4, AxiReadData) rQ  <- mkCFFifo;
@@ -166,7 +178,7 @@ module mkICache(ICache);
 `endif
 `endif
 
-  rule doLookup (state == Ready);
+  rule doLookup (state == Ready && !maintQ.notEmpty);
     let addr = reqQ.first;
     let tag  = getITag(addr);
     let idx  = getIIndex(addr);
@@ -233,6 +245,49 @@ module mkICache(ICache);
     end
   endrule
 
+  rule doMaint (state == Ready && maintQ.notEmpty);
+    let req = maintQ.first;
+    maintQ.deq;
+
+    case (req.kind)
+      ICacheMaintInvalidate: begin
+        for (Integer s = 0; s < valueOf(ICacheSets); s = s + 1) begin
+          for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
+            validStore[s][w] <= False;
+          end
+        end
+      end
+
+      ICacheMaintCacop: begin
+        ICacheOpType opType = req.op[4:3];
+        let idx = getIIndex(req.va);
+        let tag = truncateLSB(req.ctag);
+        let way = getIWaySel(req.va);
+
+        if (opType == 2'b00) begin
+          tagStore[idx][way] <= tag;
+          validStore[idx][way] <= req.ctag[0] == 1'b1;
+        end
+        else if (opType == 2'b01) begin
+          validStore[idx][way] <= False;
+        end
+        else if (opType == 2'b10) begin
+          Bool hit = False;
+          ICacheWayIdx hitWay = 0;
+          for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
+            if (validStore[idx][w] && tagStore[idx][w] == getITag(req.va)) begin
+              hit = True;
+              hitWay = fromInteger(w);
+            end
+          end
+          if (hit) begin
+            validStore[idx][hitWay] <= False;
+          end
+        end
+      end
+    endcase
+  endrule
+
   method Action req(Addr a);
     reqQ.enq(a);
   endmethod
@@ -243,11 +298,23 @@ module mkICache(ICache);
     return d;
   endmethod
 
-  method Action invalidate;
-    for (Integer s = 0; s < valueOf(ICacheSets); s = s + 1) begin
-      for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
-        validStore[s][w] <= False;
-      end
+  method Action invalidate if (maintQ.notFull);
+    maintQ.enq(ICacheMaintReq{
+      kind: ICacheMaintInvalidate,
+      op: 0,
+      va: 0,
+      ctag: 0
+    });
+  endmethod
+
+  method Action cacop(Bit#(5) op, Addr va, Data ctag) if (maintQ.notFull);
+    if (op[2:0] == 3'b000) begin
+      maintQ.enq(ICacheMaintReq{
+        kind: ICacheMaintCacop,
+        op: op,
+        va: va,
+        ctag: ctag
+      });
     end
   endmethod
 
