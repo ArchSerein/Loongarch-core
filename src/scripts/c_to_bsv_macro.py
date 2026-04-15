@@ -74,16 +74,7 @@ def convert_hex_value(value: str) -> str:
         hex_digits = match.group(1)
         # Determine width based on number of hex digits
         num_digits = len(hex_digits)
-        # Each hex digit is 4 bits, calculate minimum width (power of 2)
-        if num_digits <= 2:
-            width = 8
-        elif num_digits <= 4:
-            width = 16
-        elif num_digits <= 8:
-            width = 32
-        else:
-            width = 64
-        return f"{width}'h{hex_digits}"
+        return f"{hex_digits}"
 
     return value
 
