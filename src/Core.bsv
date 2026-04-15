@@ -406,14 +406,7 @@ module mkCore(Core);
       Bit#(9) wb_esubcode = has_int ? 0 : wbExcp.esubcode;
       Data interruptBits = has_int ? pendingInterruptBits : 0;
       Data interruptNo = has_int ? ((interruptBits & 32'h00001ffc) >> 2) : 0;
-      Bool commitErtn = (!wb_has_excp) && (mInst.iType == Ertn);
       Addr ertnTarget = 0;
-      Data ertnNextCrmd = 0;
-      if (commitErtn) begin
-        ertnNextCrmd = wbCrmd;
-        ertnNextCrmd[`CSR_CRMD_PLV] = wbPrmd[`CSR_PRMD_PPLV];
-        ertnNextCrmd[`CSR_CRMD_IE] = wbPrmd[`CSR_PRMD_PIE];
-      end
 
 `ifdef CONFIG_MTRACE
       Bool inTiWindow = ((memPkt.pc >= 32'h1c072390 && memPkt.pc <= 32'h1c0723b4) ||
@@ -572,6 +565,8 @@ module mkCore(Core);
             csrf.invtlb(truncate(fromMaybe(0, mInst.imm)), mInst.data, mInst.addr);
           end else if (mInst.iType == Tlbwr) begin
             csrf.tlbwr;
+          end else if (mInst.iType == Tlbfill) begin
+            csrf.tlbfill;
           end else if (mInst.iType == Tlbrd) begin
             csrf.tlbrd;
           end else begin
@@ -581,7 +576,8 @@ module mkCore(Core);
 
       `ifdef CONFIG_DIFFTEST
         $fwrite(stdout, "commit: pc->%x, inst->%x\n", memPkt.pc, memPkt.inst);
-        Addr commitNextPc = commitErtn ? ertnTarget : (mInst.mispredict ? mInst.addr : (memPkt.pc + 4));
+        Bool diffCommitErtn = (!wb_has_excp) && (mInst.iType == Ertn);
+        Addr commitNextPc = diffCommitErtn ? ertnTarget : (mInst.mispredict ? mInst.addr : (memPkt.pc + 4));
 
         Maybe#(RIndx) diffDst = tagged Invalid;
         Maybe#(CsrIndx) diffCsrIdx = tagged Invalid;
@@ -590,10 +586,7 @@ module mkCore(Core);
           diffDst = mInst.dst;
         end
         if (!wb_has_excp) begin
-          if (mInst.iType == Ertn) begin
-            diffCsrIdx = tagged Valid `CSR_CRMD;
-            diffCsrVal = ertnNextCrmd;
-          end else if (mInst.iType == Tlbsrch) begin
+          if (mInst.iType == Tlbsrch) begin
             diffCsrIdx = tagged Valid `CSR_TLBIDX;
             diffCsrVal = csrf.tlbsrchResult;
           end else if (mInst.iType == Csrw || mInst.iType == Csrxchg) begin
@@ -644,7 +637,8 @@ module mkCore(Core);
               wb_ecode,
               wb_esubcode,
               memPkt.pc,
-              wbExcp.badv
+              wbExcp.badv,
+              diffCommitErtn
             );
 
         diffTraceFifo.enq(DiffTrace{

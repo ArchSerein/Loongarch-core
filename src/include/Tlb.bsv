@@ -304,8 +304,7 @@ module mkTlb(TlbArray);
         TlbIndex idx = replaceCnt;
         TlbEntry ent = decodeTlbEntry(tlbehi, tlbelo0, tlbelo1, asid);
         ent.ps = tlbidx[`CSR_TLBIDX_PS];
-        // TLBFILL always sets E=1 (NE is ignored per spec)
-        ent.e = True;
+        ent.e = (tlbidx[`CSR_TLBIDX_NE] == 1'b0);
         entries[idx] <= ent;
         replaceCnt <= replaceCnt + 1;
     endmethod

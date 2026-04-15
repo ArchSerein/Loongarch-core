@@ -20,7 +20,7 @@ interface CsrFile;
   method Bit#(64) stableCounterValue;
 `ifdef CONFIG_DIFFTEST
     method DiffArchCsrState diffSnapshot;
-    method DiffArchCsrState diffSnapshotAfterWrite(Maybe#(CsrIndx) idx, Data val, Bool raiseExcp, Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv);
+    method DiffArchCsrState diffSnapshotAfterWrite(Maybe#(CsrIndx) idx, Data val, Bool raiseExcp, Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv, Bool isErtn);
     method DiffArchCsrState diffSnapshotAfterTlbrd;
 `endif
   method Action wr(Maybe#(CsrIndx) idx, Data val);
@@ -39,7 +39,22 @@ interface CsrFile;
 endinterface
 
 function Bool updateBadvOnException(Bit#(6) ecode);
-  return (ecode == `ECODE_ADE) || (ecode == `ECODE_ALE);
+  return (ecode == `ECODE_TLBR) || (ecode == `ECODE_ADE) || (ecode == `ECODE_ALE) ||
+         (ecode == `ECODE_PIL) || (ecode == `ECODE_PIS) || (ecode == `ECODE_PIF) ||
+         (ecode == `ECODE_PME) || (ecode == `ECODE_PPI);
+endfunction
+
+function Bool updateTlbehiOnException(Bit#(6) ecode);
+  return (ecode == `ECODE_TLBR) || (ecode == `ECODE_PIL) || (ecode == `ECODE_PIS) ||
+         (ecode == `ECODE_PIF) || (ecode == `ECODE_PME) || (ecode == `ECODE_PPI);
+endfunction
+
+function Data effectiveTlbIdxForWrite(Data tlbidx, Data estat);
+  Data nextTlbidx = tlbidx;
+  if (estat[`CSR_ESTAT_ECODE] == `ECODE_TLBR) begin
+    nextTlbidx[`CSR_TLBIDX_NE] = 1'b0;
+  end
+  return nextTlbidx;
 endfunction
 
 function Data updateTimerView(Data tcfg, Data tval, Bool timerInt, Bool wrote_tcfg, Bool cleared_timer_int);
@@ -240,7 +255,7 @@ module mkCsrFile(CsrFile);
   endmethod
 
   method DiffArchCsrState diffSnapshotAfterWrite(Maybe#(CsrIndx) csrIdx, Data val, Bool raiseExcp,
-      Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv);
+      Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv, Bool isErtn);
     Data next_crmd = csr_crmd;
     Data next_prmd = csr_prmd;
     Data next_euen = csr_euen;
@@ -275,6 +290,10 @@ module mkCsrFile(CsrFile);
     if (raiseExcp) begin
       next_crmd[`CSR_CRMD_PLV] = 2'b0;
       next_crmd[`CSR_CRMD_IE] = 1'b0;
+      if (ecode == `ECODE_TLBR) begin
+        next_crmd[`CSR_CRMD_DA] = 1'b1;
+        next_crmd[`CSR_CRMD_PG] = 1'b0;
+      end
       next_prmd[`CSR_PRMD_PPLV] = csr_crmd[`CSR_CRMD_PLV];
       next_prmd[`CSR_PRMD_PIE] = csr_crmd[`CSR_CRMD_IE];
       next_estat_raw[`CSR_ESTAT_ECODE] = ecode;
@@ -283,6 +302,20 @@ module mkCsrFile(CsrFile);
       if (updateBadvOnException(ecode)) begin
         next_badv = badv;
       end
+      if (updateTlbehiOnException(ecode)) begin
+        next_tlbehi[`CSR_TLBEHI_VPPN] = badv[31:13];
+      end
+    end else if (isErtn) begin
+      next_crmd[`CSR_CRMD_PLV] = csr_prmd[`CSR_PRMD_PPLV];
+      next_crmd[`CSR_CRMD_IE] = csr_prmd[`CSR_PRMD_PIE];
+      if (csr_estat[`CSR_ESTAT_ECODE] == `ECODE_TLBR) begin
+        next_crmd[`CSR_CRMD_DA] = 1'b0;
+        next_crmd[`CSR_CRMD_PG] = 1'b1;
+      end
+      if (!next_llbctlKlo) begin
+        next_llbit = False;
+      end
+      next_llbctlKlo = False;
     end else if (csrIdx matches tagged Valid .idx) begin
       case (idx)
         `CSR_CRMD: next_crmd = (val & 32'h000001FF) | (next_crmd & 32'hFFFFFE00);
@@ -574,12 +607,14 @@ module mkCsrFile(CsrFile);
     endmethod
 
     method Action tlbwr;
-      tlb.writeEntry(csr_tlbidx, csr_tlbehi, csr_tlbelo0, csr_tlbelo1, csr_asid);
+      Data effectiveTlbidx = effectiveTlbIdxForWrite(csr_tlbidx, csr_estat);
+      tlb.writeEntry(effectiveTlbidx, csr_tlbehi, csr_tlbelo0, csr_tlbelo1, csr_asid);
       retireBookkeeping(False, False);
     endmethod
 
     method Action tlbfill;
-      tlb.fillEntry(csr_tlbidx, csr_tlbehi, csr_tlbelo0, csr_tlbelo1, csr_asid);
+      Data effectiveTlbidx = effectiveTlbIdxForWrite(csr_tlbidx, csr_estat);
+      tlb.fillEntry(effectiveTlbidx, csr_tlbehi, csr_tlbelo0, csr_tlbelo1, csr_asid);
       retireBookkeeping(False, False);
     endmethod
 
@@ -609,6 +644,10 @@ module mkCsrFile(CsrFile);
       Data nextCrmd = curCrmd;
       nextCrmd[`CSR_CRMD_PLV] = 2'b0;
       nextCrmd[`CSR_CRMD_IE] = 1'b0;
+      if (ecode == `ECODE_TLBR) begin
+        nextCrmd[`CSR_CRMD_DA] = 1'b1;
+        nextCrmd[`CSR_CRMD_PG] = 1'b0;
+      end
 
       Data nextPrmd = csr_prmd;
       nextPrmd[`CSR_PRMD_PPLV] = curCrmd[`CSR_CRMD_PLV];
@@ -622,16 +661,27 @@ module mkCsrFile(CsrFile);
       csr_prmd <= nextPrmd;
       csr_estat <= nextEstat;
       csr_era <= pc;
-      if (ecode == `ECODE_ADE || ecode == `ECODE_ALE) begin
+      if (updateBadvOnException(ecode)) begin
         csr_badv <= badv;
       end
-      return csr_eentry;
+      if (updateTlbehiOnException(ecode)) begin
+        csr_tlbehi[`CSR_TLBEHI_VPPN] <= badv[31:13];
+      end
+      return (ecode == `ECODE_TLBR) ? csr_tlbrentry : csr_eentry;
     endmethod
 
     method ActionValue#(Addr) returnFromException;
       Data nextCrmd = csr_crmd;
       nextCrmd[`CSR_CRMD_PLV] = csr_prmd[`CSR_PRMD_PPLV];
       nextCrmd[`CSR_CRMD_IE] = csr_prmd[`CSR_PRMD_PIE];
+      if (csr_estat[`CSR_ESTAT_ECODE] == `ECODE_TLBR) begin
+        nextCrmd[`CSR_CRMD_DA] = 1'b0;
+        nextCrmd[`CSR_CRMD_PG] = 1'b1;
+      end
+      if (!llbctlKlo) begin
+        llbit <= False;
+      end
+      llbctlKlo <= False;
       csr_crmd <= nextCrmd;
       retireBookkeeping(False, False);
       return csr_era;
