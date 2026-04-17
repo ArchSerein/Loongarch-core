@@ -1,6 +1,7 @@
 import Types::*;
 import ProcTypes::*;
 import Tlb::*;
+import Mmu::*;
 import Ehr::*;
 import ConfigReg::*;
 import Fifo::*;
@@ -30,8 +31,10 @@ interface CsrFile;
   method Action tlbsrch;
   method Action invtlb(Bit#(5) op, Data asidVal, Data vaVal);
   method Action tlbwr;
-  method Action tlbfill;
+  method ActionValue#(Bit#(5)) tlbfill;
   method Action tlbrd;
+  method MmuResult translateFetch(Addr va);
+  method MmuResult translateData(Addr va, MmuAccessType accessType);
   method ActionValue#(Addr) raiseException(Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv);
   method ActionValue#(Addr) returnFromException;
   method ActionValue#(CpuToHostData) cpuToHost;
@@ -612,10 +615,11 @@ module mkCsrFile(CsrFile);
       retireBookkeeping(False, False);
     endmethod
 
-    method Action tlbfill;
+    method ActionValue#(Bit#(5)) tlbfill;
       Data effectiveTlbidx = effectiveTlbIdxForWrite(csr_tlbidx, csr_estat);
-      tlb.fillEntry(effectiveTlbidx, csr_tlbehi, csr_tlbelo0, csr_tlbelo1, csr_asid);
+      let idx <- tlb.fillEntry(effectiveTlbidx, csr_tlbehi, csr_tlbelo0, csr_tlbelo1, csr_asid);
       retireBookkeeping(False, False);
+      return zeroExtend(idx);
     endmethod
 
     method Action tlbrd;
@@ -637,6 +641,16 @@ module mkCsrFile(CsrFile);
       end
       csr_tlbidx <= next_tlbidx;
       retireBookkeeping(False, False);
+    endmethod
+
+    method MmuResult translateFetch(Addr va);
+      return mmuTranslate(va, MmuFetch, csr_crmd, csr_asid, csr_dmw0, csr_dmw1,
+        tlb.lookupFetch(va, csr_asid));
+    endmethod
+
+    method MmuResult translateData(Addr va, MmuAccessType accessType);
+      return mmuTranslate(va, accessType, csr_crmd, csr_asid, csr_dmw0, csr_dmw1,
+        tlb.lookupData(va, csr_asid));
     endmethod
 
     method ActionValue#(Addr) raiseException(Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv);

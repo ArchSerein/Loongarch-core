@@ -301,7 +301,8 @@ public:
 
   void difftest_instr_commit(std::uint8_t valid, std::uint32_t pc, std::uint32_t next_pc, std::uint32_t inst,
                              std::uint8_t wen, std::uint8_t wdest, std::uint32_t wdata,
-                             std::uint8_t skip) override {
+                             std::uint8_t skip, std::uint8_t is_tlbfill,
+                             std::uint8_t tlbfill_index) override {
     if (!g_run || difftest == nullptr || !difftest->enabled()) {
       return;
     }
@@ -316,6 +317,8 @@ public:
     commit->wen = (wen != 0) ? 1 : 0;
     commit->wdest = wdest;
     commit->wdata = wdata;
+    commit->is_TLBFILL = (is_tlbfill != 0) ? 1 : 0;
+    commit->TLBFILL_index = tlbfill_index;
     commit->is_CNTinst = 0;
     commit->timer_64_value = last_timer_64_value;
 
@@ -413,7 +416,9 @@ int main(int argc, char** argv) {
       );
   (void)indication;
 
-  g_request->hostToCpu(opts.start_pc);
+  std::cerr << "bsim: core starts from reset pc 0x" << std::hex << opts.start_pc << std::dec
+            << "; hostToCpu start request skipped\n";
+  std::cerr.flush();
 
   while (g_run != 0) {
     usleep(1000);

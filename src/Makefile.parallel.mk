@@ -40,6 +40,7 @@ TEST_EXPECTED_BIN := $(EXAMPLES_DIR)/nscscc_perf/obj/$(TEST_BUILD_TARGET)/inst_d
 endif
 -include $(ROOT_DIR)/include/config/auto.conf
 -include $(ROOT_DIR)/include/config/auto.conf.cmd
+CONFIG_BSIM ?= $(shell if grep -q '^# CONFIG_BSIM is not set' "$(ROOT_DIR)/.config" 2>/dev/null; then echo n; else echo y; fi)
 
 # ==========================================
 # 2. Connectal Configuration
@@ -54,16 +55,19 @@ PROJECTDIR     ?= $(BOARD)
 S2H_INTERFACES = SimRequest:SimConnectalWrapper.request
 H2S_INTERFACES = SimConnectalWrapper:SimIndication
 
-# Explicitly list BSV files so topgen can find SimRequest and SimIndication
+# Explicitly list simulation BSV files so topgen can find SimRequest and SimIndication.
 BSVFILES += \
     $(ROOT_DIR)/include/Types.bsv \
-    $(ROOT_DIR)/include/SimInterfaces.bsv \
-    $(ROOT_DIR)/include/SimConnectalWrapper.bsv \
     $(ROOT_DIR)/include/Tlb.bsv \
     $(ROOT_DIR)/include/AxiTypes.bsv \
-    $(ROOT_DIR)/include/AxiMem.bsv \
-    $(ROOT_DIR)/include/CoreAxiTop.bsv \
+    $(ROOT_DIR)/include/AxiMem.bsv
+
+ifeq ($(CONFIG_BSIM),y)
+BSVFILES += \
+    $(ROOT_DIR)/include/SimInterfaces.bsv \
+    $(ROOT_DIR)/include/SimConnectalWrapper.bsv \
     $(ROOT_DIR)/Tb.bsv
+endif
 
 # Search paths for bsc and Connectal
 BSVPATH += \
@@ -146,8 +150,15 @@ default: sim
 
 # Run both Connectal-Bluesim and Verilator builds
 ifneq ($(wildcard $(CONNECTAL_MAKEFILE)),)
+ifeq ($(CONFIG_BSIM),y)
 sim: bsim verilator-sim
 bsim: build.$(BOARD)
+else
+sim: verilator-sim
+bsim:
+	@echo "CONFIG_BSIM is disabled; enable it with menuconfig before building Bluesim"
+	@exit 1
+endif
 else
 sim: verilator-sim
 bsim:
@@ -283,9 +294,14 @@ BSC_COMMON_FLAGS := -verilog -vsim $(VERILATOR) \
 # We use a custom python script because this version of bsc doesn't support -M
 DEP_FILE := $(BUILD_DIR)/.depends
 
-$(DEP_FILE): $(ROOT_DIR)/Tb.bsv $(ROOT_DIR)/include/CoreAxiTop.bsv scripts/gen_bsv_deps.py | $(BUILD_DIR) $(BDIR)
+DEP_ROOTS := $(ROOT_DIR)/Tb.bsv
+ifneq ($(filter core-verilog,$(MAKECMDGOALS)),)
+DEP_ROOTS += $(ROOT_DIR)/include/CoreAxiTop.bsv
+endif
+
+$(DEP_FILE): $(DEP_ROOTS) scripts/gen_bsv_deps.py | $(BUILD_DIR) $(BDIR)
 	@echo "Generating dependencies..."
-	python3 scripts/gen_bsv_deps.py $(BDIR) "$(ROOT_DIR):$(ROOT_DIR)/include" $(ROOT_DIR)/Tb.bsv $(ROOT_DIR)/include/CoreAxiTop.bsv > $@
+	python3 scripts/gen_bsv_deps.py $(BDIR) "$(ROOT_DIR):$(ROOT_DIR)/include" $(DEP_ROOTS) > $@
 
 -include $(DEP_FILE)
 

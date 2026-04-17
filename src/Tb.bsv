@@ -82,7 +82,9 @@ module mkTb(SimTop);
       Bit#(1) wen,
       Bit#(5) wdest,
       Data wdata,
-      Bit#(1) skip);
+      Bit#(1) skip,
+      Bit#(1) isTlbfill,
+      Bit#(5) tlbfillIndex);
     noAction;
   endmethod
 `endif

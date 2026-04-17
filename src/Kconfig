@@ -1,6 +1,11 @@
 menu "LoongArch-core configuration menu"
 
+config BSIM
+  bool "Enable BSC Connectal/Bluesim simulation"
+  default y
+
 menu "TRACE_WAVE switch"
+  depends on BSIM
   config TRACE_WAVE
     bool "Enable trace wave"
     default n
@@ -14,14 +19,17 @@ endmenu
 
   config DIFFTEST
     bool "Enable difftest"
+    depends on BSIM
     default n
 
   config TRACE_PERFORMANCE
     bool "Enable performance tracer"
+    depends on BSIM
     default y
 
   config MTRACE
     bool "Enable memery trace"
+    depends on BSIM
     default n
 endmenu
 

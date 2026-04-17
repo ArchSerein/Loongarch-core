@@ -25,6 +25,8 @@ typedef struct {
   Bit#(5) wdest;
   Data wdata;
   Bool skip;  // Reserved for compatibility, currently hardwired to 0.
+  Bool isTlbfill;
+  Bit#(5) tlbfillIndex;
 } DiffCommit deriving(Bits, Eq, FShow);
 
 typedef struct {
@@ -86,7 +88,8 @@ typedef struct {
   Bool isLoad;
   Bool isStore;
   Bool isSc;
-  Addr addr;
+  Addr paddr;
+  Addr vaddr;
   Data storeData;
 } DiffMemOp deriving(Bits, Eq);
 

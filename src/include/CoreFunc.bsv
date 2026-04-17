@@ -1,3 +1,6 @@
+import Types::*;
+import ProcTypes::*;
+import CoreTypes::*;
 `include "CsrAddr.bsv"
 
 function ExcpInfo mkNoExcp;
@@ -6,6 +9,45 @@ endfunction
 
 function ExcpInfo mkExcp(Bit#(6) ecode, Bit#(9) esubcode, Addr badv);
   return ExcpInfo{valid: True, ecode: ecode, esubcode: esubcode, badv: badv};
+endfunction
+
+function Data coreApplyByteMask(Data oldData, Data newData, Bit#(WordSz) byteEn);
+  Data merged = oldData;
+  for (Integer i = 0; i < valueOf(WordSz); i = i + 1) begin
+    if (byteEn[i] == 1'b1) begin
+      Bit#(8) b = newData[(8 * i) + 7 : (8 * i)];
+      merged[(8 * i) + 7 : (8 * i)] = b;
+    end
+  end
+  return merged;
+endfunction
+
+function Bool coreSameWordAddr(Addr a, Addr b);
+  Bit#(TSub#(AddrSz, 2)) wordA = truncateLSB(a);
+  Bit#(TSub#(AddrSz, 2)) wordB = truncateLSB(b);
+  return wordA == wordB;
+endfunction
+
+function Bit#(WordSz) coreLoadByteEn(Bit#(2) offset, Bit#(4) rawEn);
+  Bit#(2) alignOff = 0;
+  Bit#(WordSz) byteEn = 0;
+  case (rawEn)
+    4'b0001: begin
+      alignOff = offset;
+      byteEn = 4'b0001 << alignOff;
+    end
+    4'b0011: begin
+      alignOff = {offset[1], 1'b0};
+      byteEn = 4'b0011 << alignOff;
+    end
+    4'b1111: begin
+      byteEn = 4'b1111;
+    end
+    default: begin
+      byteEn = 4'b0000;
+    end
+  endcase
+  return byteEn;
 endfunction
 
 // Helper functions for optimization
@@ -58,22 +100,26 @@ function Tuple2#(Bit#(4), Data) selectStoreData(Data d, Bit#(2) offset, Bit#(4) 
   return tuple2(byteEn, wData);
 endfunction
 
-function Bool isTimerRelatedCsr(CsrIndx idx);
+function Bool coreIsTimerRelatedCsr(CsrIndx idx);
   return idx == `CSR_TCFG || idx == `CSR_TVAL || idx == `CSR_TICLR ||
     idx == `CSR_ESTAT;
 endfunction
 
-function Bool isFetchAddrLegal(Addr a);
+function Bool coreIsFetchAddrLegal(Addr a);
   return (a[31:24] == 8'h1c) || (a[31:24] == 8'h00) ||
     (a[31:24] == 8'h80) || (a[31:24] == 8'ha0);
 endfunction
 
-function Bool isCsrConflict(Maybe#(CsrIndx) pendingWrite, Maybe#(CsrIndx) curAccess);
+function Bool coreIsCsrConflict(Maybe#(CsrIndx) pendingWrite, Maybe#(CsrIndx) curAccess);
   if (pendingWrite matches tagged Valid .w &&& curAccess matches tagged Valid .a) begin
     Bool sameCsr = (w == a);
-    Bool timerSideEffectConflict = isTimerRelatedCsr(w) && isTimerRelatedCsr(a);
+    Bool timerSideEffectConflict = coreIsTimerRelatedCsr(w) && coreIsTimerRelatedCsr(a);
     return sameCsr || timerSideEffectConflict;
   end else begin
     return False;
   end
+endfunction
+
+function Bool coreIsBarrier(IType t);
+  return t == Dbar || t == Ibar;
 endfunction

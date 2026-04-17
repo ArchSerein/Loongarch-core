@@ -160,6 +160,9 @@ module mkICache(ICache);
   Reg#(Addr)        missAddr <- mkRegU;
   Reg#(Bit#(8))     beatIdx  <- mkRegU;
   Reg#(ICacheLine)  refillLine <- mkRegU;
+`ifdef CONFIG_MTRACE
+  Reg#(Bit#(8))     icacheDbgCount <- mkReg(0);
+`endif
 
   Fifo#(2, Addr)        reqQ  <- mkCFFifo;
   Fifo#(2, Instruction) respQ <- mkCFFifo;
@@ -197,10 +200,22 @@ module mkICache(ICache);
     end
 
     if (hit) begin
+`ifdef CONFIG_MTRACE
+      if (icacheDbgCount < 32) begin
+        $display("[ICDBG] hit addr:%x data:%x", addr, hitData);
+        icacheDbgCount <= icacheDbgCount + 1;
+      end
+`endif
       reqQ.deq;
       respQ.enq(hitData);
       replacer.access(idx, hitWay);
     end else begin
+`ifdef CONFIG_MTRACE
+      if (icacheDbgCount < 32) begin
+        $display("[ICDBG] miss addr:%x", addr);
+        icacheDbgCount <= icacheDbgCount + 1;
+      end
+`endif
       missAddr <= addr;
       state    <= StartMiss;
     end
@@ -235,6 +250,12 @@ module mkICache(ICache);
     beatIdx <= nextBeat;
 
     if (beat.last || nextBeat == fromInteger(valueOf(ICacheLineWords))) begin
+`ifdef CONFIG_MTRACE
+      if (icacheDbgCount < 32) begin
+        $display("[ICDBG] refill-done addr:%x inst:%x beat:%0d", missAddr, nextLine[wsel], beatIdx);
+        icacheDbgCount <= icacheDbgCount + 1;
+      end
+`endif
       tagStore[idx][way]   <= tag;
       dataStore[idx][way]  <= nextLine;
       validStore[idx][way] <= True;

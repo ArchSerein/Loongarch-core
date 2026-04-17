@@ -50,6 +50,10 @@ function Data applyByteMask(Data oldData, Data newData, Bit#(WordSz) byteEn);
   return merged;
 endfunction
 
+function Bool dcDbgWatchAddr(Addr a);
+  return getDBlockBase(a) == 32'h000d2aa0;
+endfunction
+
 interface DCache;
   method Action req(MemReq r);
   method ActionValue#(Data) resp;
@@ -319,6 +323,15 @@ module mkDCache(DCache);
         end
       end
 
+`ifdef CONFIG_MTRACE
+      if (dcDbgWatchAddr(r.addr)) begin
+        $fwrite(stdout,
+          "[DCDBG] LOOKUP op:%0d addr:%x idx:%0d tag:%x wsel:%0d hit:%0d way:%0d line:%x_%x_%x_%x\n",
+          pack(r.op), r.addr, idx, tag, wsel, pack(hit), hitWay,
+          hitLine[3], hitLine[2], hitLine[1], hitLine[0]);
+      end
+`endif
+
       if (isUncacheAddr(r.addr)) begin
         missReq <= r;
         state <= SendUncacheReq;
@@ -326,7 +339,14 @@ module mkDCache(DCache);
         replacer.access(idx, hitWay);
 
         case (r.op)
-          Ld: respQ.enq(hitData);
+          Ld: begin
+`ifdef CONFIG_MTRACE
+            if (dcDbgWatchAddr(r.addr)) begin
+              $fwrite(stdout, "[DCDBG] LD-HIT addr:%x data:%x\n", r.addr, hitData);
+            end
+`endif
+            respQ.enq(hitData);
+          end
           Lr: begin
             respQ.enq(hitData);
             lrValid <= True;
@@ -347,11 +367,23 @@ module mkDCache(DCache);
         if (doWrite) begin
           Data mergedWord = applyByteMask(hitLine[wsel], r.data, r.byteEn);
           DCacheLine newLine = update(hitLine, wsel, mergedWord);
+`ifdef CONFIG_MTRACE
+          if (dcDbgWatchAddr(r.addr)) begin
+            $fwrite(stdout,
+              "[DCDBG] ST-HIT addr:%x old:%x new:%x line:%x_%x_%x_%x -> %x_%x_%x_%x\n",
+              r.addr, hitLine[wsel], mergedWord,
+              hitLine[3], hitLine[2], hitLine[1], hitLine[0],
+              newLine[3], newLine[2], newLine[1], newLine[0]);
+          end
+`endif
           for (Integer w = 0; w < valueOf(DCacheWays); w = w + 1) begin
             if (fromInteger(w) == hitWay) begin
               dataStore[idx][w] <= newLine;
               dirtyStore[idx][w] <= True;
             end
+          end
+          if (r.op == St) begin
+            respQ.enq(0);
           end
         end
 
@@ -362,6 +394,12 @@ module mkDCache(DCache);
           respQ.enq(scFail);
           lrValid <= False;
         end else begin
+`ifdef CONFIG_MTRACE
+          if (dcDbgWatchAddr(r.addr)) begin
+            $fwrite(stdout, "[DCDBG] MISS op:%0d addr:%x idx:%0d tag:%x\n",
+              pack(r.op), r.addr, idx, tag);
+          end
+`endif
           missReq <= r;
           state <= StartMiss;
         end
@@ -373,9 +411,21 @@ module mkDCache(DCache);
     let idx = getDIndex(missReq.addr);
     let way = replacer.replace(idx);
     victimWay <= way;
+    Bit#(DCacheOffsetSz) zeroOff = 0;
+    Addr victimAddr = {tagStore[idx][way], idx, zeroOff};
+
+`ifdef CONFIG_MTRACE
+    if (dcDbgWatchAddr(missReq.addr) || dcDbgWatchAddr(victimAddr)) begin
+      $fwrite(stdout,
+        "[DCDBG] START-MISS req:%x op:%0d victimWay:%0d victimAddr:%x valid:%0d dirty:%0d victimLine:%x_%x_%x_%x\n",
+        missReq.addr, pack(missReq.op), way, victimAddr,
+        pack(validStore[idx][way]), pack(dirtyStore[idx][way]),
+        dataStore[idx][way][3], dataStore[idx][way][2],
+        dataStore[idx][way][1], dataStore[idx][way][0]);
+    end
+`endif
 
     if (validStore[idx][way] && dirtyStore[idx][way]) begin
-      Bit#(DCacheOffsetSz) zeroOff = 0;
       wbLine <= dataStore[idx][way];
       awQ.enq(AxiWriteAddr{
         addr: {tagStore[idx][way], idx, zeroOff},
@@ -456,6 +506,13 @@ module mkDCache(DCache);
 
       case (r.op)
         Ld: begin
+`ifdef CONFIG_MTRACE
+          if (dcDbgWatchAddr(r.addr)) begin
+            $fwrite(stdout,
+              "[DCDBG] FILL-LD addr:%x line:%x_%x_%x_%x resp:%x\n",
+              r.addr, nextLine[3], nextLine[2], nextLine[1], nextLine[0], nextLine[wsel]);
+          end
+`endif
           respQ.enq(nextLine[wsel]);
           dataStore[idx][way] <= nextLine;
           dirtyStore[idx][way] <= False;
@@ -463,8 +520,18 @@ module mkDCache(DCache);
         St: begin
           Data mergedWord = applyByteMask(nextLine[wsel], r.data, r.byteEn);
           DCacheLine newLine = update(nextLine, wsel, mergedWord);
+`ifdef CONFIG_MTRACE
+          if (dcDbgWatchAddr(r.addr)) begin
+            $fwrite(stdout,
+              "[DCDBG] FILL-ST addr:%x line:%x_%x_%x_%x -> %x_%x_%x_%x\n",
+              r.addr,
+              nextLine[3], nextLine[2], nextLine[1], nextLine[0],
+              newLine[3], newLine[2], newLine[1], newLine[0]);
+          end
+`endif
           dataStore[idx][way] <= newLine;
           dirtyStore[idx][way] <= True;
+          respQ.enq(0);
         end
         Lr: begin
           respQ.enq(nextLine[wsel]);
@@ -524,8 +591,8 @@ module mkDCache(DCache);
       bQ.deq;
       dynamicAssert(beat.resp == AxiRespOkay ||
                     beat.resp == AxiRespExOkay, "write resp has fault");
+      respQ.enq(0);
       if (fenceFlushWait) begin
-        respQ.enq(0);
         fenceFlushWait <= False;
       end
     end
