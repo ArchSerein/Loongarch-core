@@ -115,7 +115,6 @@ module mkAxiMemSimBridge#(AxiMemMaster axi, MemoryService memSvc)(Empty);
   Reg#(AxiReadAddr)  rdReq <- mkRegU;
   Reg#(Bit#(8))      rdSent <- mkReg(0);
   Reg#(Bit#(8))      rdRecv <- mkReg(0);
-  Reg#(Bit#(8))      rdDbgCount <- mkReg(0);
 
   Reg#(SimWriteState) wrState <- mkReg(SimWrIdle);
   Reg#(AxiWriteAddr)  wrReq <- mkRegU;
@@ -123,9 +122,6 @@ module mkAxiMemSimBridge#(AxiMemMaster axi, MemoryService memSvc)(Empty);
 
   rule startRead (rdState == SimRdIdle && axi.rdAddrValid);
     let ar <- axi.rdAddr;
-    if (rdDbgCount < 16) begin
-      $display("[AXIDBG] startRead addr:%x len:%0d", ar.addr, ar.len);
-    end
     rdReq <= ar;
     rdSent <= 0;
     rdRecv <= 0;
@@ -135,10 +131,6 @@ module mkAxiMemSimBridge#(AxiMemMaster axi, MemoryService memSvc)(Empty);
   rule issueReadReq (rdState == SimRdRun && rdSent <= rdReq.len);
     Bit#(TSub#(AddrSz, 2)) baseWordAddr = truncateLSB(rdReq.addr);
     Addr wordAddr = { baseWordAddr + zeroExtend(rdSent), 2'b0 };
-    if (rdDbgCount < 16) begin
-      $display("[AXIDBG] readReq addr:%x beat:%0d", wordAddr, rdSent);
-      rdDbgCount <= rdDbgCount + 1;
-    end
     memSvc.readReq(wordAddr);
     rdSent <= rdSent + 1;
   endrule
@@ -146,9 +138,6 @@ module mkAxiMemSimBridge#(AxiMemMaster axi, MemoryService memSvc)(Empty);
   rule sendReadData (rdState == SimRdRun && memSvc.readRespValid);
     let d <- memSvc.readResp;
     Bool last = (rdRecv == rdReq.len);
-    if (rdDbgCount < 16) begin
-      $display("[AXIDBG] readResp data:%x last:%0d", d, pack(last));
-    end
     axi.rdData(AxiReadData{data: d, resp: AxiRespOkay, last: last});
     if (last) begin
       rdState <= SimRdIdle;
