@@ -7,7 +7,7 @@ macro definitions. It handles:
 - #define -> `define conversion
 - #ifdef/#ifndef/#endif -> `ifdef/`ifndef/`endif
 - #include -> `include
-- Hex value conversion: 0x... -> 32'h...
+- Hex value conversion: 0x... -> decimal numeric literals for BSV typedefs
 - Decimal value handling
 - Function-like macros
 """
@@ -65,16 +65,14 @@ def load_config_values(config_path: str) -> dict:
 
 
 def convert_hex_value(value: str) -> str:
-    """Convert C hex literal (0x...) to Verilog hex literal (32'h...)."""
+    """Convert C hex literal (0x...) to a decimal numeric literal for BSV."""
     # Match hex patterns like 0x1, 0xa04d5838, etc.
     hex_pattern = r"^0x([0-9a-fA-F]+)$"
 
     match = re.match(hex_pattern, value.strip())
     if match:
         hex_digits = match.group(1)
-        # Determine width based on number of hex digits
-        num_digits = len(hex_digits)
-        return f"{hex_digits}"
+        return str(int(hex_digits, 16))
 
     return value
 

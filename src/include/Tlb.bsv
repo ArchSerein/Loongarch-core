@@ -12,7 +12,7 @@ typedef `CONFIG_TLB_ENTRIES TlbNumEntries;
 typedef TLog#(TlbNumEntries) TlbIndexSz;
 typedef Bit#(TlbIndexSz)     TlbIndex;
 
-// Number of pipeline stages for search = log2(TLB_ENTRIES)
+// Number of reduction stages for TLBSRCH = log2(TLB_ENTRIES).
 typedef TLog#(TlbNumEntries) TlbSearchStages;
 
 // ============================================================
@@ -50,6 +50,23 @@ typedef struct {
     Data    asid;
 } TlbReadResult deriving(Bits, Eq);
 
+typedef struct {
+    Bool     found;
+    Bit#(6)  ps;
+    Bool     v;
+    Bool     d;
+    Bit#(2)  mat;
+    Bit#(2)  plv;
+    Bit#(20) ppn;
+} TlbLookupResult deriving(Bits, Eq);
+
+function TlbLookupResult noTlbLookup;
+    return TlbLookupResult {
+        found: False, ps: 0, v: False, d: False,
+        mat: 0, plv: 0, ppn: 0
+    };
+endfunction
+
 // ============================================================
 // Intermediate search result per entry
 // ============================================================
@@ -63,12 +80,6 @@ function TlbSearchEntry noSearchHit;
     return TlbSearchEntry { hit: False, idx: 0, ps: 0 };
 endfunction
 
-// Pick the winner between two search results (first hit wins)
-function TlbSearchEntry pickSearchWinner(TlbSearchEntry a, TlbSearchEntry b);
-    if (a.hit) return a;
-    else       return b;
-endfunction
-
 // ============================================================
 // Interface
 // ============================================================
@@ -76,7 +87,7 @@ interface TlbArray;
     // TLBRD: read TLB entry at given index
     method TlbReadResult readEntry(Bit#(5) index);
 
-    // TLBSRCH: search for matching entry (pipelined)
+    // TLBSRCH: search for matching entry
     method Action searchReq(Data tlbehi, Data asid);
     method Bool   searchRespValid;
     method ActionValue#(Data) searchResp;
@@ -85,10 +96,14 @@ interface TlbArray;
     method Action writeEntry(Data tlbidx, Data tlbehi, Data tlbelo0, Data tlbelo1, Data asid);
 
     // TLBFILL: write to TLB at random index
-    method Action fillEntry(Data tlbidx, Data tlbehi, Data tlbelo0, Data tlbelo1, Data asid);
+    method ActionValue#(TlbIndex) fillEntry(Data tlbidx, Data tlbehi, Data tlbelo0, Data tlbelo1, Data asid);
 
     // INVTLB: invalidate TLB entries
     method Action invtlb(Bit#(5) op, Data asidVal, Data vaVal);
+
+    // Address translation lookup for fetch/load/store MMU.
+    method TlbLookupResult lookupFetch(Addr va, Data asid);
+    method TlbLookupResult lookupData(Addr va, Data asid);
 endinterface
 
 // ============================================================
@@ -150,40 +165,51 @@ function TlbReadResult encodeTlbReadResult(TlbEntry e);
     };
 endfunction
 
-// ============================================================
-// Match a TLB entry against the search key
-// Returns the search result with hit=True if the entry matches.
-// VPPN matching: compare VA[31:PS+1] which maps to VPPN[18:PS-12].
-// For PS=12: compare all 19 bits of VPPN.
-// For PS=21: compare VPPN[18:9] (upper 10 bits).
-// ============================================================
-function TlbSearchEntry matchEntry(TlbEntry ent, TlbIndex idx,
-                                   Bit#(19) vppn, Bit#(10) asid);
-    TlbSearchEntry result = noSearchHit;
+function Bool tlbVppnMatch(Bit#(6) ps, Bit#(19) entVppn, Bit#(19) keyVppn);
+    Bit#(10) entVppn4m = truncate(entVppn >> 9);
+    Bit#(10) keyVppn4m = truncate(keyVppn >> 9);
+    return (ps == 21) ? (entVppn4m == keyVppn4m) : (entVppn == keyVppn);
+endfunction
 
-    if (ent.e) begin
-        Bool asidOk = ent.g || (ent.asid == asid);
-        if (asidOk) begin
-            Bit#(6) ps = ent.ps;
-            Bit#(5) lowBit = truncate(ps - 12);
-            Bit#(19) shiftVal = {14'b0, lowBit};
-            Bit#(19) mask = ~((19'b1 << shiftVal) - 19'b1);
-            Bool vppnMatch = ((ent.vppn & mask) == (vppn & mask));
-            if (vppnMatch)
-                result = TlbSearchEntry { hit: True, idx: idx, ps: ps };
-        end
+function Bool tlbOddPage(Bit#(6) ps, Addr va);
+    return (ps == 21) ? (va[21] == 1'b1) : (va[12] == 1'b1);
+endfunction
+
+function Vector#(TlbNumEntries, TlbSearchEntry) reduceSearchEntries(
+        Vector#(TlbNumEntries, TlbSearchEntry) cur);
+    Vector#(TlbNumEntries, TlbSearchEntry) next = replicate(noSearchHit);
+    for (Integer i = 0; i < valueOf(TlbNumEntries) / 2; i = i + 1)
+        next[i] = cur[2*i].hit ? cur[2*i] : cur[2*i + 1];
+    return next;
+endfunction
+
+function TlbLookupResult matchLookupEntry(TlbEntry ent, Addr va,
+        Bit#(19) vppn, Bit#(10) asidVal);
+    TlbLookupResult result = noTlbLookup;
+    Bool asidOk = ent.g || (ent.asid == asidVal);
+    Bool hit = ent.e && asidOk && tlbVppnMatch(ent.ps, ent.vppn, vppn);
+    if (hit) begin
+        Bool oddPage = tlbOddPage(ent.ps, va);
+        result = TlbLookupResult {
+            found: True,
+            ps: ent.ps,
+            v: oddPage ? ent.v1 : ent.v0,
+            d: oddPage ? ent.d1 : ent.d0,
+            mat: oddPage ? ent.mat1 : ent.mat0,
+            plv: oddPage ? ent.plv1 : ent.plv0,
+            ppn: oddPage ? ent.ppn1 : ent.ppn0
+        };
     end
-
     return result;
 endfunction
 
-// ============================================================
-// Pipelined search: log2(N) stages using binary tree reduction
-//
-// Stage 0 (searchReq): all entries compare in parallel -> pipeRegs[0]
-// Stage k (rule doSearchPipe): merge pairs from pipeRegs[k-1] -> pipeRegs[k]
-// After log2(N) stages, the final single result is in searchResult.
-// ============================================================
+function Vector#(TlbNumEntries, TlbLookupResult) reduceLookupEntries(
+        Vector#(TlbNumEntries, TlbLookupResult) cur);
+    Vector#(TlbNumEntries, TlbLookupResult) next = replicate(noTlbLookup);
+    for (Integer i = 0; i < valueOf(TlbNumEntries) / 2; i = i + 1)
+        next[i] = cur[2*i].found ? cur[2*i] : cur[2*i + 1];
+    return next;
+endfunction
 
 (* synthesize *)
 module mkTlb(TlbArray);
@@ -205,51 +231,37 @@ module mkTlb(TlbArray);
     // Pseudo-random replacement counter for TLBFILL
     Reg#(TlbIndex) replaceCnt <- mkReg(0);
 
-    // ========================================================
-    // Pipelined search state
-    // ========================================================
-    // Pipeline registers: one per stage.
-    // Each holds a full-width vector; only the lower half is meaningful
-    // after each reduction step.
+    // TLBSRCH reduction pipeline. Each rule uses a constant stage index so
+    // BSC does not build a dynamic mux around pipeRegs[searchStage].
     Vector#(TlbSearchStages, Reg#(Vector#(TlbNumEntries, TlbSearchEntry))) pipeRegs;
     for (Integer k = 0; k < valueOf(TlbSearchStages); k = k + 1)
         pipeRegs[k] <- mkReg(replicate(noSearchHit));
 
-    Reg#(Bool)    searchValid  <- mkReg(False);
+    Reg#(Bool) searchValid <- mkReg(False);
     Reg#(Bit#(TlbSearchStages)) searchStage <- mkReg(0);
 
     // Final search result
     Reg#(Maybe#(Data)) searchResult <- mkReg(tagged Invalid);
 
-    // ========================================================
-    // Search pipeline rule: one tree-reduction level per cycle
-    // ========================================================
-    rule doSearchPipe(searchValid);
-        let stage = searchStage;
-        Vector#(TlbNumEntries, TlbSearchEntry) cur = pipeRegs[stage];
+    for (Integer k = 0; k < valueOf(TlbSearchStages) - 1; k = k + 1) begin
+        rule doSearchPipeMid(searchValid && searchStage == fromInteger(k));
+            pipeRegs[k + 1] <= reduceSearchEntries(pipeRegs[k]);
+            searchStage <= fromInteger(k + 1);
+        endrule
+    end
 
-        // Merge pairs: cur[2i] and cur[2i+1] -> pickSearchWinner -> next[i]
-        Vector#(TlbNumEntries, TlbSearchEntry) next = replicate(noSearchHit);
-        for (Integer i = 0; i < valueOf(TlbNumEntries) / 2; i = i + 1)
-            next[i] = pickSearchWinner(cur[2*i], cur[2*i + 1]);
-
-        let nextStage = stage + 1;
-
-        if (nextStage < fromInteger(valueOf(TlbSearchStages))) begin
-            pipeRegs[nextStage] <= next;
-            searchStage <= nextStage;
+    rule doSearchPipeFinal(searchValid &&
+            searchStage == fromInteger(valueOf(TlbSearchStages) - 1));
+        let next = reduceSearchEntries(pipeRegs[valueOf(TlbSearchStages) - 1]);
+        let winner = next[0];
+        Data result = 0;
+        if (winner.hit) begin
+            result[`CSR_TLBIDX_INDEX] = zeroExtend(winner.idx);
         end else begin
-            // Final result: next[0] is the winner
-            let winner = next[0];
-            Data result = 0;
-            if (winner.hit) begin
-                result[`CSR_TLBIDX_INDEX] = zeroExtend(winner.idx);
-            end else begin
-                result[`CSR_TLBIDX_NE] = 1'b1;
-            end
-            searchResult <= tagged Valid result;
-            searchValid <= False;
+            result[`CSR_TLBIDX_NE] = 1'b1;
         end
+        searchResult <= tagged Valid result;
+        searchValid <= False;
     endrule
 
     // ========================================================
@@ -264,19 +276,23 @@ module mkTlb(TlbArray);
     endmethod
 
     // TLBSRCH: initiate search
-    method Action searchReq(Data tlbehi, Data asid) if (!searchValid);
+    method Action searchReq(Data tlbehi, Data asid)
+            if (!searchValid && !isValid(searchResult));
         Bit#(19) vppn = tlbehi[`CSR_TLBEHI_VPPN];
         Bit#(10) asidVal = asid[`CSR_ASID_ASID];
-
-        // Stage 0: all entries compare in parallel
         Vector#(TlbNumEntries, TlbSearchEntry) stage0;
-        for (Integer i = 0; i < valueOf(TlbNumEntries); i = i + 1)
-            stage0[i] = matchEntry(entries[i], fromInteger(i), vppn, asidVal);
+        for (Integer i = 0; i < valueOf(TlbNumEntries); i = i + 1) begin
+            TlbEntry ent = entries[i];
+            Bool asidOk = ent.g || (ent.asid == asidVal);
+            Bool hit = ent.e && asidOk && tlbVppnMatch(ent.ps, ent.vppn, vppn);
+            stage0[i] = hit ?
+                TlbSearchEntry { hit: True, idx: fromInteger(i), ps: ent.ps } :
+                noSearchHit;
+        end
 
         pipeRegs[0] <= stage0;
-        searchValid <= True;
         searchStage <= 0;
-        searchResult <= tagged Invalid;
+        searchValid <= True;
     endmethod
 
     method Bool searchRespValid;
@@ -300,14 +316,14 @@ module mkTlb(TlbArray);
     endmethod
 
     // TLBFILL: write at random (round-robin) index
-    method Action fillEntry(Data tlbidx, Data tlbehi, Data tlbelo0, Data tlbelo1, Data asid);
+    method ActionValue#(TlbIndex) fillEntry(Data tlbidx, Data tlbehi, Data tlbelo0, Data tlbelo1, Data asid);
         TlbIndex idx = replaceCnt;
         TlbEntry ent = decodeTlbEntry(tlbehi, tlbelo0, tlbelo1, asid);
         ent.ps = tlbidx[`CSR_TLBIDX_PS];
-        // TLBFILL always sets E=1 (NE is ignored per spec)
-        ent.e = True;
+        ent.e = (tlbidx[`CSR_TLBIDX_NE] == 1'b0);
         entries[idx] <= ent;
         replaceCnt <= replaceCnt + 1;
+        return idx;
     endmethod
 
     // INVTLB: invalidate entries
@@ -345,7 +361,7 @@ module mkTlb(TlbArray);
                 5'd4: begin
                     // Invalidate G=0 and ASID match and VPPN match
                     Bool asidMatch = (ent.asid == invAsid);
-                    Bool vppnMatch = (ent.vppn == invVppn);
+                    Bool vppnMatch = tlbVppnMatch(ent.ps, ent.vppn, invVppn);
                     doInvalidate = ent.e && !ent.g && asidMatch && vppnMatch;
                 end
                 5'd5: begin
@@ -358,5 +374,31 @@ module mkTlb(TlbArray);
             if (doInvalidate)
                 entries[i] <= emptyEntry;
         end
+    endmethod
+
+    method TlbLookupResult lookupFetch(Addr va, Data asid);
+        Bit#(10) asidVal = asid[`CSR_ASID_ASID];
+        Bit#(19) vppn = va[`CSR_TLBEHI_VPPN];
+        Vector#(TlbNumEntries, TlbLookupResult) hits;
+
+        for (Integer i = 0; i < valueOf(TlbNumEntries); i = i + 1)
+            hits[i] = matchLookupEntry(entries[i], va, vppn, asidVal);
+        for (Integer i = 0; i < valueOf(TlbSearchStages); i = i + 1)
+            hits = reduceLookupEntries(hits);
+
+        return hits[0];
+    endmethod
+
+    method TlbLookupResult lookupData(Addr va, Data asid);
+        Bit#(10) asidVal = asid[`CSR_ASID_ASID];
+        Bit#(19) vppn = va[`CSR_TLBEHI_VPPN];
+        Vector#(TlbNumEntries, TlbLookupResult) hits;
+
+        for (Integer i = 0; i < valueOf(TlbNumEntries); i = i + 1)
+            hits[i] = matchLookupEntry(entries[i], va, vppn, asidVal);
+        for (Integer i = 0; i < valueOf(TlbSearchStages); i = i + 1)
+            hits = reduceLookupEntries(hits);
+
+        return hits[0];
     endmethod
 endmodule

@@ -19,7 +19,7 @@ import Core::*;
 typedef 100000000 TbMaxCycles;
 
 module mkTbCore#(SimIndication indication)(SimRequest);
-  Reg#(Bool) started <- mkReg(False);
+  Reg#(Bool) started <- mkReg(True);
   Reg#(Bit#(16)) printIntLow <- mkRegU;
   Reg#(Bit#(64)) cycles <- mkReg(0);
 
@@ -120,12 +120,14 @@ module mkTbCore#(SimIndication indication)(SimRequest);
       pack(t.commit.wen),
       t.commit.wdest,
       t.commit.wdata,
-      0
+      pack(t.commit.skip),
+      pack(t.commit.isTlbfill),
+      t.commit.tlbfillIndex
     );
   endrule
 `endif
 
-  method Action hostToCpu(Bit#(32) startpc) if (!started);
+  method Action hostToCpu(Bit#(32) startpc);
     started <= True;
     cycles <= 0;
     core.hostToCpu(zeroExtend(startpc));
