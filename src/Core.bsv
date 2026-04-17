@@ -69,6 +69,7 @@ module mkCore(Core);
   Fifo#(2, CpuToHostData) toHostFifo <- mkCFFifo;
 `endif
   Reg#(Bool)      wbMemReqIssued <- mkReg(False);
+  Reg#(Maybe#(Data)) wbPendingTlbsrchResult <- mkReg(tagged Invalid);
   StoreBuf#(StoreBufEntries) storeBuf <- mkStoreBuf;
   Reg#(StoreBufEntry) storeDrainEntry <- mkRegU;
   Fifo#(4, DCacheRespSrc) dCacheRespSrcQ <- mkCFFifo;
@@ -615,6 +616,7 @@ module mkCore(Core);
         (mInst.iType == St || (mInst.iType == Sc && mInst.data == scSucc));
       Bool wbNeedsFlush = wb_has_excp || ((!wb_has_excp) && mInst.iType == Ertn);
       Bit#(5) wbTlbfillIndex = 0;
+      Maybe#(Data) wbTlbsrchResult = wbPendingTlbsrchResult;
 
 `ifdef CONFIG_MTRACE
       Bool inTiWindow = ((memPkt.pc >= 32'h1c072390 && memPkt.pc <= 32'h1c0723b4) ||
@@ -645,16 +647,18 @@ module mkCore(Core);
         wbReady = False;
         wbMemReqIssued <= False;
       end else if (!wb_has_excp && mInst.iType == Tlbsrch) begin
-        if (!wbMemReqIssued) begin
+        if (isValid(wbPendingTlbsrchResult)) begin
+          wbReady = True;
+        end else if (!wbMemReqIssued) begin
           csrf.tlbsrch;
           wbMemReqIssued <= True;
           wbReady = False;
         end else if (csrf.tlbsrchRespValid) begin
           let res <- csrf.tlbsrchResultVal;
-          csrf.wr(tagged Valid`CSR_TLBIDX, res);
-          wbTlbsrchResult = res;
+          csrf.wr(tagged Valid `CSR_TLBIDX, res);
+          wbPendingTlbsrchResult <= tagged Valid res;
           wbMemReqIssued <= False;
-          wbReady = True;
+          wbReady = False;
         end else begin
           wbReady = False;
         end
@@ -719,18 +723,6 @@ module mkCore(Core);
               byteEn: byteEn
             });
           end
-
-          if (wbStoreCommit) begin
-`ifdef CONFIG_MTRACE
-            $fwrite(stdout, "[SBDBG] ENQ-ST pc:%x addr:%x data:%x be:%x\n",
-              memPkt.pc, mInst.addr, wData, byteEn);
-`endif
-            storeBuf.enq(StoreBufEntry{
-              addr: memPkt.memPaddr,
-              data: wData,
-              byteEn: byteEn
-            });
-          end
         end
 
 `ifdef CONFIG_BSIM
@@ -747,8 +739,8 @@ module mkCore(Core);
         end
         if (!wb_has_excp) begin
           if (mInst.iType == Tlbsrch) begin
-            diffCsrIdx = tagged Valid`CSR_TLBIDX;
-            diffCsrVal = wbTlbsrchResult;
+            diffCsrIdx = tagged Valid `CSR_TLBIDX;
+            diffCsrVal = fromMaybe(?, wbTlbsrchResult);
           end else if (mInst.iType == Csrw || mInst.iType == Csrxchg) begin
             diffCsrIdx = mInst.csr;
             diffCsrVal = mInst.addr;
@@ -786,7 +778,6 @@ module mkCore(Core);
               end
             end
           end
-        end
 
         let diffCsrState =
         (mInst.iType == Tlbrd) ?
@@ -833,6 +824,9 @@ module mkCore(Core);
 
         if (!wbFlush) begin
           wbRetire = True;
+          if (mInst.iType == Tlbsrch) begin
+            wbPendingTlbsrchResult <= tagged Invalid;
+          end
         end
       end
     end else begin
@@ -843,6 +837,7 @@ module mkCore(Core);
     hasIntPrev <= has_int_raw;
 
     if (wbFlush) begin
+      wbPendingTlbsrchResult <= tagged Invalid;
       storeBuf.clear();
       lrValidReg <= False;
       d2rFifo.clear();
