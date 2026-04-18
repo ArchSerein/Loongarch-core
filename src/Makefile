@@ -6,9 +6,16 @@ BUILD_DIR      := $(ROOT_DIR)/build
 BDIR           := $(BUILD_DIR)/bdir
 IDIR           := $(BUILD_DIR)/info
 VDIR           := $(BUILD_DIR)/verilog
-OBJDIR         := $(BUILD_DIR)/obj_dir
+BDPI_BDIR      := $(BUILD_DIR)/bdpi_bdir
+BDPI_IDIR      := $(BUILD_DIR)/bdpi_info
+BDPI_SIMDIR    := $(BUILD_DIR)/bdpi_sim
 EXAMPLES_DIR   := $(abspath $(ROOT_DIR)/../chiplab/software/examples)
-BSIM_RUNNER    := $(ROOT_DIR)/bluesim/bin/ubuntu.exe
+BSIM_RUNNER    := $(BUILD_DIR)/bsim
+BSIM_RAW_RUNNER := $(BUILD_DIR)/bsim.raw
+BSIM_COMPAT_RUNNER := $(BUILD_DIR)/bsim-bdpi
+BSIM_COMPAT_RAW_RUNNER := $(BUILD_DIR)/bsim-bdpi.raw
+BDPI_RUNNER    := $(BSIM_RUNNER)
+BDPI_RAW_RUNNER := $(BSIM_RAW_RUNNER)
 TEST_NAME      := $(strip $(TEST))
 TEST_KEY       := $(if $(TEST_NAME),$(subst /,_,$(TEST_NAME)),unset)
 TEST_BIN_INFO  := $(BUILD_DIR)/test-bin.$(TEST_KEY).path
@@ -37,123 +44,65 @@ endif
 CONFIG_BSIM ?= $(shell if grep -q '^# CONFIG_BSIM is not set' "$(ROOT_DIR)/.config" 2>/dev/null; then echo n; else echo y; fi)
 
 # ==========================================
-# 2. Connectal Configuration
+# 3. Simulator Configuration
 # ==========================================
-CONNECTALDIR   ?= /opt/connectal
-CONNECTAL_MAKEFILE := $(CONNECTALDIR)/Makefile.connectal
-BOARD          ?= bluesim
-PROJECTDIR     ?= $(BOARD)
-
-# Interface Definitions
-# Structure: InterfaceType:WrapperModuleInstanceName.SubInterfaceName
-S2H_INTERFACES = SimRequest:SimConnectalWrapper.request
-H2S_INTERFACES = SimConnectalWrapper:SimIndication
-
-# Explicitly list simulation BSV files so topgen can find SimRequest and SimIndication.
-BSVFILES += \
-    $(ROOT_DIR)/include/Types.bsv \
-    $(ROOT_DIR)/include/Tlb.bsv \
-    $(ROOT_DIR)/include/AxiTypes.bsv \
-    $(ROOT_DIR)/include/AxiMem.bsv
-
-ifeq ($(CONFIG_BSIM),y)
-BSVFILES += \
-    $(ROOT_DIR)/include/SimInterfaces.bsv \
-    $(ROOT_DIR)/include/SimConnectalWrapper.bsv \
-    $(ROOT_DIR)/Tb.bsv
-endif
-
-# Search paths for bsc and Connectal
-BSVPATH += \
-    $(ROOT_DIR) \
-    $(ROOT_DIR)/include \
-    $(CONNECTALDIR)/bsv
-
-# C++ Sources for Connectal simulation
-CPPFILES += $(ROOT_DIR)/csrc/bsim_main.cpp  \
-            $(ROOT_DIR)/csrc/tb_memory.cpp
-
-# C++ Sources for Verilator simulation
-VERILATOR_CPPFILES = $(ROOT_DIR)/csrc/sim_main.cpp  \
-            $(ROOT_DIR)/csrc/tb_memory.cpp
-
-ifeq ($(CONFIG_DIFFTEST),y)
-CPPFILES += $(ROOT_DIR)/csrc/difftest.cpp
-VERILATOR_CPPFILES += $(ROOT_DIR)/csrc/difftest.cpp
-endif
-
-LDLIBS += -ldl
-
-# Connectal Compilation Flags
-SOFTWARE_SOCKET_NAME = /tmp/connectal$(USER)
-export SOFTWARE_SOCKET_NAME
-
-CONNECTALFLAGS += --bscflags " -steps-max-intervals 50 +RTS -K256M -RTS"
-CONNECTALFLAGS += --bscflags " -show-schedule"
-
-# ==========================================
-# 3. Verilator Configuration
-# ==========================================
-VERILATOR_TOP  := mkTb
+BDPI_TOP       := mkTbBDPI
 CORE_AXI_TOP   := mkCoreAxiTop
 BSC            := bsc
-VERILATOR      := verilator
-SIM_BIN        := $(OBJDIR)/sim
+CXX            ?= c++
+BSC_RESOLVED   := $(shell command -v $(BSC) 2>/dev/null)
+BSC_PREFIX     := $(if $(BSC_RESOLVED),$(abspath $(dir $(BSC_RESOLVED))/..),/opt/bsc)
+BSC_LIB_DIR    := $(BSC_PREFIX)/lib
+BLUESIM_DIR    := $(BSC_LIB_DIR)/Bluesim
 
 MAX_CYCLES     ?= 100000000
 START_PC       ?= 0
 RUN_START_PC   ?= 0x1c000000
 
-BSV_DPI_SRCS   := $(wildcard $(VDIR)/*.c) $(wildcard $(VDIR)/*.cc) $(wildcard $(VDIR)/*.cpp)
-
-BSC_FLAGS := -u -verilog -vsim $(VERILATOR) -g $(VERILATOR_TOP) \
-             -p +:$(ROOT_DIR)/include \
-             -bdir $(BDIR) \
-             -info-dir $(IDIR) \
-             -vdir $(VDIR)
-
-BSC_CORE_FLAGS := -u -verilog -vsim $(VERILATOR) -g $(CORE_AXI_TOP) \
+BSC_CORE_FLAGS := -u -verilog -g $(CORE_AXI_TOP) \
                   -p +:$(ROOT_DIR)/include \
                   -bdir $(BDIR) \
                   -info-dir $(IDIR) \
                   -vdir $(VDIR)
 
-VERILATOR_FLAGS := -Wno-STMTDLY --no-timing --cc --exe --build --trace -y $(shell dirname $(shell which bsc))/../lib/Verilog \
-                   --top-module $(VERILATOR_TOP) \
-                   -Mdir $(OBJDIR) \
-                   -o sim \
-                   -CFLAGS "-std=c++14 -O2"
+BDPI_BSC_FLAGS := -u -sim -g $(BDPI_TOP) \
+                  -p +:$(ROOT_DIR)/include \
+                  -bdir $(BDPI_BDIR) \
+                  -info-dir $(BDPI_IDIR) \
+                  -simdir $(BDPI_SIMDIR)
+
+BDPI_LINK_FLAGS := -sim -e $(BDPI_TOP) \
+                   -p +:$(ROOT_DIR)/include \
+                   -bdir $(BDPI_BDIR) \
+                   -simdir $(BDPI_SIMDIR)
+
+BDPI_CPPFILES = $(ROOT_DIR)/csrc/bsim_bdpi.cpp \
+                $(ROOT_DIR)/csrc/tb_memory.cpp
+
+ifeq ($(CONFIG_DIFFTEST),y)
+BDPI_CPPFILES += $(ROOT_DIR)/csrc/difftest.cpp
+endif
+
+BDPI_OBJS = $(patsubst $(ROOT_DIR)/csrc/%.cpp,$(BDPI_SIMDIR)/%.o,$(BDPI_CPPFILES))
 
 # ==========================================
 # 4. Build Targets
 # ==========================================
 
 # Default target must be first
-default: sim
+default: bsim
 
-.PHONY: default sim bsim verilator-sim core-verilog run test-bin list-tests clean
+.PHONY: default bsim bsim-bdpi core-verilog run run-bdpi test-bin list-tests clean
 
-# Run both Connectal-Bluesim and Verilator builds
-ifneq ($(wildcard $(CONNECTAL_MAKEFILE)),)
 ifeq ($(CONFIG_BSIM),y)
-sim: bsim verilator-sim
-bsim: build.$(BOARD)
+bsim: $(BSIM_RUNNER)
 else
-sim: verilator-sim
 bsim:
 	@echo "CONFIG_BSIM is disabled; enable it with menuconfig before building Bluesim"
 	@exit 1
 endif
-else
-sim: verilator-sim
-bsim:
-	@echo "Connectal is not available at $(CONNECTAL_MAKEFILE)"
-	@exit 1
-endif
 
-# Verilator execution
-verilator-sim: $(SIM_BIN)
-	$(SIM_BIN) --max-cycles $(MAX_CYCLES) --start-pc $(START_PC)
+bsim-bdpi: $(BSIM_COMPAT_RUNNER)
 
 # Generate core RTL with AXI top-level wrapper.
 core-verilog: $(VDIR)/$(CORE_AXI_TOP).v
@@ -202,17 +151,16 @@ run:
 		echo "run: resolved mem image does not exist: $$mem_image"; \
 		exit 1; \
 	fi; \
-	echo "==> Launching: $(BSIM_RUNNER) --mem-image $$mem_image --start-pc $(RUN_START_PC)"; \
-	"$(BSIM_RUNNER)" --mem-image "$$mem_image" --start-pc "$(RUN_START_PC)"
+	if [ -n "$(DIFF_REF_SO)" ]; then \
+		set -- --diff-ref-so "$(DIFF_REF_SO)"; \
+	else \
+		set --; \
+	fi; \
+	echo "==> Launching: $(BSIM_RUNNER) --mem-image $$mem_image --start-pc $(RUN_START_PC) $$*"; \
+	"$(BSIM_RUNNER)" --mem-image "$$mem_image" --start-pc "$(RUN_START_PC)" "$$@"
 	rm -f "$(TEST_BIN_INFO)"
-	
-$(BSIM_RUNNER):
-	@echo "==> Building Bluesim runner"
-	@$(MAKE) bsim
-	@if [ ! -x "$(BSIM_RUNNER)" ]; then \
-		echo "run: Bluesim runner not found after build: $(BSIM_RUNNER)"; \
-		exit 1; \
-	fi
+
+run-bdpi: run
 
 $(TEST_EXPECTED_BIN):
 	@if [ -z "$(TEST)" ]; then \
@@ -267,35 +215,52 @@ list-tests:
 # 5. Compilation Rules
 # ==========================================
 
-$(BUILD_DIR) $(BDIR) $(IDIR) $(VDIR) $(OBJDIR):
+$(BUILD_DIR) $(BDIR) $(IDIR) $(VDIR) $(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR):
 	mkdir -p $@
 
-# Generate Verilog from BSV for Verilator
-$(VDIR)/$(VERILATOR_TOP).v: $(ROOT_DIR)/Tb.bsv $(BUILD_DIR) $(BDIR) $(IDIR) $(VDIR)
-	$(BSC) $(BSC_FLAGS) $<
+# Rule to compile C++ files to objects in BDPI_SIMDIR
+$(BDPI_SIMDIR)/%.o: $(ROOT_DIR)/csrc/%.cpp | $(BDPI_SIMDIR)
+	$(CXX) -std=c++14 -O2 -Wall -Wno-unused -c -I$(BDPI_SIMDIR) -I$(BLUESIM_DIR) -o $@ $<
 
 $(VDIR)/$(CORE_AXI_TOP).v: $(ROOT_DIR)/include/CoreAxiTop.bsv $(ROOT_DIR)/Core.bsv $(BUILD_DIR) $(BDIR) $(IDIR) $(VDIR)
 	$(BSC) $(BSC_CORE_FLAGS) $<
 
-# Compile Verilator binary
-$(SIM_BIN): $(VDIR)/$(VERILATOR_TOP).v $(ROOT_DIR)/csrc/sim_main.cpp $(OBJDIR)
-	$(VERILATOR) $(VERILATOR_FLAGS) \
-                $(VDIR)/*.v \
-                $(BSV_DPI_SRCS) \
-                $(VERILATOR_CPPFILES)
+$(BSIM_COMPAT_RUNNER): $(BSIM_RUNNER) | $(BUILD_DIR)
+	cp $< $@
+
+$(BSIM_COMPAT_RAW_RUNNER): $(BSIM_RAW_RUNNER) | $(BUILD_DIR)
+	cp $< $@
+
+BDPI_BSV_DEPS = $(ROOT_DIR)/Core.bsv \
+                $(wildcard $(ROOT_DIR)/include/*.bsv)
+
+$(BDPI_RUNNER): $(BDPI_BSV_DEPS) $(BDPI_OBJS) | $(BUILD_DIR) $(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR)
+	$(BSC) $(BDPI_BSC_FLAGS) $(ROOT_DIR)/include/SimBDPI.bsv
+	$(BSC) $(BDPI_LINK_FLAGS) -o $(BDPI_RAW_RUNNER) \
+		-Xc++ -std=c++14 \
+		-Xc++ -I$(BDPI_SIMDIR) \
+		-Xc++ -I$(BLUESIM_DIR) \
+		-Xl -ldl \
+		$$(find "$(BDPI_BDIR)" -maxdepth 1 -name '*.ba' | sort) \
+		$(BDPI_CPPFILES)
+	$(CXX) -std=c++14 -O2 -Wall -Wno-unused \
+		-I$(BDPI_SIMDIR) \
+		-I$(BLUESIM_DIR) \
+		-o $(BDPI_RUNNER) \
+		$(BDPI_SIMDIR)/*.o \
+		$(BLUESIM_DIR)/libbskernel.a \
+		$(BLUESIM_DIR)/libbsprim.a \
+		-ldl -lpthread
 
 # ==========================================
 # 6. Cleaning
 # ==========================================
 clean:
-	rm -rf $(BOARD) SWSOCK0 $(BDIR) $(IDIR) $(VDIR) $(OBJDIR) $(TEST_BIN_INFO)
-
-# ==========================================
-# 7. Connectal Core Logic
-# ==========================================
-ifneq ($(wildcard $(CONNECTAL_MAKEFILE)),)
-include $(CONNECTAL_MAKEFILE)
-endif
+	rm -rf $(BDIR) $(IDIR) $(VDIR) \
+		$(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR) \
+		$(BDPI_RUNNER) $(BDPI_RAW_RUNNER) $(BDPI_RAW_RUNNER).so \
+		$(BSIM_COMPAT_RUNNER) $(BSIM_COMPAT_RAW_RUNNER) $(BSIM_COMPAT_RAW_RUNNER).so \
+		$(TEST_BIN_INFO)
 
 CONFIG_MK := $(ROOT_DIR)/scripts/config.mk
 

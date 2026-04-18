@@ -214,6 +214,8 @@ private:
 
     std::uint32_t idx_commit_ = 0;
     bool progress_ = false;
+    bool ref_preexecuted_commit_ = false;
+    std::uint32_t ref_preexecuted_pc_ = 0;
 
     void do_first_instr_commit();
     void do_instr_commit(int index);

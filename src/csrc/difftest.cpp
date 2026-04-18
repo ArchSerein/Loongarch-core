@@ -260,8 +260,14 @@ int Difftest::step(std::uint64_t main_time) {
         }
     }
 
+    bool skip_store_check[DIFFTEST_COMMIT_WIDTH] = {};
     for (std::uint32_t index = 0; index < idx_commit_; ++index) {
-        do_instr_commit(index);
+        if (ref_preexecuted_commit_ && dut.commit[index].pc == ref_preexecuted_pc_) {
+            ref_preexecuted_commit_ = false;
+            skip_store_check[index] = true;
+        } else {
+            do_instr_commit(index);
+        }
         dut.commit[index].valid = 0;
     }
 
@@ -276,14 +282,18 @@ int Difftest::step(std::uint64_t main_time) {
       return STATE_RUNNING;
     }
         if ((dut.csr.estat & 0x3) != 0) {
+            proxy->exec(1);
+            ref_preexecuted_commit_ = true;
+            ref_preexecuted_pc_ = dut.csr.eentry;
             return STATE_RUNNING;
+        } else {
+            std::fprintf(stderr, "difftest: warning: interrupt exception with no pending irq\n");
         }
-        std::fprintf(stderr, "difftest: warning: interrupt exception with no pending irq\n");
     }
 
     if (proxy->store_commit != nullptr) {
         for (std::uint32_t index = 0; index < idx_commit_; ++index) {
-            if (dut.store[index].valid) {
+            if (dut.store[index].valid && !skip_store_check[index]) {
                 if (proxy->store_commit(dut.store[index].paddr, dut.store[index].data) != 0) {
                     std::fprintf(stderr,
                                  "difftest: store mismatch at pc=0x%08x paddr=0x%llx "
