@@ -24,24 +24,25 @@ module mkAxiArbiter2#(AxiMemMaster iMem, AxiMemMaster dMem)(AxiMemMaster);
 
   Reg#(AxiArbState) state <- mkReg(ArbIdle);
   Reg#(AxiOwner) owner <- mkReg(AxiOwnerI);
+  rule startDWriteTxn (state == ArbIdle && dMem.wrAddrValid);
+    let aw <- dMem.wrAddr;
+    awQ.enq(aw);
+    owner <= AxiOwnerD;
+    state <= ArbWriteData;
+  endrule
 
-  rule startTxn (state == ArbIdle);
-    if (dMem.wrAddrValid) begin
-      let aw <- dMem.wrAddr;
-      awQ.enq(aw);
-      owner <= AxiOwnerD;
-      state <= ArbWriteData;
-    end else if (dMem.rdAddrValid) begin
-      let ar <- dMem.rdAddr;
-      arQ.enq(ar);
-      owner <= AxiOwnerD;
-      state <= ArbReadResp;
-    end else if (iMem.rdAddrValid) begin
-      let ar <- iMem.rdAddr;
-      arQ.enq(ar);
-      owner <= AxiOwnerI;
-      state <= ArbReadResp;
-    end
+  rule startDReadTxn (state == ArbIdle && !dMem.wrAddrValid && dMem.rdAddrValid);
+    let ar <- dMem.rdAddr;
+    arQ.enq(ar);
+    owner <= AxiOwnerD;
+    state <= ArbReadResp;
+  endrule
+
+  rule startIReadTxn (state == ArbIdle && !dMem.wrAddrValid && !dMem.rdAddrValid && iMem.rdAddrValid);
+    let ar <- iMem.rdAddr;
+    arQ.enq(ar);
+    owner <= AxiOwnerI;
+    state <= ArbReadResp;
   endrule
 
   rule drainWriteDataD (state == ArbWriteData && owner == AxiOwnerD && dMem.wrDataValid);

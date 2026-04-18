@@ -123,3 +123,79 @@ endfunction
 function Bool coreIsBarrier(IType t);
   return t == Dbar || t == Ibar;
 endfunction
+
+function Bool coreIsSpecialWritebackType(IType t);
+  return coreIsBarrier(t) || t == Cacop || t == Tlbsrch || t == Tlbrd ||
+    t == Tlbwr || t == Tlbfill || t == Invtlb || t == Ertn;
+endfunction
+
+function Bool coreIsSimpleWriteback(Maybe#(ExecInst) mInst, ExcpInfo excp, Bool hasInt);
+  if (mInst matches tagged Valid .inst) begin
+    return !excp.valid && !hasInt && !coreIsSpecialWritebackType(inst.iType);
+  end else begin
+    return False;
+  end
+endfunction
+
+function Bool coreIsSimFinishSyscall(ExcpInfo excp);
+`ifdef CONFIG_BSIM
+  return excp.valid && excp.ecode == `ECODE_SYS && excp.esubcode == 9'h001;
+`else
+  return False;
+`endif
+endfunction
+
+function Bool coreIsExceptionWriteback(M2W pkt);
+  return isValid(pkt.mInst) && pkt.excp.valid && !coreIsSimFinishSyscall(pkt.excp);
+endfunction
+
+function Bool coreIsErtnWriteback(M2W pkt);
+  if (pkt.mInst matches tagged Valid .inst) begin
+    return !pkt.excp.valid && inst.iType == Ertn;
+  end else begin
+    return False;
+  end
+endfunction
+
+function Bool coreIsSimpleInterruptWriteback(M2W pkt, Bool hasInt);
+  if (pkt.mInst matches tagged Valid .inst) begin
+    return hasInt && !pkt.excp.valid && !coreIsSpecialWritebackType(inst.iType);
+  end else begin
+    return False;
+  end
+endfunction
+
+function Bool coreIsSimpleExecType(IType t);
+  return t != Ld && t != St && t != Ll && t != Sc &&
+    !coreIsBarrier(t) && t != Cacop && t != Tlbsrch && t != Tlbrd &&
+    t != Tlbwr && t != Tlbfill && t != Invtlb;
+endfunction
+
+function Bool coreCanUseSimpleExec(R2E pkt, Bool curEpoch);
+  return pkt.rEpoch == curEpoch && !isValid(pkt.rInst.muldivFunc) &&
+    coreIsSimpleExecType(pkt.rInst.iType);
+endfunction
+
+function Bool coreIsMulFunc(MulDivFunc f);
+  return f == MulW || f == MulhW || f == MulhWu;
+endfunction
+
+function Bool coreIsDivFunc(MulDivFunc f);
+  return f == DivW || f == DivWu || f == ModW || f == ModWu;
+endfunction
+
+function Bool coreNeedsMulStart(R2E pkt, Bool mulBusy);
+  if (pkt.rInst.muldivFunc matches tagged Valid .f) begin
+    return coreIsMulFunc(f) && !mulBusy;
+  end else begin
+    return False;
+  end
+endfunction
+
+function Bool coreNeedsDivStart(R2E pkt, Bool divBusy);
+  if (pkt.rInst.muldivFunc matches tagged Valid .f) begin
+    return coreIsDivFunc(f) && !divBusy;
+  end else begin
+    return False;
+  end
+endfunction

@@ -35,11 +35,10 @@ module mkMul(Mul_ifc);
         counter <= counter + 1;
     endrule
 
-    rule clear (counter == 18);
-        counter <= 0;
-    endrule
-
-    method Action start(Bool is_signed, Bit#(32) src1, Bit#(32) src2) if (counter == 0);
+    // Keep finish sticky until the caller launches the next multiply.
+    // Otherwise Core can miss the one-cycle done pulse while another stage
+    // blocks doExec, leaving mulInFlight asserted forever.
+    method Action start(Bool is_signed, Bit#(32) src1, Bit#(32) src2) if (counter == 0 || counter >= 18);
         Bit#(34) src1_ext = is_signed ? {src1[31], src1[31], src1} : {2'b0, src1};
         Bit#(34) src2_ext = is_signed ? {src2[31], src2[31], src2} : {2'b0, src2};
         
@@ -60,9 +59,8 @@ module mkMul(Mul_ifc);
     endmethod
 
     method Bool finish();
-        return (counter[4] == 1 && counter[1] == 1);
+        return (counter >= 18);
     endmethod
 endmodule
 
 endpackage
-

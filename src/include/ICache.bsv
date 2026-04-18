@@ -36,6 +36,16 @@ typedef struct {
   Data            ctag;
 } ICacheMaintReq deriving (Bits, Eq);
 
+typedef struct {
+  Instruction inst;
+  Bool        epoch;
+} ICacheResp deriving (Bits, Eq);
+
+typedef struct {
+  Addr addr;
+  Bool epoch;
+} ICacheReq deriving (Bits, Eq);
+
 // ============================================================
 // Address decomposition
 // ============================================================
@@ -52,6 +62,7 @@ endfunction
 interface ICache;
   method Action req(Addr a);
   method ActionValue#(Instruction) resp;
+  method Action flush;
   method Action invalidate;
   method Action cacop(Bit#(5) op, Addr va, Data ctag);
   interface AxiMemMaster axiMem;
@@ -158,14 +169,13 @@ module mkICache(ICache);
 
   Reg#(ICacheState) state    <- mkReg(Ready);
   Reg#(Addr)        missAddr <- mkRegU;
+  Reg#(Bool)        epoch    <- mkReg(False);
+  Reg#(Bool)        missEpoch <- mkReg(False);
   Reg#(Bit#(8))     beatIdx  <- mkRegU;
   Reg#(ICacheLine)  refillLine <- mkRegU;
-`ifdef CONFIG_MTRACE
-  Reg#(Bit#(8))     icacheDbgCount <- mkReg(0);
-`endif
 
-  Fifo#(2, Addr)        reqQ  <- mkCFFifo;
-  Fifo#(2, Instruction) respQ <- mkCFFifo;
+  Fifo#(2, ICacheReq)   reqQ  <- mkCFFifo;
+  Fifo#(2, ICacheResp) respQ <- mkCFFifo;
   Fifo#(2, ICacheMaintReq) maintQ <- mkCFFifo;
 
   Fifo#(2, AxiReadAddr) arQ <- mkCFFifo;
@@ -182,7 +192,8 @@ module mkICache(ICache);
 `endif
 
   rule doLookup (state == Ready && !maintQ.notEmpty);
-    let addr = reqQ.first;
+    let req = reqQ.first;
+    let addr = req.addr;
     let tag  = getITag(addr);
     let idx  = getIIndex(addr);
     let wsel = getIWordSel(addr);
@@ -200,23 +211,12 @@ module mkICache(ICache);
     end
 
     if (hit) begin
-`ifdef CONFIG_MTRACE
-      if (icacheDbgCount < 32) begin
-        $display("[ICDBG] hit addr:%x data:%x", addr, hitData);
-        icacheDbgCount <= icacheDbgCount + 1;
-      end
-`endif
       reqQ.deq;
-      respQ.enq(hitData);
+      respQ.enq(ICacheResp{inst: hitData, epoch: req.epoch});
       replacer.access(idx, hitWay);
     end else begin
-`ifdef CONFIG_MTRACE
-      if (icacheDbgCount < 32) begin
-        $display("[ICDBG] miss addr:%x", addr);
-        icacheDbgCount <= icacheDbgCount + 1;
-      end
-`endif
       missAddr <= addr;
+      missEpoch <= req.epoch;
       state    <= StartMiss;
     end
   endrule
@@ -250,20 +250,21 @@ module mkICache(ICache);
     beatIdx <= nextBeat;
 
     if (beat.last || nextBeat == fromInteger(valueOf(ICacheLineWords))) begin
-`ifdef CONFIG_MTRACE
-      if (icacheDbgCount < 32) begin
-        $display("[ICDBG] refill-done addr:%x inst:%x beat:%0d", missAddr, nextLine[wsel], beatIdx);
-        icacheDbgCount <= icacheDbgCount + 1;
+      Bool liveMiss = (missEpoch == epoch);
+      if (liveMiss) begin
+        tagStore[idx][way]   <= tag;
+        dataStore[idx][way]  <= nextLine;
+        validStore[idx][way] <= True;
+        replacer.access(idx, way);
+        respQ.enq(ICacheResp{inst: nextLine[wsel], epoch: missEpoch});
+        reqQ.deq;
       end
-`endif
-      tagStore[idx][way]   <= tag;
-      dataStore[idx][way]  <= nextLine;
-      validStore[idx][way] <= True;
-      replacer.access(idx, way);
-      respQ.enq(nextLine[wsel]);
-      reqQ.deq;
       state <= Ready;
     end
+  endrule
+
+  rule dropStaleResp (respQ.notEmpty && respQ.first.epoch != epoch);
+    respQ.deq;
   endrule
 
   rule doMaint (state == Ready && maintQ.notEmpty);
@@ -310,13 +311,25 @@ module mkICache(ICache);
   endrule
 
   method Action req(Addr a);
-    reqQ.enq(a);
+    reqQ.enq(ICacheReq{addr: a, epoch: epoch});
   endmethod
 
-  method ActionValue#(Instruction) resp;
-    let d = respQ.first;
+  method ActionValue#(Instruction) resp if (respQ.notEmpty && respQ.first.epoch == epoch);
+    let d = respQ.first.inst;
     respQ.deq;
     return d;
+  endmethod
+
+  method Action flush;
+    reqQ.clear();
+    respQ.clear();
+    maintQ.clear();
+    for (Integer s = 0; s < valueOf(ICacheSets); s = s + 1) begin
+      for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
+        validStore[s][w] <= False;
+      end
+    end
+    epoch <= !epoch;
   endmethod
 
   method Action invalidate if (maintQ.notFull);

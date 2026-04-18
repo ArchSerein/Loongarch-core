@@ -70,9 +70,25 @@ module mkCore(Core);
 `endif
   Reg#(Bool)      wbMemReqIssued <- mkReg(False);
   Reg#(Maybe#(Data)) wbPendingTlbsrchResult <- mkReg(tagged Invalid);
+
+  rule doTlbsrchResult (wbMemReqIssued && csrf.tlbsrchRespValid && !isValid(wbPendingTlbsrchResult));
+    let res <- csrf.tlbsrchResultVal;
+    csrf.wr(tagged Valid `CSR_TLBIDX, res);
+    wbPendingTlbsrchResult <= tagged Valid res;
+    wbMemReqIssued <= False;
+  endrule
   StoreBuf#(StoreBufEntries) storeBuf <- mkStoreBuf;
   Reg#(StoreBufEntry) storeDrainEntry <- mkRegU;
   Fifo#(4, DCacheRespSrc) dCacheRespSrcQ <- mkCFFifo;
+  Reg#(Maybe#(Data)) pendingMemResp <- mkReg(tagged Invalid);
+
+  // Separate rule to drain dCache.resp() without adding its implicit guard
+  // (respQ.notEmpty) to doMemory's CAN_FIRE condition
+  rule doMemResp (dCacheRespSrcQ.notEmpty && dCacheRespSrcQ.first == PipeMemResp && !isValid(pendingMemResp));
+    let d <- dCache.resp();
+    dCacheRespSrcQ.deq();
+    pendingMemResp <= tagged Valid d;
+  endrule
   Reg#(Bool)           lrValidReg <- mkReg(False);
   Reg#(Addr)            lrAddrReg <- mkRegU;
 `ifdef CONFIG_BSIM
@@ -108,13 +124,6 @@ module mkCore(Core);
     if (!fetchPkt.excp.valid) begin
       inst <- iCache.resp();
     end
-    `ifdef CONFIG_MTRACE
-    if (decodeDbgCount < 16) begin
-      $display("[DECODEDBG] pc:%x inst:%x excp:%0d epoch:%0d curEpoch:%0d",
-      fetchPkt.pc, inst, pack(fetchPkt.excp.valid), pack(fetchPkt.fEpoch), pack(exeEpoch[1]));
-      decodeDbgCount <= decodeDbgCount + 1;
-    end
-    `endif
 
     if (fetchPkt.fEpoch == exeEpoch[1]) begin
       DecodedInst dInst = decode(inst);
@@ -157,15 +166,6 @@ module mkCore(Core);
       Bool csrConflict = isValid(targetCsr) && csrSb.search(targetCsr);
       Bool isBarrier = coreIsBarrier(rInst.iType) || rInst.iType == Cacop;
       Bool noOlderInFlight = !r2eFifo.notEmpty && !e2mFifo.notEmpty && !m2wFifo.notEmpty;
-      `ifdef CONFIG_MTRACE
-      if (rrfDbgCount < 16) begin
-        $display("[RRFDBG] pc:%x type:%x dstValid:%0d sb1:%0d sb2:%0d csr:%0d fence:%0d tlb:%0d older:%0d",
-        decodePkt.pc, pack(rInst.iType), pack(isValid(rInst.dst)),
-        pack(sb.search1(rInst.src1)), pack(sb.search2(rInst.src2)),
-        pack(csrConflict), pack(fenceInFlight), pack(isTlbSerial), pack(noOlderInFlight));
-        rrfDbgCount <= rrfDbgCount + 1;
-      end
-      `endif
       if (!sb.search1(rInst.src1) && !sb.search2(rInst.src2) &&
       !csrConflict && !fenceInFlight &&
       (!isTlbSerial || noOlderInFlight)) begin
@@ -197,7 +197,12 @@ module mkCore(Core);
     end
   endrule
 
-  rule doExec;
+  rule doExec (
+    r2eFifo.first.rEpoch != exeEpoch[2] ||
+    !(r2eFifo.first.rInst.iType == Ld || r2eFifo.first.rInst.iType == Ll ||
+      coreIsBarrier(r2eFifo.first.rInst.iType) ||
+      r2eFifo.first.rInst.iType == Cacop) ||
+    (!e2mFifo.notEmpty && !m2wFifo.notEmpty));
     let rrfPkt = r2eFifo.first();
 
     if (rrfPkt.rEpoch != exeEpoch[2]) begin
@@ -325,54 +330,58 @@ module mkCore(Core);
 
           if (eInst.iType == Ll || eInst.iType == Ld) begin
             Bit#(WordSz) loadByteEn = coreLoadByteEn(eInst.addr[1:0], m[3:0]);
-            StoreForwardResult fwd = storeBuf.forward(memPaddr);
-            Bool forwardFull = ((loadByteEn & ~fwd.byteEn) == 0);
-            if (noOlderPipeInst && forwardFull) begin
-              if (eInst.iType == Ld) begin
-                eInst.data = selectLoadData(fwd.data, eInst.addr[1:0], m[3:0], m[4] == 1'b1);
+            if (noOlderPipeInst) begin
+              StoreForwardResult fwd = storeBuf.forward(memPaddr);
+              Bool forwardFull = ((loadByteEn & ~fwd.byteEn) == 0);
+              if (forwardFull) begin
+                if (eInst.iType == Ld) begin
+                  eInst.data = selectLoadData(fwd.data, eInst.addr[1:0], m[3:0], m[4] == 1'b1);
+                end else begin
+                  eInst.data = fwd.data;
+                end
+                storeForward = fwd;
+                if (eInst.iType == Ll) begin
+                  lrValidReg <= True;
+                  lrAddrReg <= memPaddr;
+                end
+`ifdef CONFIG_DIFFTEST
+                diffMem = tagged Valid DiffMemOp{
+                  isLoad: True,
+                  isStore: False,
+                  isSc: False,
+                  paddr: memPaddr,
+                  vaddr: eInst.addr,
+                  storeData: 0
+                };
+`endif
+              end else if (!dCacheReqBusy) begin
+                dCache.req(MemReq {
+                  op: Ld,
+                  addr: memPaddr,
+                  data: 0,
+                  byteEn: 4'b0000,
+                  cacheOp: 5'b0
+                });
+                dCacheRespSrcQ.enq(PipeMemResp);
+                memRespNeeded = True;
+                storeForward = fwd;
+                if (eInst.iType == Ll) begin
+                  lrValidReg <= True;
+                  lrAddrReg <= memPaddr;
+                end
+`ifdef CONFIG_DIFFTEST
+                diffMem = tagged Valid DiffMemOp{
+                  isLoad: True,
+                  isStore: False,
+                  isSc: False,
+                  paddr: memPaddr,
+                  vaddr: eInst.addr,
+                  storeData: 0
+                };
+`endif
               end else begin
-                eInst.data = fwd.data;
+                canFinishExec = False;
               end
-              storeForward = fwd;
-              if (eInst.iType == Ll) begin
-                lrValidReg <= True;
-                lrAddrReg <= memPaddr;
-              end
-`ifdef CONFIG_DIFFTEST
-              diffMem = tagged Valid DiffMemOp{
-                isLoad: True,
-                isStore: False,
-                isSc: False,
-                paddr: memPaddr,
-                vaddr: eInst.addr,
-                storeData: 0
-              };
-`endif
-            end else if (noOlderPipeInst && !dCacheReqBusy) begin
-              dCache.req(MemReq {
-                op: Ld,
-                addr: memPaddr,
-                data: 0,
-                byteEn: 4'b0000,
-                cacheOp: 5'b0
-              });
-              dCacheRespSrcQ.enq(PipeMemResp);
-              memRespNeeded = True;
-              storeForward = fwd;
-              if (eInst.iType == Ll) begin
-                lrValidReg <= True;
-                lrAddrReg <= memPaddr;
-              end
-`ifdef CONFIG_DIFFTEST
-              diffMem = tagged Valid DiffMemOp{
-                isLoad: True,
-                isStore: False,
-                isSc: False,
-                paddr: memPaddr,
-                vaddr: eInst.addr,
-                storeData: 0
-              };
-`endif
             end else begin
               canFinishExec = False;
             end
@@ -474,9 +483,8 @@ module mkCore(Core);
       Bool memReady = True;
 
       if (!execPkt.excp.valid && execPkt.memRespNeeded) begin
-        if (dCacheRespSrcQ.first == PipeMemResp) begin
-          let d <- dCache.resp();
-          dCacheRespSrcQ.deq();
+        if (isValid(pendingMemResp)) begin
+          let d = fromMaybe(?, pendingMemResp);
           if (eInst.iType == Ld || eInst.iType == Ll) begin
 `ifdef CONFIG_MTRACE
             if (eInst.addr == 32'h000d2aa8) begin
@@ -502,6 +510,9 @@ module mkCore(Core);
 
       if (memReady) begin
         e2mFifo.deq();
+        if (execPkt.memRespNeeded) begin
+          pendingMemResp <= tagged Invalid;
+        end
 
 `ifdef CONFIG_DIFFTEST
       m2wFifo.enq(M2W{
@@ -653,13 +664,8 @@ module mkCore(Core);
           csrf.tlbsrch;
           wbMemReqIssued <= True;
           wbReady = False;
-        end else if (csrf.tlbsrchRespValid) begin
-          let res <- csrf.tlbsrchResultVal;
-          csrf.wr(tagged Valid `CSR_TLBIDX, res);
-          wbPendingTlbsrchResult <= tagged Valid res;
-          wbMemReqIssued <= False;
-          wbReady = False;
         end else begin
+          // Result retrieval is handled by doTlbsrchResult rule
           wbReady = False;
         end
       end else begin

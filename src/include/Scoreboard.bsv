@@ -10,8 +10,18 @@ interface Scoreboard#(numeric type size);
   method Action clear;
 endinterface
 
+function Maybe#(RIndx) normalizeScoreboardReg(Maybe#(RIndx) r);
+  if (r matches tagged Valid .rv &&& rv == 0) begin
+    return tagged Invalid;
+  end else begin
+    return r;
+  end
+endfunction
+
 function Bool isFound(Maybe#(RIndx) x, Maybe#(RIndx) k);
-  if (x matches tagged Valid .xv &&& k matches tagged Valid .kv &&& kv ==
+  let nx = normalizeScoreboardReg(x);
+  let nk = normalizeScoreboardReg(k);
+  if (nx matches tagged Valid .xv &&& nk matches tagged Valid .kv &&& kv ==
     xv) begin
     return True;
   end else begin

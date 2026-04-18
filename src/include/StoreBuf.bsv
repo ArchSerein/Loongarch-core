@@ -3,6 +3,7 @@ import Vector::*;
 import CoreTypes::*;
 import CoreFunc::*;
 import Ehr::*;
+`include "Autoconf.bsv"
 
 interface StoreBuf#(numeric type n);
   method Bool notFull;
