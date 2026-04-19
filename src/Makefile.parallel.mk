@@ -75,6 +75,7 @@ BDPI_TOP       := mkTbBDPI
 BDPI_BDIR      := $(BUILD_DIR)/bdpi_bdir
 BDPI_IDIR      := $(BUILD_DIR)/bdpi_info
 BDPI_SIMDIR    := $(BUILD_DIR)/bdpi_sim
+BDPI_CSRC_DIR  := $(BUILD_DIR)/bdpi_csrc
 
 BDPI_BSC_FLAGS := -u -sim -g $(BDPI_TOP) \
                   -p +:$(ROOT_DIR)/include \
@@ -95,6 +96,7 @@ BDPI_CPPFILES += $(ROOT_DIR)/csrc/difftest.cpp
 endif
 
 BDPI_OBJS = $(patsubst $(ROOT_DIR)/csrc/%.cpp,$(BDPI_SIMDIR)/%.o,$(BDPI_CPPFILES))
+BDPI_BSC_CPPFILES = $(patsubst $(ROOT_DIR)/csrc/%.cpp,$(BDPI_CSRC_DIR)/%.cpp,$(BDPI_CPPFILES))
 
 # ==========================================
 # 4. Build Targets
@@ -234,12 +236,16 @@ list-tests:
 # 5. Compilation Rules
 # ==========================================
 
-$(BUILD_DIR) $(BDIR) $(IDIR) $(VDIR) $(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR):
+$(BUILD_DIR) $(BDIR) $(IDIR) $(VDIR) $(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR) $(BDPI_CSRC_DIR):
 	mkdir -p $@
 
 # Rule to compile C++ files to objects in BDPI_SIMDIR
 $(BDPI_SIMDIR)/%.o: $(ROOT_DIR)/csrc/%.cpp | $(BDPI_SIMDIR)
 	$(CXX) -std=c++14 -O2 -Wall -Wno-unused -c -I$(BDPI_SIMDIR) -I$(BLUESIM_DIR) -o $@ $<
+
+# Feed bsc wrapper sources under build/ so any intermediate .o files stay out of csrc/.
+$(BDPI_CSRC_DIR)/%.cpp: $(ROOT_DIR)/csrc/%.cpp | $(BDPI_CSRC_DIR)
+	@printf '#include "%s"\n' "$<" > "$@"
 
 # 1. Generate dependencies
 DEP_FILE      := $(BUILD_DIR)/.depends
@@ -267,7 +273,7 @@ BDPI_MODEL_HEADER_STAMP := $(BDPI_SIMDIR)/.model_header.stamp
 
 # The Bluesim link step materializes model_*.h and the generated simulator
 # objects under $(BDPI_SIMDIR). bsim_bdpi.cpp must wait for that phase.
-$(BDPI_RAW_RUNNER): $(BDPI_BDIR)/SimBDPI.bo | $(BUILD_DIR) $(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR)
+$(BDPI_RAW_RUNNER): $(BDPI_BDIR)/SimBDPI.bo $(BDPI_BSC_CPPFILES) | $(BUILD_DIR) $(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR) $(BDPI_CSRC_DIR)
 	@echo "Generating Bluesim raw runner..."
 	$(BSC) $(BDPI_LINK_FLAGS) -o $@ \
 		-Xc++ -std=c++14 \
@@ -275,7 +281,7 @@ $(BDPI_RAW_RUNNER): $(BDPI_BDIR)/SimBDPI.bo | $(BUILD_DIR) $(BDPI_BDIR) $(BDPI_I
 		-Xc++ -I$(BLUESIM_DIR) \
 		-Xl -ldl \
 		$$(find "$(BDPI_BDIR)" -maxdepth 1 -name '*.ba' | sort) \
-		$(BDPI_CPPFILES)
+		$(BDPI_BSC_CPPFILES)
 
 $(BDPI_MODEL_HEADER_STAMP): $(BDPI_RAW_RUNNER)
 	@test -f "$(BDPI_MODEL_HEADER)" || { \
@@ -337,7 +343,7 @@ $(BDPI_RUNNER): $(BDPI_RAW_RUNNER) $(BDPI_OBJS) | $(BUILD_DIR) $(BDPI_SIMDIR)
 # ==========================================
 clean:
 	rm -rf $(BDIR) $(IDIR) $(VDIR) \
-		$(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR) \
+		$(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR) $(BDPI_CSRC_DIR) \
 		$(DEP_FILE) $(BDPI_DEP_FILE) \
 		$(BDPI_RUNNER) $(BDPI_RAW_RUNNER) $(BDPI_RAW_RUNNER).so \
 		$(BSIM_COMPAT_RUNNER) $(BSIM_COMPAT_RAW_RUNNER) $(BSIM_COMPAT_RAW_RUNNER).so \

@@ -9,6 +9,7 @@ VDIR           := $(BUILD_DIR)/verilog
 BDPI_BDIR      := $(BUILD_DIR)/bdpi_bdir
 BDPI_IDIR      := $(BUILD_DIR)/bdpi_info
 BDPI_SIMDIR    := $(BUILD_DIR)/bdpi_sim
+BDPI_CSRC_DIR  := $(BUILD_DIR)/bdpi_csrc
 EXAMPLES_DIR   := $(abspath $(ROOT_DIR)/../chiplab/software/examples)
 CHIPLAB_BSP_COMMON := $(abspath $(ROOT_DIR)/../chiplab/software/bsp/common.mk)
 SYNC_CHIPLAB_CACHE_SCRIPT := $(ROOT_DIR)/scripts/sync_chiplab_cache_config.py
@@ -86,6 +87,7 @@ BDPI_CPPFILES += $(ROOT_DIR)/csrc/difftest.cpp
 endif
 
 BDPI_OBJS = $(patsubst $(ROOT_DIR)/csrc/%.cpp,$(BDPI_SIMDIR)/%.o,$(BDPI_CPPFILES))
+BDPI_BSC_CPPFILES = $(patsubst $(ROOT_DIR)/csrc/%.cpp,$(BDPI_CSRC_DIR)/%.cpp,$(BDPI_CPPFILES))
 
 # ==========================================
 # 4. Build Targets
@@ -226,12 +228,16 @@ list-tests:
 # 5. Compilation Rules
 # ==========================================
 
-$(BUILD_DIR) $(BDIR) $(IDIR) $(VDIR) $(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR):
+$(BUILD_DIR) $(BDIR) $(IDIR) $(VDIR) $(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR) $(BDPI_CSRC_DIR):
 	mkdir -p $@
 
 # Rule to compile C++ files to objects in BDPI_SIMDIR
 $(BDPI_SIMDIR)/%.o: $(ROOT_DIR)/csrc/%.cpp | $(BDPI_SIMDIR)
 	$(CXX) -std=c++14 -O2 -Wall -Wno-unused -c -I$(BDPI_SIMDIR) -I$(BLUESIM_DIR) -o $@ $<
+
+# Feed bsc wrapper sources under build/ so any intermediate .o files stay out of csrc/.
+$(BDPI_CSRC_DIR)/%.cpp: $(ROOT_DIR)/csrc/%.cpp | $(BDPI_CSRC_DIR)
+	@printf '#include "%s"\n' "$<" > "$@"
 
 $(VDIR)/$(CORE_AXI_TOP).v: $(ROOT_DIR)/include/CoreAxiTop.bsv $(ROOT_DIR)/Core.bsv $(BUILD_DIR) $(BDIR) $(IDIR) $(VDIR)
 	$(BSC) $(BSC_CORE_FLAGS) $<
@@ -245,7 +251,7 @@ $(BSIM_COMPAT_RAW_RUNNER): $(BSIM_RAW_RUNNER) | $(BUILD_DIR)
 BDPI_BSV_DEPS = $(ROOT_DIR)/Core.bsv \
                 $(wildcard $(ROOT_DIR)/include/*.bsv)
 
-$(BDPI_RUNNER): $(BDPI_BSV_DEPS) $(BDPI_OBJS) | $(BUILD_DIR) $(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR)
+$(BDPI_RUNNER): $(BDPI_BSV_DEPS) $(BDPI_OBJS) $(BDPI_BSC_CPPFILES) | $(BUILD_DIR) $(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR) $(BDPI_CSRC_DIR)
 	$(BSC) $(BDPI_BSC_FLAGS) $(ROOT_DIR)/include/SimBDPI.bsv
 	$(BSC) $(BDPI_LINK_FLAGS) -o $(BDPI_RAW_RUNNER) \
 		-Xc++ -std=c++14 \
@@ -253,7 +259,7 @@ $(BDPI_RUNNER): $(BDPI_BSV_DEPS) $(BDPI_OBJS) | $(BUILD_DIR) $(BDPI_BDIR) $(BDPI
 		-Xc++ -I$(BLUESIM_DIR) \
 		-Xl -ldl \
 		$$(find "$(BDPI_BDIR)" -maxdepth 1 -name '*.ba' | sort) \
-		$(BDPI_CPPFILES)
+		$(BDPI_BSC_CPPFILES)
 	$(CXX) -std=c++14 -O2 -Wall -Wno-unused \
 		-I$(BDPI_SIMDIR) \
 		-I$(BLUESIM_DIR) \
@@ -268,7 +274,7 @@ $(BDPI_RUNNER): $(BDPI_BSV_DEPS) $(BDPI_OBJS) | $(BUILD_DIR) $(BDPI_BDIR) $(BDPI
 # ==========================================
 clean:
 	rm -rf $(BDIR) $(IDIR) $(VDIR) \
-		$(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR) \
+		$(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR) $(BDPI_CSRC_DIR) \
 		$(BDPI_RUNNER) $(BDPI_RAW_RUNNER) $(BDPI_RAW_RUNNER).so \
 		$(BSIM_COMPAT_RUNNER) $(BSIM_COMPAT_RAW_RUNNER) $(BSIM_COMPAT_RAW_RUNNER).so \
 		$(TEST_BIN_INFO)
