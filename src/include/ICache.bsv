@@ -52,7 +52,7 @@ typedef struct {
 function ICacheTag     getITag(Addr a)     = truncateLSB(a);
 function ICacheIndex   getIIndex(Addr a)   = truncate(a >> valueOf(ICacheOffsetSz));
 function ICacheWordSel getIWordSel(Addr a) = truncate(a >> 2);
-function ICacheWayIdx  getIWaySel(Addr a)  = truncate(a >> valueOf(ICacheWaySelOffSz));
+function ICacheWayIdx  getICacopWaySel(Addr a) = truncate(a);
 function Addr getIBlockBase(Addr a);
   Bit#(TSub#(AddrSz, ICacheOffsetSz)) upper = truncateLSB(a);
   Bit#(ICacheOffsetSz) lower = 0;
@@ -283,12 +283,10 @@ module mkICache(ICache);
       ICacheMaintCacop: begin
         ICacheOpType opType = req.op[4:3];
         let idx = getIIndex(req.va);
-        let tag = truncateLSB(req.ctag);
-        let way = getIWaySel(req.va);
+        let way = getICacopWaySel(req.va);
 
         if (opType == 2'b00) begin
-          tagStore[idx][way] <= tag;
-          validStore[idx][way] <= req.ctag[0] == 1'b1;
+          validStore[idx][way] <= False;
         end
         else if (opType == 2'b01) begin
           validStore[idx][way] <= False;
@@ -308,6 +306,7 @@ module mkICache(ICache);
         end
       end
     endcase
+
   endrule
 
   method Action req(Addr a);

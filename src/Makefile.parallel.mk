@@ -17,6 +17,8 @@ BSIM_RUNNER    := $(BUILD_DIR)/bsim
 BSIM_RAW_RUNNER := $(BUILD_DIR)/bsim.raw
 BSIM_COMPAT_RUNNER := $(BUILD_DIR)/bsim-bdpi
 BSIM_COMPAT_RAW_RUNNER := $(BUILD_DIR)/bsim-bdpi.raw
+CHIPLAB_BSP_COMMON := $(abspath $(ROOT_DIR)/../chiplab/software/bsp/common.mk)
+SYNC_CHIPLAB_CACHE_SCRIPT := $(ROOT_DIR)/scripts/sync_chiplab_cache_config.py
 BDPI_RUNNER    := $(BSIM_RUNNER)
 BDPI_RAW_RUNNER := $(BSIM_RAW_RUNNER)
 TEST_NAME      := $(strip $(TEST))
@@ -101,7 +103,7 @@ BDPI_OBJS = $(patsubst $(ROOT_DIR)/csrc/%.cpp,$(BDPI_SIMDIR)/%.o,$(BDPI_CPPFILES
 # Default target must be first
 default: bsim
 
-.PHONY: default bsim bsim-bdpi core-verilog run run-bdpi test-bin list-tests clean
+.PHONY: default bsim bsim-bdpi core-verilog run run-bdpi test-bin list-tests clean sync_chiplab_cache_config
 
 ifeq ($(CONFIG_BSIM),y)
 bsim: $(BSIM_RUNNER)
@@ -170,7 +172,12 @@ run:
 
 run-bdpi: run
 
-$(TEST_EXPECTED_BIN):
+sync-chiplab-cache-config: $(SYNC_CHIPLAB_CACHE_SCRIPT) $(ROOT_DIR)/.config $(CHIPLAB_BSP_COMMON)
+	@python3 "$(SYNC_CHIPLAB_CACHE_SCRIPT)" \
+		--config "$(ROOT_DIR)/.config" \
+		--common-mk "$(CHIPLAB_BSP_COMMON)"
+
+$(TEST_EXPECTED_BIN): sync_chiplab_cache_config
 	@if [ -z "$(TEST)" ]; then \
 		echo "Usage: make test-bin TEST=<example>"; \
 		exit 2; \
@@ -180,6 +187,10 @@ $(TEST_EXPECTED_BIN):
 		echo "test-bin: expected Makefile at $(TEST_DIR)/Makefile"; \
 		echo "test-bin: try 'make list-tests'"; \
 		exit 2; \
+	fi
+	@if [ "$(TEST_FORCE_CLEAN)" = "1" ]; then \
+		echo "==> Cleaning test: $(TEST_NAME)"; \
+		$(MAKE) -C "$(TEST_DIR)" clean; \
 	fi
 	@echo "==> Building test: $(TEST_NAME)"
 	@if [ -n "$(TEST_BUILD_TARGET)" ]; then \

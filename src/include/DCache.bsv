@@ -29,14 +29,18 @@ typedef Vector#(DCacheLineWords, Data) DCacheLine;
 function DCacheTag     getDTag(Addr a) = truncateLSB(a);
 function DCacheIndex   getDIndex(Addr a) = truncate(a >> valueOf(DCacheOffsetSz));
 function DCacheWordSel getDWordSel(Addr a) = truncate(a >> 2);
-function DCacheWayIdx  getDWaySel(Addr a) = truncate(a >> valueOf(DCacheWaySelOffSz));
+function DCacheWayIdx  getDCacopWaySel(Addr a) = truncate(a);
 function Addr getDBlockBase(Addr a);
   Bit#(TSub#(AddrSz, DCacheOffsetSz)) upper = truncateLSB(a);
   Bit#(DCacheOffsetSz) lower = 0;
   return { upper, lower };
 endfunction
 function Bool isUncacheAddr(Addr a);
-  return (truncateLSB(a) == uncached_base);
+  Bit#(16) upper = truncateLSB(a);
+  return upper == uncached_base ||
+    upper == 16'h1faf ||
+    upper == 16'hbfe0 ||
+    upper == 16'h1fe0;
 endfunction
 
 function Data applyByteMask(Data oldData, Data newData, Bit#(WordSz) byteEn);
@@ -233,8 +237,7 @@ module mkDCache(DCache);
       DCacheOpType opType = r.cacheOp[4:3];
       let idx = getDIndex(r.addr);
       let tag = getDTag(r.addr);
-      let way = getDWaySel(r.addr);
-      let ctag = r.data;
+      let way = getDCacopWaySel(r.addr);
 
       Bool hit = False;
       DCacheWayIdx hitWay = 0;
@@ -248,11 +251,8 @@ module mkDCache(DCache);
       if (r.cacheOp[2:0] != 3'b001) begin
         respQ.enq(0);
       end else if (opType == 2'b00) begin
-        // This core uses an implementation-defined CTAG layout:
-        // ctag[0] drives valid, ctag[1] drives dirty, upper bits drive tag.
-        tagStore[idx][way] <= truncateLSB(ctag);
-        validStore[idx][way] <= ctag[0] == 1'b1;
-        dirtyStore[idx][way] <= (ctag[0] == 1'b1) && (ctag[1] == 1'b1);
+        validStore[idx][way] <= False;
+        dirtyStore[idx][way] <= False;
         if (lrValid && getDBlockBase(lrAddr) == getDBlockBase(r.addr)) begin
           lrValid <= False;
         end

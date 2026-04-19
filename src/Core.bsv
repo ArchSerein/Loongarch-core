@@ -295,6 +295,12 @@ module mkCore(Core);
           exeEpoch[2] <= !exeEpoch[2];
           pcReg[2] <= eInst.addr;
           btb.update(rrfPkt.pc, eInst.addr);
+          // Wrong-path barrier/CACOP/TLB instructions can already have
+          // asserted the front-end serialization flags before the redirect
+          // resolves. Epoch invalidation will drain them, but the flags must
+          // be dropped here so fetch/rrf can restart on the correct path.
+          fenceInFlight <= False;
+          fenceFrontStall <= False;
         end
         bht.update(rrfPkt.pc, eInst.brTaken);
 
