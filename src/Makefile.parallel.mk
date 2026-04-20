@@ -38,6 +38,8 @@ ifneq ($(filter func/%,$(TEST_NAME)),)
 TEST_EXPECTED_BIN := $(TEST_DIR)/obj/main.bin
 else ifeq ($(TEST_NAME),nscscc_func)
 TEST_EXPECTED_BIN := $(TEST_DIR)/obj/main.bin
+else ifeq ($(TEST_NAME),rtthread)
+TEST_EXPECTED_BIN := $(TEST_DIR)/obj/rom.vlog
 else
 TEST_EXPECTED_BIN := $(TEST_DIR)/obj/$(notdir $(TEST_NAME)).bin
 endif

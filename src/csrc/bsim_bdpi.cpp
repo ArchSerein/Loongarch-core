@@ -2,10 +2,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cctype>
 #include <fstream>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "bluesim_kernel_api.h"
@@ -28,6 +30,13 @@ struct Options {
   std::string diff_ref_so;
 #endif
 };
+
+struct LoadedImageSegment {
+  std::uint32_t addr = 0;
+  std::vector<std::uint8_t> bytes;
+};
+
+using LoadedImage = std::vector<LoadedImageSegment>;
 
 static std::uint32_t g_exit_code = 1;
 static bool g_finished = false;
@@ -88,23 +97,137 @@ std::string get_env_string(const char* name, const std::string& fallback = "") {
   return value;
 }
 
+bool parse_bool_env(const char* name, bool fallback) {
+  const char* value = std::getenv(name);
+  if (value == nullptr || value[0] == '\0') {
+    return fallback;
+  }
+  return std::strcmp(value, "0") != 0 &&
+         std::strcmp(value, "false") != 0 &&
+         std::strcmp(value, "False") != 0 &&
+         std::strcmp(value, "no") != 0 &&
+         std::strcmp(value, "off") != 0;
+}
+
+bool has_suffix(const std::string& s, const char* suffix) {
+  const std::size_t suffix_len = std::strlen(suffix);
+  return s.size() >= suffix_len &&
+         s.compare(s.size() - suffix_len, suffix_len, suffix) == 0;
+}
+
+std::string trim(const std::string& s) {
+  std::size_t first = 0;
+  while (first < s.size() && std::isspace(static_cast<unsigned char>(s[first]))) {
+    ++first;
+  }
+  std::size_t last = s.size();
+  while (last > first && std::isspace(static_cast<unsigned char>(s[last - 1]))) {
+    --last;
+  }
+  return s.substr(first, last - first);
+}
+
+bool parse_hex_u32(const std::string& text, std::uint32_t* value) {
+  char* end = nullptr;
+  unsigned long parsed = std::strtoul(text.c_str(), &end, 16);
+  if (end == text.c_str()) {
+    return false;
+  }
+  while (*end != '\0') {
+    if (!std::isspace(static_cast<unsigned char>(*end))) {
+      return false;
+    }
+    ++end;
+  }
+  if (parsed > 0xfffffffful) {
+    return false;
+  }
+  *value = static_cast<std::uint32_t>(parsed);
+  return true;
+}
+
 Options parse_env() {
   Options opts;
   opts.mem_image = get_env_string("BSIM_MEM_IMAGE", opts.mem_image);
   opts.start_pc = parse_u32_env("BSIM_START_PC", opts.start_pc);
 #ifdef CONFIG_DIFFTEST
-  opts.enable_difftest = true;
+  opts.enable_difftest = parse_bool_env("BSIM_DIFFTEST", true);
   opts.diff_ref_so = get_env_string("BSIM_DIFF_REF_SO", get_env_string("DIFFTEST_REF_SO"));
 #endif
   return opts;
 }
 
-void load_mem_image(Memory& mem, const Options& opts) {
+LoadedImage load_verilog_mem_image(Memory& mem, const Options& opts) {
+  LoadedImage segments;
+  std::ifstream input(opts.mem_image);
+  if (!input.is_open()) {
+    std::cerr << "bsim: no memory image at " << opts.mem_image
+              << ", starting from zeroed memory\n";
+    return segments;
+  }
+
+  std::uint32_t addr = 0;
+  LoadedImageSegment* current_segment = nullptr;
+  std::size_t byte_count = 0;
+  std::size_t section_count = 0;
+  std::string line;
+  std::size_t line_no = 0;
+
+  while (std::getline(input, line)) {
+    ++line_no;
+    line = trim(line);
+    if (line.empty()) {
+      continue;
+    }
+    if (line[0] == '@') {
+      std::uint32_t section_addr = 0;
+      if (!parse_hex_u32(line.substr(1), &section_addr)) {
+        std::cerr << "bsim: invalid address directive in " << opts.mem_image
+                  << ':' << line_no << ": " << line << '\n';
+        std::exit(EXIT_FAILURE);
+      }
+      addr = section_addr;
+      segments.push_back(LoadedImageSegment{section_addr, {}});
+      current_segment = &segments.back();
+      ++section_count;
+      continue;
+    }
+    if (current_segment == nullptr) {
+      std::cerr << "bsim: data before first address directive in "
+                << opts.mem_image << ':' << line_no << '\n';
+      std::exit(EXIT_FAILURE);
+    }
+
+    std::uint32_t byte = 0;
+    if (!parse_hex_u32(line, &byte) || byte > 0xffu) {
+      std::cerr << "bsim: invalid byte in " << opts.mem_image
+                << ':' << line_no << ": " << line << '\n';
+      std::exit(EXIT_FAILURE);
+    }
+
+    const std::uint32_t shift = (addr & 0x3u) * 8u;
+    mem.write(addr, byte << shift, static_cast<std::uint8_t>(1u << (addr & 0x3u)));
+    current_segment->bytes.push_back(static_cast<std::uint8_t>(byte));
+    ++byte_count;
+    ++addr;
+  }
+
+  std::cout << "load " << opts.mem_image << " " << byte_count
+            << " bytes in " << section_count << " sections\n";
+  return segments;
+}
+
+LoadedImage load_mem_image(Memory& mem, const Options& opts) {
+  if (has_suffix(opts.mem_image, ".vlog") || has_suffix(opts.mem_image, ".mem")) {
+    return load_verilog_mem_image(mem, opts);
+  }
+
+  LoadedImage segments;
   std::ifstream input(opts.mem_image, std::ios::binary | std::ios::ate);
   if (!input.is_open()) {
     std::cerr << "bsim: no memory image at " << opts.mem_image
               << ", starting from zeroed memory\n";
-    return;
+    return segments;
   }
 
   const std::streamsize file_size = input.tellg();
@@ -112,7 +235,7 @@ void load_mem_image(Memory& mem, const Options& opts) {
 
   if (file_size <= 0) {
     std::cout << "load " << opts.mem_image << " 0 bytes\n";
-    return;
+    return segments;
   }
 
   const std::size_t word_count = (file_size + 3) / 4;
@@ -124,16 +247,21 @@ void load_mem_image(Memory& mem, const Options& opts) {
   std::vector<std::uint8_t> buffer(word_count * 4, 0);
   input.read(reinterpret_cast<char*>(buffer.data()), file_size);
   mem.init(buffer);
+  LoadedImageSegment segment;
+  segment.addr = opts.start_pc;
+  segment.bytes.assign(mem.raw_data(), mem.raw_data() + mem.raw_size());
+  segments.push_back(std::move(segment));
 
   std::cout << "load " << opts.mem_image << " " << file_size << " bytes ("
             << word_count << " words)\n";
+  return segments;
 }
 
 class BdpiSim {
 public:
   BdpiSim() : opts(parse_env()), mem(mmio) {
     mem.set_base_addr(opts.start_pc);
-    load_mem_image(mem, opts);
+    image_segments = load_mem_image(mem, opts);
 
 #ifdef CONFIG_DIFFTEST
     if (opts.enable_difftest) {
@@ -142,7 +270,11 @@ public:
         std::cerr << "bsim: difftest requested but failed to initialize reference model\n";
         std::exit(EXIT_FAILURE);
       }
-      difftest->load_memory_image(mem.raw_data(), mem.raw_size(), opts.start_pc);
+      for (const LoadedImageSegment& segment : image_segments) {
+        if (!segment.bytes.empty()) {
+          difftest->load_memory_image(segment.bytes.data(), segment.bytes.size(), segment.addr);
+        }
+      }
     }
 #endif
 
@@ -177,6 +309,7 @@ private:
   Options opts;
   MMIOMap mmio;
   Memory mem;
+  LoadedImage image_segments;
 #ifdef CONFIG_DIFFTEST
   std::unique_ptr<Difftest> difftest;
 #endif
@@ -238,6 +371,8 @@ void configure_from_args(int argc, char** argv) {
     } else if (std::strcmp(argv[i], "--start-pc") == 0 && i + 1 < argc) {
       set_env_option("BSIM_START_PC", argv[++i]);
 #ifdef CONFIG_DIFFTEST
+    } else if (std::strcmp(argv[i], "--difftest") == 0) {
+      set_env_option("BSIM_DIFFTEST", "1");
     } else if (std::strcmp(argv[i], "--diff-ref-so") == 0 && i + 1 < argc) {
       set_env_option("BSIM_DIFF_REF_SO", argv[i + 1]);
       set_env_option("DIFFTEST_REF_SO", argv[i + 1]);

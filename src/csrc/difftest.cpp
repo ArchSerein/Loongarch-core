@@ -40,6 +40,30 @@ static const char kCompareMask[DIFFTEST_NR_CSRREG] = {
     1, 1, 1, 1, 1, 0, 1
 };
 
+bool addr_in_range(std::uint32_t addr, std::uint32_t base, std::uint32_t size) {
+    return addr >= base && addr < base + size;
+}
+
+bool is_difftest_device_addr(std::uint64_t addr) {
+    const std::uint32_t a = static_cast<std::uint32_t>(addr);
+    return (a & 0xffff0000u) == 0xbfaf0000u ||
+           (a & 0xffff0000u) == 0x1faf0000u ||
+           (a & 0xfffffff8u) == 0xbfe001e0u ||
+           (a & 0xfffffff8u) == 0x1fe001e0u ||
+           addr_in_range(a, 0x15103000u, 0x1000u) ||
+           addr_in_range(a, 0x1fe00000u, 0x200000u);
+}
+
+bool is_difftest_device_access(const store_event_t& store) {
+    return store.valid != 0 &&
+           (is_difftest_device_addr(store.paddr) || is_difftest_device_addr(store.vaddr));
+}
+
+bool is_difftest_device_access(const load_event_t& load) {
+    return load.valid != 0 &&
+           (is_difftest_device_addr(load.paddr) || is_difftest_device_addr(load.vaddr));
+}
+
 std::string resolve_ref_so_path(const std::string& cli_ref_so_path) {
     if (!cli_ref_so_path.empty()) {
         return cli_ref_so_path;
@@ -260,12 +284,15 @@ int Difftest::step(std::uint64_t main_time) {
         }
     }
 
-    bool skip_store_check[DIFFTEST_COMMIT_WIDTH] = {};
+    bool ignore_store_compare[DIFFTEST_COMMIT_WIDTH] = {};
     for (std::uint32_t index = 0; index < idx_commit_; ++index) {
         if (ref_preexecuted_commit_ && dut.commit[index].pc == ref_preexecuted_pc_) {
             ref_preexecuted_commit_ = false;
-            skip_store_check[index] = true;
+            ignore_store_compare[index] = true;
         } else {
+            if (is_difftest_device_access(dut.store[index])) {
+                ignore_store_compare[index] = true;
+            }
             do_instr_commit(index);
         }
         dut.commit[index].valid = 0;
@@ -293,7 +320,7 @@ int Difftest::step(std::uint64_t main_time) {
 
     if (proxy->store_commit != nullptr) {
         for (std::uint32_t index = 0; index < idx_commit_; ++index) {
-            if (dut.store[index].valid && !skip_store_check[index]) {
+            if (dut.store[index].valid && !ignore_store_compare[index]) {
                 if (proxy->store_commit(dut.store[index].paddr, dut.store[index].data) != 0) {
                     std::fprintf(stderr,
                                  "difftest: store mismatch at pc=0x%08x paddr=0x%llx "
@@ -309,7 +336,8 @@ int Difftest::step(std::uint64_t main_time) {
     }
 
     for (std::uint32_t index = 0; index < idx_commit_; ++index) {
-        if (dut.load[index].valid && ((dut.load[index].paddr & 0x00000000f8000000ULL) != 0)) {
+        if (is_difftest_device_access(dut.load[index]) ||
+            (dut.load[index].valid && ((dut.load[index].paddr & 0x00000000f8000000ULL) != 0))) {
             proxy->regcpy(dut_regs_ptr_, DIFFTEST_TO_REF, DIFF_TO_REF_GR);
         }
     }
