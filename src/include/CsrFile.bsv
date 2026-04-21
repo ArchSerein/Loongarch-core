@@ -37,8 +37,10 @@ interface CsrFile;
   method MmuResult translateData(Addr va, MmuAccessType accessType);
   method ActionValue#(Addr) raiseException(Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv);
   method ActionValue#(Addr) returnFromException;
+  `ifdef CONFIG_BSIM
   method ActionValue#(CpuToHostData) cpuToHost;
   method Bool cpuToHostValid;
+  `endif
 endinterface
 
 function Bool updateBadvOnException(Bit#(6) ecode);
@@ -87,7 +89,9 @@ module mkCsrFile(CsrFile);
   Reg#(Bit#(64)) commitInsts <- mkReg(0);
   Reg#(Bit#(64)) cycles <- mkReg(0);
 
+  `ifdef CONFIG_BSIM
   Fifo#(2, CpuToHostData) toHostFifo <- mkCFFifo;
+  `endif
 
   Reg#(Data) csr_crmd <- mkReg(32'h00000008); // DA=1 on reset
   Reg#(Data) csr_prmd <- mkReg(0);
@@ -701,6 +705,7 @@ module mkCsrFile(CsrFile);
       return csr_era;
     endmethod
 
+    `ifdef CONFIG_BSIM
     method ActionValue#(CpuToHostData) cpuToHost if (toHostFifo.notEmpty);
       let ret = toHostFifo.first;
       toHostFifo.deq;
@@ -708,4 +713,5 @@ module mkCsrFile(CsrFile);
     endmethod
 
     method Bool cpuToHostValid = toHostFifo.notEmpty;
+    `endif
   endmodule

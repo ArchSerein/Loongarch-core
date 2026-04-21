@@ -36,6 +36,24 @@ interface Core;
   method Action hostToCpu(Addr startpc);
 `endif
   interface AxiMemMaster axiMem;
+`ifdef CONFIG_VSIM
+  (* always_ready, always_enabled *)
+  method Action debugInput(Bool breakPoint, Bool inforFlag, RIndx regNum);
+  (* always_ready *)
+  method Bool wsValid;
+  (* always_ready *)
+  method Data rfRdata;
+  (* always_ready *)
+  method Addr debug0WbPc;
+  (* always_ready *)
+  method Bit#(4) debug0WbRfWen;
+  (* always_ready *)
+  method RIndx debug0WbRfWnum;
+  (* always_ready *)
+  method Data debug0WbRfWdata;
+  (* always_ready *)
+  method Instruction debug0WbInst;
+`endif
 endinterface
 
 (* synthesize *)
@@ -70,6 +88,15 @@ module mkCore(Core);
 `endif
   Reg#(Bool)      wbMemReqIssued <- mkReg(False);
   Reg#(Maybe#(Data)) wbPendingTlbsrchResult <- mkReg(tagged Invalid);
+`ifdef CONFIG_VSIM
+  Wire#(RIndx)       debugRegNum <- mkDWire(0);
+  Wire#(Bool)        debugWsValid <- mkDWire(False);
+  Wire#(Addr)        debugWbPc <- mkDWire(0);
+  Wire#(Bit#(4))     debugWbRfWen <- mkDWire(0);
+  Wire#(RIndx)       debugWbRfWnum <- mkDWire(0);
+  Wire#(Data)        debugWbRfWdata <- mkDWire(0);
+  Wire#(Instruction) debugWbInst <- mkDWire(0);
+`endif
 
   rule doTlbsrchResult (wbMemReqIssued && csrf.tlbsrchRespValid && !isValid(wbPendingTlbsrchResult));
     let res <- csrf.tlbsrchResultVal;
@@ -142,8 +169,13 @@ module mkCore(Core);
       d2rFifo.enq(D2R{pc: fetchPkt.pc, predPc: fetchPkt.predPc, dEpoch: fetchPkt.fEpoch,
         dInst: dInst, inst: inst, excp: dExcp});
       `else
+      `ifdef CONFIG_VSIM
+      d2rFifo.enq(D2R{pc: fetchPkt.pc, predPc: fetchPkt.predPc, dEpoch: fetchPkt.fEpoch,
+        inst: inst, dInst: dInst, excp: dExcp});
+      `else
       d2rFifo.enq(D2R{pc: fetchPkt.pc, predPc: fetchPkt.predPc, dEpoch: fetchPkt.fEpoch,
         dInst: dInst, excp: dExcp});
+      `endif
       `endif
       if (coreIsBarrier(dInst.iType) || dInst.iType == Cacop) begin
         fenceFrontStall <= True;
@@ -179,10 +211,17 @@ module mkCore(Core);
           rVal2: rVal2, csrVal: csrVal,
           rInst: rInst, excp: decodePkt.excp});
         `else
+        `ifdef CONFIG_VSIM
+        r2eFifo.enq(R2E{pc: decodePkt.pc, predPc: decodePkt.predPc, rEpoch: decodePkt.dEpoch,
+          inst: decodePkt.inst, rVal1: rVal1,
+          rVal2: rVal2, csrVal: csrVal,
+          rInst: rInst, excp: decodePkt.excp});
+        `else
         r2eFifo.enq(R2E{pc: decodePkt.pc, predPc: decodePkt.predPc, rEpoch: decodePkt.dEpoch,
           rVal1: rVal1,
           rVal2: rVal2, csrVal: csrVal,
           rInst: rInst, excp: decodePkt.excp});
+        `endif
         `endif
         csrSb.enq(isCsrWrite ? targetCsr: tagged Invalid);
         sb.insert(rInst.dst);
@@ -221,6 +260,18 @@ module mkCore(Core);
         eInst: tagged Invalid
       });
       `else
+      `ifdef CONFIG_VSIM
+      e2mFifo.enq(E2M{
+        pc: rrfPkt.pc,
+        inst: rrfPkt.inst,
+        excp: rrfPkt.excp,
+        mask: rrfPkt.rInst.mask,
+        memRespNeeded: False,
+        memPaddr: 0,
+        storeForward: StoreForwardResult{data: 0, byteEn: 0},
+        eInst: tagged Invalid
+      });
+      `else
       e2mFifo.enq(E2M{
         pc: rrfPkt.pc,
         excp: rrfPkt.excp,
@@ -230,6 +281,7 @@ module mkCore(Core);
         storeForward: StoreForwardResult{data: 0, byteEn: 0},
         eInst: tagged Invalid
       });
+      `endif
       `endif
     end else begin
       Bool doNormalExec = True;
@@ -466,6 +518,18 @@ module mkCore(Core);
             eInst: tagged Valid eInst
           });
 `else
+          `ifdef CONFIG_VSIM
+          e2mFifo.enq(E2M{
+            pc: rrfPkt.pc,
+            inst: rrfPkt.inst,
+            excp: eExcp,
+            mask: rrfPkt.rInst.mask,
+            memRespNeeded: memRespNeeded,
+            memPaddr: memPaddr,
+            storeForward: storeForward,
+            eInst: tagged Valid eInst
+          });
+          `else
           e2mFifo.enq(E2M{
             pc: rrfPkt.pc,
             excp: eExcp,
@@ -475,6 +539,7 @@ module mkCore(Core);
             storeForward: storeForward,
             eInst: tagged Valid eInst
           });
+          `endif
 `endif
         end
       end
@@ -530,12 +595,22 @@ module mkCore(Core);
         mInst: tagged Valid eInst
       });
 `else
+        `ifdef CONFIG_VSIM
+        m2wFifo.enq(M2W{
+          pc: execPkt.pc,
+          inst: execPkt.inst,
+          excp: execPkt.excp,
+          memPaddr: execPkt.memPaddr,
+          mInst: tagged Valid eInst
+        });
+        `else
         m2wFifo.enq(M2W{
           pc: execPkt.pc,
           excp: execPkt.excp,
           memPaddr: execPkt.memPaddr,
           mInst: tagged Valid eInst
         });
+        `endif
 `endif
       end
     end else begin
@@ -550,12 +625,22 @@ module mkCore(Core);
         mInst: tagged Invalid
       });
       `else
+      `ifdef CONFIG_VSIM
+      m2wFifo.enq(M2W{
+        pc: execPkt.pc,
+        inst: execPkt.inst,
+        excp: execPkt.excp,
+        memPaddr: 0,
+        mInst: tagged Invalid
+      });
+      `else
       m2wFifo.enq(M2W{
         pc: execPkt.pc,
         excp: execPkt.excp,
         memPaddr: 0,
         mInst: tagged Invalid
       });
+      `endif
       `endif
     end
   endrule
@@ -737,6 +822,15 @@ module mkCore(Core);
           end
         end
 
+`ifdef CONFIG_VSIM
+        debugWsValid <= True;
+        debugWbPc <= memPkt.pc;
+        debugWbRfWen <= wen ? 4'b1111 : 4'b0000;
+        debugWbRfWnum <= fromMaybe(0, mInst.dst);
+        debugWbRfWdata <= mInst.data;
+        debugWbInst <= memPkt.inst;
+`endif
+
 `ifdef CONFIG_BSIM
       `ifdef CONFIG_DIFFTEST
         $fwrite(stdout, "commit: pc->%x, inst->%x\n", memPkt.pc, memPkt.inst);
@@ -901,6 +995,19 @@ module mkCore(Core);
   method Action hostToCpu(Addr startpc);
     noAction;
   endmethod
+`endif
+
+`ifdef CONFIG_VSIM
+  method Action debugInput(Bool breakPoint, Bool inforFlag, RIndx regNum);
+    debugRegNum <= regNum;
+  endmethod
+  method Bool wsValid = debugWsValid;
+  method Data rfRdata = rf.rdDebug(debugRegNum);
+  method Addr debug0WbPc = debugWbPc;
+  method Bit#(4) debug0WbRfWen = debugWbRfWen;
+  method RIndx debug0WbRfWnum = debugWbRfWnum;
+  method Data debug0WbRfWdata = debugWbRfWdata;
+  method Instruction debug0WbInst = debugWbInst;
 `endif
 
       interface axiMem = axiMux;

@@ -1,8 +1,16 @@
 menu "LoongArch-core configuration menu"
 
+choice
+  prompt "Simulation backend"
+  default BSIM
+
 config BSIM
   bool "Enable BSC Connectal/Bluesim simulation"
-  default y
+
+config VSIM
+  bool "Enable Verilog simulation/top-level debug ports"
+
+endchoice
 
 menu "TRACE_WAVE switch"
   depends on BSIM

@@ -8,6 +8,9 @@ interface RFile;
   method Action wr(RIndx rindx, Data data);
   method Data rd1(RIndx rindx);
   method Data rd2(RIndx rindx);
+`ifdef CONFIG_VSIM
+  method Data rdDebug(RIndx rindx);
+`endif
   `ifdef CONFIG_DIFFTEST
     method DiffArchGRegState diffSnapshot;
     method DiffArchGRegState diffSnapshotAfterWrite(Maybe#(RIndx) rindx, Data data);
@@ -36,6 +39,9 @@ module mkRFile(RFile);
 
   method Data rd1(RIndx rindx) = read(rindx);
   method Data rd2(RIndx rindx) = read(rindx);
+`ifdef CONFIG_VSIM
+  method Data rdDebug(RIndx rindx) = read(rindx);
+`endif
 
 `ifdef CONFIG_DIFFTEST
   method DiffArchGRegState diffSnapshot;
@@ -81,6 +87,9 @@ module mkBypassRFile(RFile);
 
   method Data rd1(RIndx rindx) = read(rindx);
   method Data rd2(RIndx rindx) = read(rindx);
+`ifdef CONFIG_VSIM
+  method Data rdDebug(RIndx rindx) = read(rindx);
+`endif
 
 `ifdef CONFIG_DIFFTEST
   method DiffArchGRegState diffSnapshot;

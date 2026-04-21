@@ -106,6 +106,8 @@ module mkAxiArbiter2#(AxiMemMaster iMem, AxiMemMaster dMem)(AxiMemMaster);
   endmethod
 endmodule
 
+`ifdef CONFIG_BSIM
+
 typedef enum { SimRdIdle, SimRdRun } SimReadState deriving(Bits, Eq);
 typedef enum { SimWrIdle, SimWrRun } SimWriteState deriving(Bits, Eq);
 

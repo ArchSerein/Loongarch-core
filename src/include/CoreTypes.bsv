@@ -33,6 +33,10 @@ typedef struct {
   Bool        dEpoch;
 `ifdef CONFIG_DIFFTEST
   Instruction inst;
+`else
+`ifdef CONFIG_VSIM
+  Instruction inst;
+`endif
 `endif
   DecodedInst dInst;
   ExcpInfo    excp;
@@ -44,6 +48,10 @@ typedef struct {
   Bool        rEpoch;
 `ifdef CONFIG_DIFFTEST
   Instruction inst;
+`else
+`ifdef CONFIG_VSIM
+  Instruction inst;
+`endif
 `endif
   Data        rVal1;
   Data        rVal2;
@@ -56,6 +64,12 @@ typedef struct {
   Addr                pc;
 `ifdef CONFIG_DIFFTEST
   Instruction         inst;
+`else
+`ifdef CONFIG_VSIM
+  Instruction         inst;
+`endif
+`endif
+`ifdef CONFIG_DIFFTEST
   Maybe#(DiffMemOp)   diffMem;
 `endif
   ExcpInfo            excp;
@@ -70,6 +84,10 @@ typedef struct {
   Addr                pc;
 `ifdef CONFIG_DIFFTEST
   Instruction         inst;
+`else
+`ifdef CONFIG_VSIM
+  Instruction         inst;
+`endif
 `endif
   ExcpInfo            excp;
 `ifdef CONFIG_DIFFTEST
