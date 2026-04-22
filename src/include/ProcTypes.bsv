@@ -1,5 +1,4 @@
 import Types::*;
-import FShow::*;
 import Vector::*;
 `include "Autoconf.bsv"
 
@@ -8,7 +7,7 @@ typedef enum {
   PrintChar = 2'd1,
   PrintIntLow = 2'd2,
   PrintIntHigh = 2'd3
-} CpuToHostType deriving(Bits, Eq, FShow);
+} CpuToHostType deriving(Bits, Eq);
 
 typedef struct {
   CpuToHostType c2hType;
@@ -155,7 +154,7 @@ typedef enum {
   Syscall, // SYSCALL exception
   Ertn, // ERTN return from exception
   Break // debug
-} IType deriving(Bits, Eq, FShow);
+} IType deriving(Bits, Eq);
 
 typedef enum {
   Eq,
@@ -166,7 +165,7 @@ typedef enum {
   Geu,
   AT,
   NT
-} BrFunc deriving(Bits, Eq, FShow);
+} BrFunc deriving(Bits, Eq);
 
 typedef enum {
   AddW,
@@ -180,7 +179,7 @@ typedef enum {
   SllW,
   SrlW,
   SraW
-} AluFunc deriving(Bits, Eq, FShow);
+} AluFunc deriving(Bits, Eq);
 
 typedef enum {
   MulW,
@@ -190,7 +189,7 @@ typedef enum {
   DivWu,
   ModW,
   ModWu
-} MulDivFunc deriving(Bits, Eq, FShow);
+} MulDivFunc deriving(Bits, Eq);
 
 typedef void Exception;
 
@@ -200,7 +199,7 @@ typedef struct {
   IType brType;
   Bool taken;
   Bool mispredict;
-} Redirect deriving(Bits, Eq, FShow);
+} Redirect deriving(Bits, Eq);
 
 typedef struct {
   IType               iType;
@@ -214,7 +213,7 @@ typedef struct {
   Maybe#(Data)        imm;
   Maybe#(Bit#(5))     cacheOp;
   Maybe#(ByteMask)    mask;
-} DecodedInst deriving(Bits, Eq, FShow);
+} DecodedInst deriving(Bits, Eq);
 
 typedef struct {
   IType            iType;
@@ -227,184 +226,11 @@ typedef struct {
   Addr             addr;
   Bool             mispredict;
   Bool             brTaken;
-} ExecInst deriving(Bits, Eq, FShow);
+} ExecInst deriving(Bits, Eq);
 
 function Bool dataHazard(Maybe#(RIndx) src1, Maybe#(RIndx) src2, Maybe#(RIndx)
   dst);
   return(isValid(dst) && ((isValid(src1) && fromMaybe(?, dst) == fromMaybe(?,
     src1)) ||
     (isValid(src2) && fromMaybe(?, dst) == fromMaybe(?, src2))));
-endfunction
-
-function Fmt showInst(Instruction inst);
-  Fmt ret = $format("");
-
-  Op_31_26 op6 = inst[31:26];
-  Op_25_22 op4 = inst[25:22];
-  Op_21_20 op2 = inst[21:20];
-  Op_19_15 op5 = inst[19:15];
-  let rd = inst[4:0];
-  let rj = inst[9:5];
-  let rk = inst[14:10];
-
-  Data si12 = signExtend(inst[21:10]);
-  Data ui12 = zeroExtend(inst[21:10]);
-  Data si20_12 = { inst[24:5], 12'b0};
-  Data offs16 = signExtend({ inst[25:10], 2'b0});
-  Data offs26 = signExtend({ inst[9:0], inst[25:10], 2'b0});
-
-  case (op6)
-    6'b000000: begin
-      if (op4 == 4'b0000 && op2 == 2'b01) begin
-        ret = case (op5)
-        5'b00000: $format("add.w");
-        5'b00010: $format("sub.w");
-        5'b00100: $format("slt");
-        5'b00101: $format("sltu");
-        5'b01000: $format("nor");
-        5'b01001: $format("and");
-        5'b01010: $format("or");
-        5'b01011: $format("xor");
-        5'b01110: $format("sll.w");
-        5'b01111: $format("srl.w");
-        5'b10000: $format("sra.w");
-        5'b11000: $format("mul.w");
-        5'b11001: $format("mulh.w");
-        5'b11010: $format("mulh.wu");
-        default: $format("unsup-3R 0x%0x", inst);
-      endcase;
-      ret = ret + $format(" r%0d, r%0d, r%0d", rd, rj, rk);
-    end
-    else if (op4 == 4'b0000 && op2 == 2'b10) begin
-      ret = case (op5)
-        5'h00: $format("div.w r%0d, r%0d, r%0d", rd, rj, rk);
-        5'h01: $format("mod.w r%0d, r%0d, r%0d", rd, rj, rk);
-        5'h02: $format("div.wu r%0d, r%0d, r%0d", rd, rj, rk);
-        5'h03: $format("mod.wu r%0d, r%0d, r%0d", rd, rj, rk);
-        5'h14: $format("break 0x%0x", inst[14:0]);
-        5'h16: $format("syscall 0x%0x", inst[14:0]);
-        default: $format("unsup-ert 0x%0x", inst);
-      endcase;
-    end
-    else if (op4 == 4'b0001 && op2 == 2'b00) begin
-      ret = case (op5)
-      5'b00001: $format("slli.w");
-      5'b01001: $format("srli.w");
-      5'b10001: $format("srai.w");
-      default: $format("unsup-shift 0x%0x", inst);
-    endcase;
-    ret = ret + $format(" r%0d, r%0d, %0d", rd, rj, inst[14:10]);
-  end
-  else if (op4 == 4'b0000 && op2 == 2'b00 && op5 == 5'h00 && rk == 5'h18) begin
-    if (rd != 0 && rj == 0)
-      ret = $format("rdtimel.w r%0d, r%0d", rd, rj);
-    else if (rd == 0 && rj != 0)
-      ret = $format("rdtimel.w r%0d, r%0d", rd, rj);
-    else if (rd == 0 && rj == 0)
-      ret = $format("rdtimel.w r0, r0");
-    else
-      ret = $format("unsup-rdtimel-dual 0x%0x", inst);
-  end
-  else begin
-    ret = case (op4)
-    4'b1010: $format("addi.w r%0d, r%0d, 0x%0x", rd, rj, si12);
-    4'b1000: $format("slti r%0d, r%0d, 0x%0x", rd, rj, si12);
-    4'b1001: $format("sltui r%0d, r%0d, 0x%0x", rd, rj, si12);
-    4'b1101: $format("andi r%0d, r%0d, 0x%0x", rd, rj, ui12);
-    4'b1110: $format("ori r%0d, r%0d, 0x%0x", rd, rj, ui12);
-    4'b1111: $format("xori r%0d, r%0d, 0x%0x", rd, rj, ui12);
-    default: $format("unsup-imm 0x%0x", inst);
-  endcase;
-end
-end
-
-  6'b000101: begin
-    if (inst[25] == 0)
-    ret = $format("lu12i.w r%0d, 0x%0x", rd, inst[24:5]);
-    else
-    ret = $format("unsup 0x%0x", inst);
-  end
-
-  6'b000111: begin
-    if (inst[25] == 0)
-    ret = $format("pcaddu12i r%0d, 0x%0x", rd, inst[24:5]);
-    else
-    ret = $format("unsup 0x%0x", inst);
-  end
-
-  6'b001010: begin
-    case (op4)
-      4'b0010: ret = $format("ld.w r%0d, [r%0d + 0x%0x]", rd, rj, si12);
-      4'b0110: ret = $format("st.w [r%0d + 0x%0x], r%0d", rj, si12, rd);
-      default: ret = $format("unsup-ldst 0x%0x", inst);
-    endcase
-  end
-
-  6'b001000: begin
-    Op_25_24 op24 = inst[25:24];
-    Bit#(32) imm  = signExtend({inst[23:10], 2'b0});
-    case (op24)
-      2'b00: ret = $format("ll.w r%0d, [r%0d + 0x%0x]", rd, rj, imm);
-      2'b01: ret = $format("sc.w r%0d, [r%0d + 0x%0x]", rd, rj, imm);
-      default: ret = $format("unsup-llsc 0x%0x", inst);
-    endcase
-  end
-
-  6'b000001: begin
-    if (op4 == 4'b1001 && op2 == 2'b00 && op5 == 5'h10 &&
-        rj == 5'd0 && rd == 5'd0) begin
-      ret = case (rk)
-        5'h0a: $format("tlbsrch");
-        5'h0b: $format("tlbrd");
-        5'h0c: $format("tlbwr");
-        5'h0d: $format("tlbfill");
-        5'h0e: $format("ertn");
-        default: $format("unsup-priv 0x%0x", inst);
-      endcase;
-    end
-    else if (op4 == 4'b1001 && op2 == 2'b00 && op5 == 5'h13 && rd <= 5'd6) begin
-      ret = $format("invtlb 0x%0x, r%0d, r%0d", rd, rj, rk);
-    end
-    else if (op4 == 4'b1000 && op2 == 2'b00 && op5 == 5'h00) begin
-      ret = $format("cacop 0x%0x, r%0d, 0x%0x", rd, rj, si12);
-    end
-    else if (inst[25:24] == 2'b00) begin
-      if (rj == 5'd0)
-      ret = $format("csrrd r%0d, csr0x%0x", rd, inst[23:10]);
-      else if (rj == 5'd1)
-      ret = $format("csrwr r%0d, csr0x%0x", rd, inst[23:10]);
-      else
-      ret = $format("csrxchg r%0d, r%0d, csr0x%0x", rd, rj, inst[23:10]);
-    end
-    else
-    ret = $format("unsup-csr 0x%0x", inst);
-  end
-
-  6'b010100: ret = $format("b 0x%0x", offs26);
-  6'b010101: ret = $format("bl 0x%0x", offs26);
-  6'b010011: ret = $format("jirl r%0d, r%0d, 0x%0x", rd, rj, offs16);
-
-  6'b010110: ret = $format("beq r%0d, r%0d, 0x%0x", rj, rd, offs16);
-  6'b010111: ret = $format("bne r%0d, r%0d, 0x%0x", rj, rd, offs16);
-  6'b011000: ret = $format("blt r%0d, r%0d, 0x%0x", rj, rd, offs16);
-  6'b011001: ret = $format("bge r%0d, r%0d, 0x%0x", rj, rd, offs16);
-  6'b011010: ret = $format("bltu r%0d, r%0d, 0x%0x", rj, rd, offs16);
-  6'b011011: ret = $format("bgeu r%0d, r%0d, 0x%0x", rj, rd, offs16);
-
-  6'b001110: begin
-    if (op4 == 4'b0001 && op2 == 2'b11) begin
-      case (op5)
-        5'b00100: ret = $format("dbar 0x%0x", inst[14:0]);
-        5'b00101: ret = $format("ibar 0x%0x", inst[14:0]);
-        default: ret = $format("unsup-bar 0x%0x", inst);
-      endcase
-    end
-    else
-    ret = $format("unsup 0x%0x", inst);
-  end
-
-  default: ret = $format("unsup 0x%0x", inst);
-endcase
-
-  return ret;
 endfunction
