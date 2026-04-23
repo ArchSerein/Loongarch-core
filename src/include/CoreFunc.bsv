@@ -124,6 +124,14 @@ function Bool coreIsBarrier(IType t);
   return t == Dbar || t == Ibar;
 endfunction
 
+function Bool coreIsBranchType(IType t);
+  return t == Br || t == J || t == Jr;
+endfunction
+
+function Bool coreIsMemType(IType t);
+  return t == Ld || t == St || t == Ll || t == Sc;
+endfunction
+
 function Bool coreIsSpecialWritebackType(IType t);
   return coreIsBarrier(t) || t == Cacop || t == Tlbsrch || t == Tlbrd ||
     t == Tlbwr || t == Tlbfill || t == Invtlb || t == Ertn;
@@ -172,7 +180,7 @@ function Bool coreIsSimpleExecType(IType t);
 endfunction
 
 function Bool coreCanUseSimpleExec(R2E pkt, Bool curEpoch);
-  return pkt.rEpoch == curEpoch && !isValid(pkt.rInst.muldivFunc) &&
+  return !isValid(pkt.rInst.muldivFunc) &&
     coreIsSimpleExecType(pkt.rInst.iType);
 endfunction
 

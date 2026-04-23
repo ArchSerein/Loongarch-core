@@ -8,6 +8,9 @@ import Fifo::*;
 import Vector::*;
 `include "CsrAddr.bsv"
 `include "Autoconf.bsv"
+`ifdef CONFIG_DIFFTEST
+import DiffTypes::*;
+`endif
 
 interface CsrFile;
   method Bool hasInterrupt;

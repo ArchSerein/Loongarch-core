@@ -1,6 +1,9 @@
 import Types::*;
 import ProcTypes::*;
 `include "Autoconf.bsv"
+`ifdef CONFIG_DIFFTEST
+import DiffTypes::*;
+`endif
 
 typedef 4 StoreBufEntries;
 
@@ -23,14 +26,13 @@ typedef enum {
 typedef struct {
   Addr        pc;
   Addr        predPc;
-  Bool        fEpoch;
+  Addr        instPaddr;
   ExcpInfo    excp;
 }   F2D deriving(Bits, Eq);
 
 typedef struct {
   Addr        pc;
   Addr        predPc;
-  Bool        dEpoch;
 `ifdef CONFIG_DIFFTEST
   Instruction inst;
 `else
@@ -45,7 +47,6 @@ typedef struct {
 typedef struct {
   Addr        pc;
   Addr        predPc;
-  Bool        rEpoch;
 `ifdef CONFIG_DIFFTEST
   Instruction inst;
 `else

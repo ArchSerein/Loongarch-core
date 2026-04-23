@@ -3,6 +3,9 @@ import ProcTypes::*;
 import Vector::*;
 import Ehr::*;
 `include "Autoconf.bsv"
+`ifdef CONFIG_DIFFTEST
+import DiffTypes::*;
+`endif
 
 interface RFile;
   method Action wr(RIndx rindx, Data data);

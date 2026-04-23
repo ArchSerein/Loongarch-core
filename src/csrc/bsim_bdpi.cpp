@@ -395,7 +395,6 @@ Difftest* active_difftest() {
 
 std::uint64_t diff_main_time = 0;
 std::uint64_t last_timer_64_value = 0;
-std::uint64_t diff_commit_debug_count = 0;
 bool g_difftest_trigger = false;
 
 void trigger_difftest() {
@@ -596,12 +595,9 @@ extern "C" void bdpi_difftest_instr_commit(unsigned char valid, unsigned int pc,
   }
   (void)skip;
 
-  if (diff_commit_debug_count < 32) {
-    std::fprintf(stderr,
-                 "[BDPIDIFF] commit valid=%u pc=0x%08x inst=0x%08x wen=%u wdest=%u wdata=0x%08x\n",
-                 valid, pc, inst, wen, wdest, wdata);
-    ++diff_commit_debug_count;
-  }
+  std::fprintf(stderr,
+               "[BDPIDIFF] commit valid=%u pc=0x%08x inst=0x%08x wen=%u wdest=%u wdata=0x%08x\n",
+               valid, pc, inst, wen, wdest, wdata);
 
   instr_commit_t* commit = difftest->get_instr_commit(0);
   commit->valid = valid;
@@ -643,6 +639,17 @@ extern "C" void bdpi_difftest_instr_commit(unsigned char valid, unsigned int pc,
 }
 #endif
 
+#ifdef CONFIG_TRACE_PERFORMANCE
+uint64_t inst_cnt;
+uint64_t cycle_cnt;
+extern "C" void inst_count() {
+  ++inst_cnt;
+}
+extern "C" void cycle_count() {
+  ++cycle_cnt;
+}
+#endif
+
 int main(int argc, char** argv) {
   configure_from_args(argc, argv);
 
@@ -673,6 +680,11 @@ int main(int argc, char** argv) {
   if (!g_finished && (bk_finished(g_sim_hdl) || bk_aborted(g_sim_hdl))) {
     g_exit_code = static_cast<std::uint32_t>(bk_exit_status(g_sim_hdl));
   }
+
+  #ifdef CONFIG_TRACE_PERFORMANCE
+  double ipc = static_cast<double>(inst_cnt) / static_cast<double>(cycle_cnt);
+  printf("Cycles: 0x%lx\nInsts: 0x%lx\nIPC: %f\n", cycle_cnt, inst_cnt, ipc);
+  #endif
 
   bk_shutdown(g_sim_hdl);
   g_sim_hdl = nullptr;

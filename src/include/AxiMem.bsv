@@ -2,6 +2,7 @@ import Types::*;
 import AxiTypes::*;
 import MemoryService::*;
 import Fifo::*;
+`include "Autoconf.bsv"
 
 typedef enum {
   AxiOwnerI,
@@ -171,3 +172,4 @@ module mkAxiMemSimBridge#(AxiMemMaster axi, MemoryService memSvc)(Empty);
     wrBeat <= wrBeat + 1;
   endrule
 endmodule
+`endif

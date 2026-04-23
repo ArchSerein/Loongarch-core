@@ -14,6 +14,15 @@ import Core::*;
 
 `include "Autoconf.bsv"
 
+`ifdef CONFIG_DIFFTEST
+import DiffTypes::*;
+import Difftest::*;
+`endif
+
+`ifdef CONFIG_TRACE_PERFORMANCE
+import Perf::*;
+`endif
+
 typedef 100000000 TbMaxCycles;
 
 import "BDPI" function Action bdpi_halt(Bit#(32) code);
@@ -50,13 +59,13 @@ import "BDPI" function Action bdpi_difftest_excp_event(
   Bit#(32) exceptionInst
 );
 import "BDPI" function Action bdpi_difftest_store_event(
-  Bit#(1) valid,
+  Bit#(8) valid,
   Bit#(64) storePAddr,
   Bit#(64) storeVAddr,
   Bit#(64) storeData
 );
 import "BDPI" function Action bdpi_difftest_load_event(
-  Bit#(1) valid,
+  Bit#(8) valid,
   Bit#(64) paddr,
   Bit#(64) vaddr
 );
@@ -111,6 +120,9 @@ module mkTbCoreBDPI(Empty);
 
   rule countCycles(started && cycles != fromInteger(valueOf(TbMaxCycles) - 1));
     cycles <= cycles + 1;
+    `ifdef CONFIG_TRACE_PERFORMANCE
+      cycle_count();
+    `endif
   endrule
 
   rule forceHalt(started && cycles == fromInteger(valueOf(TbMaxCycles) - 1));
@@ -165,13 +177,13 @@ module mkTbCoreBDPI(Empty);
       t.excp.exceptionInst
     );
     bdpi_difftest_store_event(
-      pack(t.store.valid),
+      t.store.valid,
       t.store.paddr,
       t.store.vaddr,
       t.store.data
     );
     bdpi_difftest_load_event(
-      pack(t.load.valid),
+      t.load.valid,
       t.load.paddr,
       t.load.vaddr
     );

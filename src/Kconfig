@@ -27,7 +27,7 @@ endmenu
 
   config DIFFTEST
     bool "Enable difftest"
-    depends on BSIM
+    depends on BSIM || VSIM
     default n
 
   config TRACE_PERFORMANCE
