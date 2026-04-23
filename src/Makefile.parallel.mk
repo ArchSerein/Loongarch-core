@@ -252,20 +252,24 @@ $(BDPI_CSRC_DIR)/%.cpp: $(ROOT_DIR)/csrc/%.cpp | $(BDPI_CSRC_DIR)
 # 1. Generate dependencies
 DEP_FILE      := $(BUILD_DIR)/.depends
 BDPI_DEP_FILE := $(BUILD_DIR)/.bdpi_depends
+GEN_BSV_DEPS  := $(firstword $(wildcard $(ROOT_DIR)/gen_bsv_deps.py $(ROOT_DIR)/scripts/gen_bsv_deps.py))
 
-DEP_ROOTS := $(ROOT_DIR)/include/SimBDPI.bsv
+DEP_ROOTS :=
 ifneq ($(filter core-verilog,$(MAKECMDGOALS)),)
 DEP_ROOTS += $(ROOT_DIR)/include/CoreAxiTop.bsv
 endif
+ifeq ($(DEP_ROOTS),)
+DEP_ROOTS := $(ROOT_DIR)/include/SimBDPI.bsv
+endif
 ALL_BSV_SRCS := $(wildcard $(ROOT_DIR)/*.bsv $(ROOT_DIR)/include/*.bsv)
 
-$(DEP_FILE): $(ALL_BSV_SRCS) scripts/gen_bsv_deps.py | $(BUILD_DIR) $(BDIR)
+$(DEP_FILE): $(ALL_BSV_SRCS) $(GEN_BSV_DEPS) | $(BUILD_DIR) $(BDIR)
 	@echo "Generating Verilog dependencies..."
-	python3 scripts/gen_bsv_deps.py $(BDIR) "$(ROOT_DIR):$(ROOT_DIR)/include" $(DEP_ROOTS) > $@
+	python3 $(GEN_BSV_DEPS) --order-var VERILOG_BSV_BOS $(BDIR) "$(ROOT_DIR):$(ROOT_DIR)/include" $(DEP_ROOTS) > $@
 
-$(BDPI_DEP_FILE): $(ALL_BSV_SRCS) scripts/gen_bsv_deps.py | $(BUILD_DIR) $(BDPI_BDIR)
+$(BDPI_DEP_FILE): $(ALL_BSV_SRCS) $(GEN_BSV_DEPS) | $(BUILD_DIR) $(BDPI_BDIR)
 	@echo "Generating Bluesim dependencies..."
-	python3 scripts/gen_bsv_deps.py $(BDPI_BDIR) "$(ROOT_DIR):$(ROOT_DIR)/include" $(ROOT_DIR)/include/SimBDPI.bsv > $@
+	python3 $(GEN_BSV_DEPS) --order-var BDPI_BSV_BOS $(BDPI_BDIR) "$(ROOT_DIR):$(ROOT_DIR)/include" $(ROOT_DIR)/include/SimBDPI.bsv > $@
 
 -include $(DEP_FILE)
 -include $(BDPI_DEP_FILE)
@@ -275,7 +279,7 @@ BDPI_MODEL_HEADER_STAMP := $(BDPI_SIMDIR)/.model_header.stamp
 
 # The Bluesim link step materializes model_*.h and the generated simulator
 # objects under $(BDPI_SIMDIR). bsim_bdpi.cpp must wait for that phase.
-$(BDPI_RAW_RUNNER): $(BDPI_BDIR)/SimBDPI.bo $(BDPI_BSC_CPPFILES) | $(BUILD_DIR) $(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR) $(BDPI_CSRC_DIR)
+$(BDPI_RAW_RUNNER): $(BDPI_BSV_BOS) $(BDPI_BSC_CPPFILES) | $(BUILD_DIR) $(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR) $(BDPI_CSRC_DIR)
 	@echo "Generating Bluesim raw runner..."
 	$(BSC) $(BDPI_LINK_FLAGS) -o $@ \
 		-Xc++ -std=c++14 \
@@ -316,7 +320,7 @@ $(BDPI_BDIR)/%.bo: | $(BDPI_BDIR) $(BDPI_IDIR)
 	$(BSC) -sim -p +:$(ROOT_DIR)/include -bdir $(BDPI_BDIR) -info-dir $(BDPI_IDIR) "$$src"
 
 # 3. Generate Verilog for core
-$(VDIR)/$(CORE_AXI_TOP).v: $(BDIR)/CoreAxiTop.bo | $(VDIR)
+$(VDIR)/$(CORE_AXI_TOP).v: $(VERILOG_BSV_BOS) | $(VDIR)
 	$(BSC) $(BSC_CORE_FLAGS) $(ROOT_DIR)/include/CoreAxiTop.bsv
 
 $(BSIM_COMPAT_RUNNER): $(BSIM_RUNNER) | $(BUILD_DIR)

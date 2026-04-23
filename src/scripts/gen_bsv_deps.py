@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 import os
 import re
 import sys
@@ -26,14 +27,33 @@ def get_deps(file_path, search_paths):
                     break
     return deps
 
-def main():
-    if len(sys.argv) < 4:
-        print("Usage: gen_bsv_deps.py <bdir> <search_paths_colon_sep> <top_bsv_files...>")
-        sys.exit(1)
+def make_var(name, values):
+    if not name:
+        return
+    if not values:
+        print(f"{name} :=")
+        return
+    print(f"{name} := \\")
+    for idx, value in enumerate(values):
+        suffix = " \\" if idx != len(values) - 1 else ""
+        print(f"  {value}{suffix}")
 
-    bdir = sys.argv[1]
-    search_paths = sys.argv[2].split(':')
-    top_files = sys.argv[3:]
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate BSV .bo dependencies for Make."
+    )
+    parser.add_argument(
+        "--order-var",
+        help="Emit a Make variable with .bo files sorted by ascending dependency count.",
+    )
+    parser.add_argument("bdir")
+    parser.add_argument("search_paths_colon_sep")
+    parser.add_argument("top_bsv_files", nargs="+")
+    args = parser.parse_args()
+
+    bdir = args.bdir
+    search_paths = [os.path.abspath(p) for p in args.search_paths_colon_sep.split(':') if p]
+    top_files = args.top_bsv_files
 
     # Map from absolute path to .bo file in bdir
     def to_bo(path):
@@ -55,9 +75,38 @@ def main():
             if d not in processed:
                 to_process.append(d)
 
-    for src, deps in all_deps.items():
+    visiting = set()
+    dep_set_cache = {}
+
+    def transitive_deps(src):
+        if src in dep_set_cache:
+            return dep_set_cache[src]
+        if src in visiting:
+            return set()
+        visiting.add(src)
+        deps = all_deps.get(src, set())
+        result = set(deps)
+        for dep in deps:
+            result.update(transitive_deps(dep))
+        visiting.remove(src)
+        dep_set_cache[src] = result
+        return result
+
+    def dep_order_key(src):
+        return (
+            len(transitive_deps(src)),
+            len(all_deps.get(src, set())),
+            os.path.basename(src),
+        )
+
+    ordered_srcs = sorted(all_deps, key=dep_order_key)
+    ordered_bos = [to_bo(src) for src in ordered_srcs]
+    make_var(args.order_var, ordered_bos)
+
+    for src in ordered_srcs:
+        deps = all_deps[src]
         src_bo = to_bo(src)
-        dep_bos = [to_bo(d) for d in deps]
+        dep_bos = [to_bo(d) for d in sorted(deps, key=dep_order_key)]
         if dep_bos:
             print(f"{src_bo}: {' '.join(dep_bos)}")
         # Each .bo also depends on its .bsv
