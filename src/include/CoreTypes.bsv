@@ -8,24 +8,9 @@ import DiffTypes::*;
 typedef 4 StoreBufEntries;
 
 typedef struct {
-  Addr          addr;
-  Data          data;
-  Bit#(WordSz)  byteEn;
-} StoreBufEntry deriving(Bits, Eq);
-
-typedef struct {
-  Data          data;
-  Bit#(WordSz)  byteEn;
-} StoreForwardResult deriving(Bits, Eq);
-
-typedef enum {
-  PipeMemResp,
-  StoreDrainResp
-} DCacheRespSrc deriving(Bits, Eq);
-
-typedef struct {
   Addr        pc;
   Addr        predPc;
+  Instruction inst;
   Addr        instPaddr;
   ExcpInfo    excp;
 }   F2D deriving(Bits, Eq);
@@ -57,6 +42,7 @@ typedef struct {
   Data        rVal1;
   Data        rVal2;
   Data        csrVal;
+  Bool        isNeedFlush;
   DecodedInst rInst;
   ExcpInfo    excp;
 }   R2E deriving(Bits, Eq);
@@ -70,14 +56,11 @@ typedef struct {
   Instruction         inst;
 `endif
 `endif
-`ifdef CONFIG_DIFFTEST
-  Maybe#(DiffMemOp)   diffMem;
-`endif
   ExcpInfo            excp;
   Maybe#(ByteMask)    mask;
-  Bool                memRespNeeded;
   Addr                memPaddr;
-  StoreForwardResult  storeForward;
+  Bool                memUseCache;
+  Bool                isNeedFlush;
   Maybe#(ExecInst)    eInst;
 }   E2M deriving(Bits, Eq);
 
@@ -95,6 +78,7 @@ typedef struct {
   Maybe#(DiffMemOp)   diffMem;
 `endif
   Addr                memPaddr;
+  Bool                isNeedFlush;
   Maybe#(ExecInst)    mInst;
 }   M2W deriving(Bits, Eq);
 
@@ -104,5 +88,49 @@ typedef struct {
   Bit#(9)   esubcode;
   Addr      badv;
 } ExcpInfo deriving(Bits, Eq);
+
+typedef enum {
+  FTransIdle,
+  FTransProbe,
+  FTransWaitRefill,
+  FTransDone
+} FetchTransState deriving(Bits, Eq);
+
+typedef enum {
+  Direct,
+  Translate,
+  None
+} MmuTranslateType deriving(Bits, Eq);
+
+typedef enum {
+  Cc,
+  Suc,
+  Reserved,
+  Reserved1
+} MatType deriving(Bits, Eq);
+
+typedef struct {
+  Addr             pc;
+  Addr             predPc;
+  Data             crmd;
+  Data             asid;
+  Data             dmw0;
+  Data             dmw1;
+  MmuTranslateType transType;
+  Bit#(4)          reqId;
+} FetchTransReq deriving(Bits, Eq);
+
+typedef struct {
+  Addr     pc;
+  Addr     predPc;
+  Addr     instPaddr;
+  Bit#(4)  reqId;
+} FetchMissCtx deriving(Bits, Eq);
+
+typedef struct {
+  Instruction inst;
+  Addr        instPaddr;
+  ExcpInfo    excp;
+} FetchResult deriving(Bits, Eq);
 
 Addr startpc = 32'h1c000000;

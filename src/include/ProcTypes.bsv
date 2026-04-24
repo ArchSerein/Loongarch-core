@@ -139,10 +139,3 @@ typedef struct {
   Bool             mispredict;
   Bool             brTaken;
 } ExecInst deriving(Bits, Eq);
-
-function Bool dataHazard(Maybe#(RIndx) src1, Maybe#(RIndx) src2, Maybe#(RIndx)
-  dst);
-  return(isValid(dst) && ((isValid(src1) && fromMaybe(?, dst) == fromMaybe(?,
-    src1)) ||
-    (isValid(src2) && fromMaybe(?, dst) == fromMaybe(?, src2))));
-endfunction

@@ -7,7 +7,9 @@ typedef Data MemResp;
 typedef enum{Ld, St, Lr, Sc, Barrier, Cacop} MemOp deriving(Eq, Bits);
 typedef struct{
     MemOp op;
-    Addr  addr;
+    Addr  addr;   // virtual address for cache index/word select
+    Addr  paddr;  // physical address for tag compare and external memory
+    Bool  useCache;
     Data  data;
     Bit#(WordSz) byteEn;
     Bit#(5) cacheOp;

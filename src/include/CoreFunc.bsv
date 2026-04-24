@@ -1,6 +1,7 @@
 import Types::*;
 import ProcTypes::*;
 import CoreTypes::*;
+import CsrAddr::*;
 `include "CsrAddr.bsv"
 
 function ExcpInfo mkNoExcp;
@@ -9,6 +10,27 @@ endfunction
 
 function ExcpInfo mkExcp(Bit#(6) ecode, Bit#(9) esubcode, Addr badv);
   return ExcpInfo{valid: True, ecode: ecode, esubcode: esubcode, badv: badv};
+endfunction
+
+function MmuTranslateType getMmuTranslateType(Data crmd);
+  Bit#(2) mode = {crmd[`CSR_CRMD_DA], crmd[`CSR_CRMD_PG]};
+  case (mode)
+    2'b10: return Direct;
+    2'b01: return Translate;
+    default: return None;
+  endcase
+endfunction
+
+function MatType getFetchMatType(Data crmd);
+  return unpack(crmd[`CSR_CRMD_DATF]);
+endfunction
+
+function MatType getDataMatType(Data crmd);
+  return unpack(crmd[`CSR_CRMD_DATM]);
+endfunction
+
+function Bool matUseCache(MatType mat);
+  return mat == Cc;
 endfunction
 
 function Data coreApplyByteMask(Data oldData, Data newData, Bit#(WordSz) byteEn);
@@ -105,9 +127,41 @@ function Bool coreIsTimerRelatedCsr(CsrIndx idx);
     idx == `CSR_ESTAT;
 endfunction
 
-function Bool coreIsFetchAddrLegal(Addr a);
-  return (a[31:24] == 8'h1c) || (a[31:24] == 8'h00) ||
-    (a[31:24] == 8'h80) || (a[31:24] == 8'ha0);
+function Tuple3#(Data, Data, Data) coreInterruptCsrView(
+  Maybe#(CsrIndx) csrIdx, Data writeVal, Data curCrmd, Data curEcfg,
+  Data curEstat);
+  Data nextCrmd = curCrmd;
+  Data nextEcfg = curEcfg;
+  Data nextEstat = curEstat;
+
+  if (csrIdx matches tagged Valid .idx) begin
+    case (idx)
+      `CSR_CRMD: nextCrmd = (writeVal & 32'h000001FF) | (curCrmd & 32'hFFFFFE00);
+      `CSR_ECFG: nextEcfg = (writeVal & 32'h00001BFF) | (curEcfg & 32'hFFFFE400);
+      `CSR_ESTAT: nextEstat = (writeVal & 32'h00000003) | (curEstat & 32'hFFFFFFFC);
+      `CSR_TCFG: begin
+        if (writeVal[`CSR_TCFG_EN] == 1'b1 && writeVal[`CSR_TCFG_INITV] == 0) begin
+          nextEstat = curEstat | 32'h00000800;
+        end
+      end
+      `CSR_TICLR: begin
+        if (writeVal[`CSR_TICLR_CLR] == 1'b1) begin
+          nextEstat = curEstat & 32'hFFFFF7FF;
+        end
+      end
+      default: nextCrmd = nextCrmd;
+    endcase
+  end
+
+  return tuple3(nextCrmd, nextEcfg, nextEstat);
+endfunction
+
+function Data corePendingInterruptBits(Data ecfg, Data estat);
+  return estat & ecfg & 32'h00001fff;
+endfunction
+
+function Bool coreHasInterrupt(Data crmd, Data ecfg, Data estat);
+  return crmd[`CSR_CRMD_IE] == 1'b1 && corePendingInterruptBits(ecfg, estat) != 0;
 endfunction
 
 function Bool coreIsCsrConflict(Maybe#(CsrIndx) pendingWrite, Maybe#(CsrIndx) curAccess);
@@ -124,86 +178,22 @@ function Bool coreIsBarrier(IType t);
   return t == Dbar || t == Ibar;
 endfunction
 
-function Bool coreIsBranchType(IType t);
-  return t == Br || t == J || t == Jr;
-endfunction
-
-function Bool coreIsMemType(IType t);
-  return t == Ld || t == St || t == Ll || t == Sc;
-endfunction
-
-function Bool coreIsSpecialWritebackType(IType t);
-  return coreIsBarrier(t) || t == Cacop || t == Tlbsrch || t == Tlbrd ||
-    t == Tlbwr || t == Tlbfill || t == Invtlb || t == Ertn;
-endfunction
-
-function Bool coreIsSimpleWriteback(Maybe#(ExecInst) mInst, ExcpInfo excp, Bool hasInt);
-  if (mInst matches tagged Valid .inst) begin
-    return !excp.valid && !hasInt && !coreIsSpecialWritebackType(inst.iType);
-  end else begin
-    return False;
-  end
-endfunction
-
-function Bool coreIsSimFinishSyscall(ExcpInfo excp);
-`ifdef CONFIG_BSIM
-  return excp.valid && excp.ecode == `ECODE_SYS && excp.esubcode == 9'h001;
-`else
-  return False;
-`endif
-endfunction
-
-function Bool coreIsExceptionWriteback(M2W pkt);
-  return isValid(pkt.mInst) && pkt.excp.valid && !coreIsSimFinishSyscall(pkt.excp);
-endfunction
-
-function Bool coreIsErtnWriteback(M2W pkt);
-  if (pkt.mInst matches tagged Valid .inst) begin
-    return !pkt.excp.valid && inst.iType == Ertn;
-  end else begin
-    return False;
-  end
-endfunction
-
-function Bool coreIsSimpleInterruptWriteback(M2W pkt, Bool hasInt);
-  if (pkt.mInst matches tagged Valid .inst) begin
-    return hasInt && !pkt.excp.valid && !coreIsSpecialWritebackType(inst.iType);
-  end else begin
-    return False;
-  end
-endfunction
-
-function Bool coreIsSimpleExecType(IType t);
-  return t != Ld && t != St && t != Ll && t != Sc &&
-    !coreIsBarrier(t) && t != Cacop && t != Tlbsrch && t != Tlbrd &&
-    t != Tlbwr && t != Tlbfill && t != Invtlb;
-endfunction
-
-function Bool coreCanUseSimpleExec(R2E pkt, Bool curEpoch);
-  return !isValid(pkt.rInst.muldivFunc) &&
-    coreIsSimpleExecType(pkt.rInst.iType);
-endfunction
-
-function Bool coreIsMulFunc(MulDivFunc f);
-  return f == MulW || f == MulhW || f == MulhWu;
-endfunction
-
-function Bool coreIsDivFunc(MulDivFunc f);
-  return f == DivW || f == DivWu || f == ModW || f == ModWu;
-endfunction
-
-function Bool coreNeedsMulStart(R2E pkt, Bool mulBusy);
-  if (pkt.rInst.muldivFunc matches tagged Valid .f) begin
-    return coreIsMulFunc(f) && !mulBusy;
-  end else begin
-    return False;
-  end
-endfunction
-
-function Bool coreNeedsDivStart(R2E pkt, Bool divBusy);
-  if (pkt.rInst.muldivFunc matches tagged Valid .f) begin
-    return coreIsDivFunc(f) && !divBusy;
-  end else begin
-    return False;
-  end
+function Data mkInterruptNo(Data estat);
+  Bit#(12) intr = {estat[`CSR_ESTAT_IS_3], estat[`CSR_ESTAT_IS_2],
+  estat[`CSR_ESTAT_IS_1], estat[`CSR_ESTAT_IS_0]};
+    Data intNo = 0;
+  if      (intr[11] == 1'b1) intNo = 12; // ESTAT[12]
+  else if (intr[10] == 1'b1) intNo = 11; // ESTAT[11]
+  else if (intr[9] == 1'b1)  intNo = 9;  // ESTAT[9]
+  else if (intr[8] == 1'b1)  intNo = 8;  // ESTAT[8]
+  else if (intr[7] == 1'b1)  intNo = 7;  // ESTAT[7]
+  else if (intr[6] == 1'b1)  intNo = 6;  // ESTAT[6]
+  else if (intr[5] == 1'b1)  intNo = 5;  // ESTAT[5]
+  else if (intr[4] == 1'b1)  intNo = 4;  // ESTAT[4]
+  else if (intr[3] == 1'b1)  intNo = 3;  // ESTAT[3]
+  else if (intr[2] == 1'b1)  intNo = 2;  // ESTAT[2]
+  else if (intr[1] == 1'b1)  intNo = 1;  // ESTAT[1]
+  else if (intr[0] == 1'b1)  intNo = 0;  // ESTAT[0]
+  
+  return intNo;
 endfunction

@@ -28,6 +28,17 @@ typedef Bit#(TLog#(ICacheWays)) ICacheWayIdx;
 typedef Bit#(2)                 ICacheOpType;
 
 typedef Vector#(ICacheLineWords, Data) ICacheLine;
+typedef struct {
+  Bool        valid;
+  ICacheTag   tag;
+  Instruction inst;
+} ICacheProbeWay deriving (Bits, Eq);
+typedef Vector#(ICacheWays, ICacheProbeWay) ICacheProbeResp;
+
+function ICacheProbeResp noICacheProbe;
+  return replicate(ICacheProbeWay{valid: False, tag: 0, inst: 0});
+endfunction
+
 typedef enum { ICacheMaintInvalidate, ICacheMaintCacop } ICacheMaintKind deriving (Bits, Eq);
 typedef struct {
   ICacheMaintKind kind;
@@ -40,12 +51,13 @@ typedef struct {
   Addr        addr;
   Instruction inst;
   Bool        epoch;
-} ICacheResp deriving (Bits, Eq);
+} ICacheRefillResp deriving (Bits, Eq);
 
 typedef struct {
-  Addr addr;
-  Bool epoch;
-} ICacheReq deriving (Bits, Eq);
+  Addr    addr;
+  Bool    epoch;
+  Bool    useCache;
+} ICacheRefillReq deriving (Bits, Eq);
 
 // ============================================================
 // Address decomposition
@@ -61,8 +73,10 @@ function Addr getIBlockBase(Addr a);
 endfunction
 
 interface ICache;
-  method Action req(Addr a);
-  method ActionValue#(ICacheResp) resp;
+  method ICacheProbeResp probe(Addr va);
+  method Action refillReq(Addr pa, Bool useCache);
+  method ActionValue#(ICacheRefillResp) refillResp;
+  method Action commitHit(Addr va, ICacheWayIdx way);
   method Action flush;
   method Action squash;
   method Action invalidate;
@@ -161,7 +175,7 @@ endmodule
 // ============================================================
 // ICache implementation
 // ============================================================
-typedef enum { Ready, StartMiss, WaitResp } ICacheState deriving (Bits, Eq);
+typedef enum { Ready, StartRefill, WaitResp } ICacheState deriving (Bits, Eq);
 
 (* synthesize *)
 module mkICache(ICache);
@@ -169,18 +183,17 @@ module mkICache(ICache);
   Vector#(ICacheSets, Vector#(ICacheWays, Reg#(ICacheLine)))  dataStore  <- replicateM(replicateM(mkRegU));
   Vector#(ICacheSets, Vector#(ICacheWays, Reg#(Bool)))        validStore <- replicateM(replicateM(mkReg(False)));
 
-  Reg#(ICacheState) state    <- mkReg(Ready);
-  Reg#(Addr)        missAddr <- mkRegU;
-  Reg#(Bool)        epoch    <- mkReg(False);
-  Reg#(Bool)        missEpoch <- mkReg(False);
-  Reg#(Bit#(8))     beatIdx  <- mkRegU;
-  Reg#(ICacheLine)  refillLine <- mkRegU;
-  Reg#(Bool)        axiReadInFlight <- mkReg(False);
-  Reg#(Bool)        dropReadResp <- mkReg(False);
+  Reg#(ICacheState)     state          <- mkReg(Ready);
+  Reg#(ICacheRefillReq) missReq        <- mkRegU;
+  Reg#(Bit#(8))         beatIdx        <- mkRegU;
+  Reg#(ICacheLine)      refillLine     <- mkRegU;
+  Reg#(Bool)            refillMayWrite <- mkReg(False);
+  Reg#(Bool)            epoch          <- mkReg(False);
+  Reg#(Bool)            squashPending  <- mkReg(False);
 
-  Fifo#(2, ICacheReq)   reqQ  <- mkCFFifo;
-  Fifo#(2, ICacheResp) respQ <- mkCFFifo;
-  Fifo#(2, ICacheMaintReq) maintQ <- mkCFFifo;
+  Fifo#(2, ICacheRefillReq)  refillReqQ  <- mkCFFifo;
+  Fifo#(2, ICacheRefillResp) refillRespQ <- mkCFFifo;
+  Fifo#(2, ICacheMaintReq)   maintQ      <- mkCFFifo;
 
   Fifo#(2, AxiReadAddr) arQ <- mkCFFifo;
   Fifo#(4, AxiReadData) rQ  <- mkCFFifo;
@@ -195,45 +208,23 @@ module mkICache(ICache);
 `endif
 `endif
 
-  rule doLookup (state == Ready && !maintQ.notEmpty);
-    let req = reqQ.first;
-    let addr = req.addr;
-    let tag  = getITag(addr);
-    let idx  = getIIndex(addr);
-    let wsel = getIWordSel(addr);
-
-    Bool         hit     = False;
-    Data         hitData = 0;
-    ICacheWayIdx hitWay  = 0;
-
-    for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
-      if (validStore[idx][w] && tagStore[idx][w] == tag) begin
-        hit     = True;
-        hitData = dataStore[idx][w][wsel];
-        hitWay  = fromInteger(w);
-      end
-    end
-
-    if (hit) begin
-      reqQ.deq;
-      respQ.enq(ICacheResp{addr: addr, inst: hitData, epoch: req.epoch});
-      replacer.access(idx, hitWay);
-    end else begin
-      missAddr <= addr;
-      missEpoch <= req.epoch;
-      state    <= StartMiss;
-    end
-  endrule
-
-  rule doStartMiss (state == StartMiss);
-    arQ.enq(AxiReadAddr{
-      addr: getIBlockBase(missAddr),
-      len: fromInteger(valueOf(ICacheLineWords) - 1),
-      size: 3'd2,
-      burst: AxiBurstIncr
-    });
+  rule doAcceptRefillReq (state == Ready && refillReqQ.notEmpty && !maintQ.notEmpty);
+    let req = refillReqQ.first;
+    refillReqQ.deq;
+    missReq <= req;
     beatIdx <= 0;
     refillLine <= replicate(0);
+    refillMayWrite <= True;
+    state <= StartRefill;
+  endrule
+
+  rule doStartRefill (state == StartRefill);
+    arQ.enq(AxiReadAddr{
+      addr: missReq.useCache ? getIBlockBase(missReq.addr) : missReq.addr,
+      len: missReq.useCache ? fromInteger(valueOf(ICacheLineWords) - 1) : 'b0,
+      size: 3'd2,
+      burst: missReq.useCache ? AxiBurstIncr : AxiBurstFixed
+    });
     state <= WaitResp;
   endrule
 
@@ -241,9 +232,9 @@ module mkICache(ICache);
     let beat = rQ.first;
     rQ.deq;
 
-    let idx  = getIIndex(missAddr);
-    let tag  = getITag(missAddr);
-    let wsel = getIWordSel(missAddr);
+    let idx  = getIIndex(missReq.addr);
+    let tag  = getITag(missReq.addr);
+    let wsel = getIWordSel(missReq.addr);
     let way  = replacer.replace(idx);
 
     Bit#(ICacheWordSelSz) lineIdx = truncate(beatIdx);
@@ -254,21 +245,24 @@ module mkICache(ICache);
     beatIdx <= nextBeat;
 
     if (beat.last || nextBeat == fromInteger(valueOf(ICacheLineWords))) begin
-      Bool liveMiss = (missEpoch == epoch);
+      Bool liveMiss = missReq.useCache && refillMayWrite && (missReq.epoch == epoch);
       if (liveMiss) begin
         tagStore[idx][way]   <= tag;
         dataStore[idx][way]  <= nextLine;
         validStore[idx][way] <= True;
         replacer.access(idx, way);
-        respQ.enq(ICacheResp{addr: missAddr, inst: nextLine[wsel], epoch: missEpoch});
-        reqQ.deq;
       end
+      if (!squashPending) begin
+        refillRespQ.enq(ICacheRefillResp{
+          addr: missReq.addr,
+          inst: missReq.useCache ? nextLine[wsel] : beat.data,
+          epoch: missReq.epoch
+        });
+      end
+      refillMayWrite <= False;
+      squashPending <= False;
       state <= Ready;
     end
-  endrule
-
-  rule dropStaleResp (respQ.notEmpty && respQ.first.epoch != epoch);
-    respQ.deq;
   endrule
 
   rule doMaint (state == Ready && maintQ.notEmpty);
@@ -310,23 +304,47 @@ module mkICache(ICache);
         end
       end
     endcase
-
   endrule
 
-  method Action req(Addr a);
-    reqQ.enq(ICacheReq{addr: a, epoch: epoch});
+  method ICacheProbeResp probe(Addr va);
+    let idx = getIIndex(va);
+    let wsel = getIWordSel(va);
+    ICacheProbeResp setWays = noICacheProbe;
+    for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
+      setWays = update(setWays, fromInteger(w), ICacheProbeWay{
+        valid: validStore[idx][w],
+        tag: tagStore[idx][w],
+        inst: dataStore[idx][w][wsel]
+      });
+    end
+    return setWays;
   endmethod
 
-  method ActionValue#(ICacheResp) resp if (respQ.notEmpty && respQ.first.epoch == epoch);
-    let d = respQ.first;
-    respQ.deq;
+  method Action refillReq(Addr pa, Bool useCache) if (refillReqQ.notFull);
+    refillReqQ.enq(ICacheRefillReq{
+      addr: pa,
+      epoch: epoch,
+      useCache: useCache
+    });
+  endmethod
+
+  method ActionValue#(ICacheRefillResp) refillResp if (refillRespQ.notEmpty);
+    let d = refillRespQ.first;
+    refillRespQ.deq;
     return d;
   endmethod
 
+  method Action commitHit(Addr va, ICacheWayIdx way);
+    replacer.access(getIIndex(va), way);
+  endmethod
+
   method Action flush;
-    reqQ.clear();
-    respQ.clear();
+    refillReqQ.clear();
     maintQ.clear();
+    refillMayWrite <= False;
+    if (state != Ready) begin
+      squashPending <= True;
+    end
     for (Integer s = 0; s < valueOf(ICacheSets); s = s + 1) begin
       for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
         validStore[s][w] <= False;
@@ -336,14 +354,11 @@ module mkICache(ICache);
   endmethod
 
   method Action squash;
-    reqQ.clear();
-    respQ.clear();
+    refillReqQ.clear();
     maintQ.clear();
-    arQ.clear();
-    rQ.clear();
-    state <= Ready;
-    if (axiReadInFlight) begin
-      dropReadResp <= True;
+    refillMayWrite <= False;
+    if (state != Ready) begin
+      squashPending <= True;
     end
     epoch <= !epoch;
   endmethod
@@ -374,22 +389,11 @@ module mkICache(ICache);
     method ActionValue#(AxiReadAddr) rdAddr;
       let x = arQ.first;
       arQ.deq;
-      axiReadInFlight <= True;
       return x;
     endmethod
 
     method Action rdData(AxiReadData d);
-      if (dropReadResp) begin
-        if (d.last) begin
-          dropReadResp <= False;
-          axiReadInFlight <= False;
-        end
-      end else begin
-        rQ.enq(d);
-        if (d.last) begin
-          axiReadInFlight <= False;
-        end
-      end
+      rQ.enq(d);
     endmethod
 
     method Bool wrAddrValid = False;

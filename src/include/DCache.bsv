@@ -28,7 +28,6 @@ typedef Vector#(DCacheLineWords, Data) DCacheLine;
 
 typedef struct {
   Data data;
-  Bool miss;
 } DCacheResp deriving(Bits, Eq);
 
 function DCacheTag     getDTag(Addr a) = truncateLSB(a);
@@ -39,13 +38,6 @@ function Addr getDBlockBase(Addr a);
   Bit#(TSub#(AddrSz, DCacheOffsetSz)) upper = truncateLSB(a);
   Bit#(DCacheOffsetSz) lower = 0;
   return { upper, lower };
-endfunction
-function Bool isUncacheAddr(Addr a);
-  Bit#(16) upper = truncateLSB(a);
-  return upper == uncached_base ||
-    upper == 16'h1faf ||
-    upper == 16'hbfe0 ||
-    upper == 16'h1fe0;
 endfunction
 
 function Data applyByteMask(Data oldData, Data newData, Bit#(WordSz) byteEn);
@@ -174,6 +166,7 @@ module mkDCache(DCache);
 
   Reg#(Bool) lrValid <- mkReg(False);
   Reg#(Addr) lrAddr <- mkRegU;
+  Reg#(Bool) squashPending <- mkReg(False);
   Reg#(Bool) fenceFlushWait <- mkReg(False);
   Reg#(Bool) cacheMaintWait <- mkReg(False);
   Reg#(DCacheIndex) cacheMaintIdx <- mkRegU;
@@ -204,7 +197,7 @@ module mkDCache(DCache);
     reqQ.deq;
 
     if (r.op == Barrier) begin
-      let tag = getDTag(r.addr);
+      let tag = getDTag(r.paddr);
       let idx = getDIndex(r.addr);
       let wsel = getDWordSel(r.addr);
       Bool hit = False;
@@ -217,17 +210,12 @@ module mkDCache(DCache);
           hitWay = fromInteger(w);
         end
       end
-`ifdef CONFIG_MTRACE
-      $fwrite(stdout, "[DCDBG] BARRIER addr:%x hit:%0d dirty:%0d data:%x\n",
-        r.addr, pack(hit), pack(hit && dirtyStore[idx][hitWay]), hitData);
-`endif
       if (hit && dirtyStore[idx][hitWay]) begin
-`ifdef CONFIG_MTRACE
-        $fwrite(stdout, "[DCDBG] BARRIER-WB addr:%x data:%x\n", r.addr, hitData);
-`endif
         missReq <= MemReq{
           op: St,
           addr: r.addr,
+          paddr: r.paddr,
+          useCache: False,
           data: hitData,
           byteEn: 4'b1111,
           cacheOp: 5'b0
@@ -236,13 +224,13 @@ module mkDCache(DCache);
         state <= SendUncacheReq;
       end else begin
         // Barrier completes immediately if no dirty line needs writeback.
-        respQ.enq(DCacheResp{data: 0, miss: False});
+        respQ.enq(DCacheResp{data: 0});
         fenceFlushWait <= False;
       end
     end else if (r.op == Cacop) begin
       DCacheOpType opType = r.cacheOp[4:3];
       let idx = getDIndex(r.addr);
-      let tag = getDTag(r.addr);
+      let tag = getDTag(r.paddr);
       let way = getDCacopWaySel(r.addr);
 
       Bool hit = False;
@@ -255,19 +243,19 @@ module mkDCache(DCache);
       end
 
       if (r.cacheOp[2:0] != 3'b001) begin
-        respQ.enq(DCacheResp{data: 0, miss: False});
+        respQ.enq(DCacheResp{data: 0});
       end else if (opType == 2'b00) begin
         validStore[idx][way] <= False;
         dirtyStore[idx][way] <= False;
-        if (lrValid && getDBlockBase(lrAddr) == getDBlockBase(r.addr)) begin
+        if (lrValid && getDBlockBase(lrAddr) == getDBlockBase(r.paddr)) begin
           lrValid <= False;
         end
-        respQ.enq(DCacheResp{data: 0, miss: False});
+        respQ.enq(DCacheResp{data: 0});
       end else begin
         Bool targetValid = False;
         Bool targetDirty = False;
         DCacheWayIdx targetWay = way;
-        Addr targetBlockAddr = getDBlockBase(r.addr);
+        Addr targetBlockAddr = getDBlockBase(r.paddr);
 
         if (opType == 2'b01) begin
           targetValid = validStore[idx][way];
@@ -281,7 +269,7 @@ module mkDCache(DCache);
         end
 
         if (!targetValid) begin
-          respQ.enq(DCacheResp{data: 0, miss: False});
+          respQ.enq(DCacheResp{data: 0});
         end else if (targetDirty) begin
           Bit#(DCacheOffsetSz) zeroOff = 0;
           wbLine <= dataStore[idx][targetWay];
@@ -303,11 +291,11 @@ module mkDCache(DCache);
           if (lrValid && getDBlockBase(lrAddr) == targetBlockAddr) begin
             lrValid <= False;
           end
-          respQ.enq(DCacheResp{data: 0, miss: False});
+          respQ.enq(DCacheResp{data: 0});
         end
       end
     end else begin
-      let tag = getDTag(r.addr);
+      let tag = getDTag(r.paddr);
       let idx = getDIndex(r.addr);
       let wsel = getDWordSel(r.addr);
 
@@ -325,7 +313,7 @@ module mkDCache(DCache);
         end
       end
 
-      if (isUncacheAddr(r.addr)) begin
+      if (!r.useCache) begin
         missReq <= r;
         state <= SendUncacheReq;
       end else if (hit) begin
@@ -333,25 +321,25 @@ module mkDCache(DCache);
 
         case (r.op)
           Ld: begin
-            respQ.enq(DCacheResp{data: hitData, miss: False});
+            respQ.enq(DCacheResp{data: hitData});
           end
           Lr: begin
-            respQ.enq(DCacheResp{data: hitData, miss: False});
+            respQ.enq(DCacheResp{data: hitData});
             lrValid <= True;
-            lrAddr <= r.addr;
+            lrAddr <= r.paddr;
           end
           Sc: begin
-            if (lrValid && lrAddr == r.addr)
-              respQ.enq(DCacheResp{data: scSucc, miss: False});
+            if (lrValid && lrAddr == r.paddr)
+              respQ.enq(DCacheResp{data: scSucc});
             else
-              respQ.enq(DCacheResp{data: scFail, miss: False});
+              respQ.enq(DCacheResp{data: scFail});
             lrValid <= False;
           end
           default: begin end
         endcase
 
         Bool doWrite = (r.op == St) ||
-          (r.op == Sc && lrValid && lrAddr == r.addr);
+          (r.op == Sc && lrValid && lrAddr == r.paddr);
         if (doWrite) begin
           Data mergedWord = applyByteMask(hitLine[wsel], r.data, r.byteEn);
           DCacheLine newLine = update(hitLine, wsel, mergedWord);
@@ -362,15 +350,15 @@ module mkDCache(DCache);
             end
           end
           if (r.op == St) begin
-            respQ.enq(DCacheResp{data: 0, miss: False});
+            respQ.enq(DCacheResp{data: 0});
           end
         end
 
-        if (r.op == St && lrValid && lrAddr == r.addr)
+        if (r.op == St && lrValid && lrAddr == r.paddr)
           lrValid <= False;
       end else begin
         if (r.op == Sc) begin
-          respQ.enq(DCacheResp{data: scFail, miss: False});
+          respQ.enq(DCacheResp{data: scFail});
           lrValid <= False;
         end else begin
           missReq <= r;
@@ -427,7 +415,10 @@ module mkDCache(DCache);
         lrValid <= False;
       end
       cacheMaintWait <= False;
-      respQ.enq(DCacheResp{data: 0, miss: True});
+      if (!squashPending) begin
+        respQ.enq(DCacheResp{data: 0});
+      end
+      squashPending <= False;
       state <= Ready;
     end else begin
       state <= SendFillAddr;
@@ -436,7 +427,7 @@ module mkDCache(DCache);
 
   rule doSendFillAddr (state == SendFillAddr);
     arQ.enq(AxiReadAddr{
-      addr: getDBlockBase(missReq.addr),
+      addr: getDBlockBase(missReq.paddr),
       len: fromInteger(valueOf(DCacheLineWords) - 1),
       size: 3'd2,
       burst: AxiBurstIncr
@@ -452,7 +443,7 @@ module mkDCache(DCache);
 
     let r = missReq;
     let idx = getDIndex(r.addr);
-    let tag = getDTag(r.addr);
+    let tag = getDTag(r.paddr);
     let wsel = getDWordSel(r.addr);
     let way = victimWay;
 
@@ -468,7 +459,9 @@ module mkDCache(DCache);
 
       case (r.op)
         Ld: begin
-          respQ.enq(DCacheResp{data: nextLine[wsel], miss: True});
+          if (!squashPending) begin
+            respQ.enq(DCacheResp{data: nextLine[wsel]});
+          end
           dataStore[idx][way] <= nextLine;
           dirtyStore[idx][way] <= False;
         end
@@ -477,14 +470,18 @@ module mkDCache(DCache);
           DCacheLine newLine = update(nextLine, wsel, mergedWord);
           dataStore[idx][way] <= newLine;
           dirtyStore[idx][way] <= True;
-          respQ.enq(DCacheResp{data: 0, miss: True});
+          if (!squashPending) begin
+            respQ.enq(DCacheResp{data: 0});
+          end
         end
         Lr: begin
-          respQ.enq(DCacheResp{data: nextLine[wsel], miss: True});
+          if (!squashPending) begin
+            respQ.enq(DCacheResp{data: nextLine[wsel]});
+          end
           dataStore[idx][way] <= nextLine;
           dirtyStore[idx][way] <= False;
           lrValid <= True;
-          lrAddr <= r.addr;
+          lrAddr <= r.paddr;
         end
         default: begin
           dataStore[idx][way] <= nextLine;
@@ -493,6 +490,7 @@ module mkDCache(DCache);
       endcase
 
       replacer.access(idx, way);
+      squashPending <= False;
       state <= Ready;
     end
   endrule
@@ -501,14 +499,14 @@ module mkDCache(DCache);
     let r = missReq;
     if (r.op == Ld) begin
       arQ.enq(AxiReadAddr{
-        addr: r.addr,
+        addr: r.paddr,
         len: 'b0,
         size: 3'd2,
         burst: AxiBurstFixed
       });
     end else if (r.op == St) begin
       awQ.enq(AxiWriteAddr{
-        addr: r.addr,
+        addr: r.paddr,
         len: 'b0,
         size: 3'd2,
         burst: AxiBurstFixed
@@ -529,7 +527,10 @@ module mkDCache(DCache);
     rQ.deq;
     dynamicAssert(beat.resp == AxiRespOkay ||
                   beat.resp == AxiRespExOkay, "read resp has fault");
-    respQ.enq(DCacheResp{data: beat.data, miss: True});
+    if (!squashPending) begin
+      respQ.enq(DCacheResp{data: beat.data});
+    end
+    squashPending <= False;
     state <= Ready;
   endrule
 
@@ -539,10 +540,13 @@ module mkDCache(DCache);
     bQ.deq;
     dynamicAssert(beat.resp == AxiRespOkay ||
                   beat.resp == AxiRespExOkay, "write resp has fault");
-    respQ.enq(DCacheResp{data: 0, miss: True});
+    if (!squashPending) begin
+      respQ.enq(DCacheResp{data: 0});
+    end
     if (fenceFlushWait) begin
       fenceFlushWait <= False;
     end
+    squashPending <= False;
     state <= Ready;
   endrule
 
@@ -559,14 +563,10 @@ module mkDCache(DCache);
   method Action squash;
     reqQ.clear();
     respQ.clear();
-    arQ.clear();
-    rQ.clear();
-    awQ.clear();
-    wQ.clear();
-    bQ.clear();
+    if (state != Ready) begin
+      squashPending <= True;
+    end
     fenceFlushWait <= False;
-    cacheMaintWait <= False;
-    state <= Ready;
   endmethod
 
   interface AxiMemMaster axiMem;

@@ -1,7 +1,5 @@
 import Types::*;
 import ProcTypes::*;
-import Tlb::*;
-import Mmu::*;
 import Ehr::*;
 import ConfigReg::*;
 import Fifo::*;
@@ -13,31 +11,35 @@ import DiffTypes::*;
 `endif
 
 interface CsrFile;
-  method Bool hasInterrupt;
   method Data crmd;
   method Data prmd;
   method Data ecfg;
   method Data estat;
   method Data tcfg;
   method Data tval;
+  method Data asid;
+  method Data dmw0;
+  method Data dmw1;
+  method Data tlbidx;
   method Data rd(CsrIndx idx);
   method Bit#(64) stableCounterValue;
 `ifdef CONFIG_DIFFTEST
-    method DiffArchCsrState diffSnapshot;
-    method DiffArchCsrState diffSnapshotAfterWrite(Maybe#(CsrIndx) idx, Data val, Bool raiseExcp, Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv, Bool isErtn);
-    method DiffArchCsrState diffSnapshotAfterTlbrd;
+  method DiffArchCsrState diffSnapshot;
+  method DiffArchCsrState diffSnapshotAfterWrite(Maybe#(CsrIndx) idx, Data val, Bool raiseExcp, Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv, Bool isErtn);
+  method DiffArchCsrState diffSnapshotAfterTlbrd(Bool ne, Bit#(6) ps, Data ehi, Data elo0, Data elo1, Data asidVal);
 `endif
   method Action wr(Maybe#(CsrIndx) idx, Data val);
-  method Data tlbsrchResult;
-  method ActionValue#(Data) tlbsrchResultVal;
-  method Bool tlbsrchRespValid;
-  method Action tlbsrch;
-  method Action invtlb(Bit#(5) op, Data asidVal, Data vaVal);
-  method Action tlbwr;
-  method ActionValue#(Bit#(5)) tlbfill;
-  method Action tlbrd;
-  method MmuResult translateFetch(Addr va);
-  method MmuResult translateData(Addr va, MmuAccessType accessType);
+  method Data tlbehi;
+  method Bit#(5) tlbReadIndex;
+  method Data tlbWriteIdx;
+  method Data tlbWriteEhi;
+  method Data tlbWriteElo0;
+  method Data tlbWriteElo1;
+  method Data tlbWriteAsid;
+  method Action applyTlbsrchResult(Data res);
+  method Action applyTlbrdResult(Bool ne, Bit#(6) ps, Data ehi, Data elo0,
+    Data elo1, Data asidVal);
+  method Action commitTlbOp;
   method ActionValue#(Addr) raiseException(Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv);
   method ActionValue#(Addr) returnFromException;
   `ifdef CONFIG_BSIM
@@ -131,9 +133,6 @@ module mkCsrFile(CsrFile);
   Reg#(Data) csr_ctag <- mkReg(0);
   Reg#(Data) csr_dmw0 <- mkReg(0);
   Reg#(Data) csr_dmw1 <- mkReg(0);
-  TlbArray tlb <- mkTlb;
-
-  Reg#(Data) lastTlbSrchResult <- mkReg(32'h80000000);
 
   rule count;
     cycles <= cycles + 1;
@@ -159,13 +158,6 @@ module mkCsrFile(CsrFile);
     endaction
   endfunction
 
-  method Bool hasInterrupt;
-    Data estatWithTimer = csr_estat | (timerInt[1] ? 32'h00000800 : 0);
-    Bool ieEnabled = (csr_crmd[`CSR_CRMD_IE] == 1'b1);
-    Bool pending = ((estatWithTimer[`CSR_ECFG_LIE] & csr_ecfg[`CSR_ECFG_LIE]) != 0);
-    return ieEnabled && pending;
-  endmethod
-
   method Data crmd;
     return csr_crmd;
   endmethod
@@ -188,6 +180,18 @@ module mkCsrFile(CsrFile);
 
   method Data tval;
     return csr_tval[1];
+  endmethod
+
+  method Data dmw0;
+    return csr_dmw0;
+  endmethod
+
+  method Data dmw1;
+    return csr_dmw1;
+  endmethod
+
+  method Data asid;
+    return csr_asid;
   endmethod
 
   method Data rd(CsrIndx idx);
@@ -418,9 +422,7 @@ module mkCsrFile(CsrFile);
     };
   endmethod
 
-  method DiffArchCsrState diffSnapshotAfterTlbrd;
-    Bit#(5) tlbIndex = csr_tlbidx[`CSR_TLBIDX_INDEX];
-    let tlbRead = tlb.readEntry(tlbIndex);
+  method DiffArchCsrState diffSnapshotAfterTlbrd(Bool ne, Bit#(6) ps, Data ehi, Data elo0, Data elo1, Data asidVal);
     Data next_crmd = csr_crmd;
     Data next_prmd = csr_prmd;
     Data next_euen = csr_euen;
@@ -428,7 +430,7 @@ module mkCsrFile(CsrFile);
     Data next_era = csr_era;
     Data next_badv = csr_badv;
     Data next_eentry = csr_eentry;
-    Data next_tlbidx = zeroExtend(tlbIndex);
+    Data next_tlbidx = zeroExtend(csr_tlbidx[`CSR_TLBIDX_INDEX]);
     Data next_tlbehi = 0;
     Data next_tlbelo0 = 0;
     Data next_tlbelo1 = 0;
@@ -448,15 +450,15 @@ module mkCsrFile(CsrFile);
     Data next_dmw1 = csr_dmw1;
     Data next_estat_raw = csr_estat;
 
-    if (tlbRead.ne) begin
+    if (ne) begin
       next_tlbidx[31] = 1'b1;
       next_asid = next_asid & 32'hFFFFFC00;
     end else begin
-      next_tlbidx[29:24] = tlbRead.ps;
-      next_tlbehi = tlbRead.ehi;
-      next_tlbelo0 = tlbRead.elo0;
-      next_tlbelo1 = tlbRead.elo1;
-      next_asid = (next_asid & 32'hFFFFFC00) | (tlbRead.asid & 32'h000003FF);
+      next_tlbidx[29:24] = ps;
+      next_tlbehi = ehi;
+      next_tlbelo0 = elo0;
+      next_tlbelo1 = elo1;
+      next_asid = (next_asid & 32'hFFFFFC00) | (asidVal & 32'h000003FF);
     end
 
     if (next_tcfg[`CSR_TCFG_EN] == 1) begin
@@ -503,8 +505,7 @@ module mkCsrFile(CsrFile);
       estat: next_estat_raw | (next_timerInt ? 32'h00000800 : 0)
     };
   endmethod
-
-  `endif
+`endif
 
   method Action wr(Maybe#(CsrIndx) csrIdx, Data val);
     Bool wrote_tcfg = False;
@@ -594,70 +595,65 @@ module mkCsrFile(CsrFile);
       retireBookkeeping(wrote_tcfg, cleared_timer_int);
     endmethod
 
-    method Data tlbsrchResult;
-      return lastTlbSrchResult;
+    method Data tlbehi;
+      return csr_tlbehi;
     endmethod
 
-    method ActionValue#(Data) tlbsrchResultVal;
-      let res <- tlb.searchResp;
-      lastTlbSrchResult <= res;
-      return res;
+    method Bit#(5) tlbReadIndex;
+      return csr_tlbidx[`CSR_TLBIDX_INDEX];
     endmethod
 
-    method Bool tlbsrchRespValid;
-      return tlb.searchRespValid;
+    method Data tlbWriteIdx;
+      return effectiveTlbIdxForWrite(csr_tlbidx, csr_estat);
     endmethod
 
-    method Action tlbsrch;
-      tlb.searchReq(csr_tlbehi, csr_asid);
+    method Data tlbWriteEhi;
+      return csr_tlbehi;
     endmethod
 
-    method Action invtlb(Bit#(5) op, Data asidVal, Data vaVal);
-      tlb.invtlb(op, asidVal, vaVal);
+    method Data tlbWriteElo0;
+      return csr_tlbelo0;
     endmethod
 
-    method Action tlbwr;
-      Data effectiveTlbidx = effectiveTlbIdxForWrite(csr_tlbidx, csr_estat);
-      tlb.writeEntry(effectiveTlbidx, csr_tlbehi, csr_tlbelo0, csr_tlbelo1, csr_asid);
+    method Data tlbWriteElo1;
+      return csr_tlbelo1;
+    endmethod
+
+    method Data tlbWriteAsid;
+      return csr_asid;
+    endmethod
+
+    method Data tlbidx;
+      return csr_tlbidx;
+    endmethod
+
+    method Action applyTlbsrchResult(Data res);
+      csr_tlbidx <= (res & 32'hBF00001F) | (csr_tlbidx & 32'h40FFFFE0);
       retireBookkeeping(False, False);
     endmethod
 
-    method ActionValue#(Bit#(5)) tlbfill;
-      Data effectiveTlbidx = effectiveTlbIdxForWrite(csr_tlbidx, csr_estat);
-      let idx <- tlb.fillEntry(effectiveTlbidx, csr_tlbehi, csr_tlbelo0, csr_tlbelo1, csr_asid);
-      retireBookkeeping(False, False);
-      return zeroExtend(idx);
-    endmethod
-
-    method Action tlbrd;
-      Bit#(5) tlbIndex = csr_tlbidx[`CSR_TLBIDX_INDEX];
-      let tlbRead = tlb.readEntry(tlbIndex);
-      Data next_tlbidx = zeroExtend(tlbIndex);
-      if (tlbRead.ne) begin
+    method Action applyTlbrdResult(Bool ne, Bit#(6) ps, Data ehi, Data elo0,
+        Data elo1, Data asidVal);
+      Data next_tlbidx = zeroExtend(csr_tlbidx[`CSR_TLBIDX_INDEX]);
+      if (ne) begin
         next_tlbidx[31] = 1'b1;
         csr_tlbehi <= 0;
         csr_tlbelo0 <= 0;
         csr_tlbelo1 <= 0;
         csr_asid <= csr_asid & 32'hFFFFFC00;
       end else begin
-        next_tlbidx[29:24] = tlbRead.ps;
-        csr_tlbehi <= tlbRead.ehi;
-        csr_tlbelo0 <= tlbRead.elo0;
-        csr_tlbelo1 <= tlbRead.elo1;
-        csr_asid <= (csr_asid & 32'hFFFFFC00) | (tlbRead.asid & 32'h000003FF);
+        next_tlbidx[29:24] = ps;
+        csr_tlbehi <= ehi;
+        csr_tlbelo0 <= elo0;
+        csr_tlbelo1 <= elo1;
+        csr_asid <= (csr_asid & 32'hFFFFFC00) | (asidVal & 32'h000003FF);
       end
       csr_tlbidx <= next_tlbidx;
       retireBookkeeping(False, False);
     endmethod
 
-    method MmuResult translateFetch(Addr va);
-      return mmuTranslate(va, MmuFetch, csr_crmd, csr_asid, csr_dmw0, csr_dmw1,
-        tlb.lookupFetch(va, csr_asid));
-    endmethod
-
-    method MmuResult translateData(Addr va, MmuAccessType accessType);
-      return mmuTranslate(va, accessType, csr_crmd, csr_asid, csr_dmw0, csr_dmw1,
-        tlb.lookupData(va, csr_asid));
+    method Action commitTlbOp;
+      retireBookkeeping(False, False);
     endmethod
 
     method ActionValue#(Addr) raiseException(Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv);
