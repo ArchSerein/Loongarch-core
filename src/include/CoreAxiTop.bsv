@@ -7,37 +7,25 @@ import AxiTypes::*;
 interface CoreAxiTop;
   interface AxiMemMaster axiMem;
 `ifdef CONFIG_DIFFTEST
+`ifdef CONFIG_BSIM
   (* result = "diffTrace" *)
   method ActionValue#(Bit#(2464)) diffTrace;
   (* result = "diffTraceValid" *)
   method Bool diffTraceValid;
-  (* result = "diffCommitBundle" *)
-  method Bit#(142) diffCommitBundle;
-  (* result = "diffRegsBundle" *)
-  method Bit#(1024) diffRegsBundle;
-  (* result = "diffCsrBundle" *)
-  method Bit#(832) diffCsrBundle;
-  (* result = "diffExcpBundle" *)
-  method Bit#(130) diffExcpBundle;
-  (* result = "diffStoreBundle" *)
-  method Bit#(200) diffStoreBundle;
-  (* result = "diffLoadBundle" *)
-  method Bit#(136) diffLoadBundle;
-  (* prefix = "" *)
-  method Action diffTraceDeq;
-  (* result = "diffStepValid" *)
+`endif
+  (* always_ready, result = "diffStepValid" *)
   method Bool diffStepValid;
-  (* result = "liveDiffCommitBundle" *)
+  (* always_ready, result = "liveDiffCommitBundle" *)
   method Bit#(142) liveDiffCommitBundle;
-  (* result = "liveDiffRegsBundle" *)
+  (* always_ready, result = "liveDiffRegsBundle" *)
   method Bit#(1024) liveDiffRegsBundle;
-  (* result = "liveDiffCsrBundle" *)
+  (* always_ready, result = "liveDiffCsrBundle" *)
   method Bit#(832) liveDiffCsrBundle;
-  (* result = "liveDiffExcpBundle" *)
+  (* always_ready, result = "liveDiffExcpBundle" *)
   method Bit#(130) liveDiffExcpBundle;
-  (* result = "liveDiffStoreBundle" *)
+  (* always_ready, result = "liveDiffStoreBundle" *)
   method Bit#(200) liveDiffStoreBundle;
-  (* result = "liveDiffLoadBundle" *)
+  (* always_ready, result = "liveDiffLoadBundle" *)
   method Bit#(136) liveDiffLoadBundle;
 `endif
 `ifdef CONFIG_VSIM
@@ -68,20 +56,13 @@ module mkCoreAxiTop(CoreAxiTop);
 
   interface axiMem = core.axiMem;
 `ifdef CONFIG_DIFFTEST
+`ifdef CONFIG_BSIM
   method ActionValue#(Bit#(2464)) diffTrace;
     let t <- core.diffTrace;
     return pack(t);
   endmethod
   method Bool diffTraceValid = core.diffTraceValid;
-  method Bit#(142) diffCommitBundle = core.diffCommitBundle;
-  method Bit#(1024) diffRegsBundle = core.diffRegsBundle;
-  method Bit#(832) diffCsrBundle = core.diffCsrBundle;
-  method Bit#(130) diffExcpBundle = core.diffExcpBundle;
-  method Bit#(200) diffStoreBundle = core.diffStoreBundle;
-  method Bit#(136) diffLoadBundle = core.diffLoadBundle;
-  method Action diffTraceDeq;
-    core.diffTraceDeq;
-  endmethod
+`endif
   method Bool diffStepValid = core.diffStepValid;
   method Bit#(142) liveDiffCommitBundle = core.liveDiffCommitBundle;
   method Bit#(1024) liveDiffRegsBundle = core.liveDiffRegsBundle;

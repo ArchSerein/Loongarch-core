@@ -134,6 +134,11 @@ function Bool coreIsTimerRelatedCsr(CsrIndx idx);
     idx == `CSR_ESTAT;
 endfunction
 
+function Bool coreIsInterruptControlCsr(CsrIndx idx);
+  return idx == `CSR_CRMD || idx == `CSR_ECFG || idx == `CSR_ESTAT ||
+    idx == `CSR_TCFG || idx == `CSR_TICLR;
+endfunction
+
 function Tuple3#(Data, Data, Data) coreInterruptCsrView(
   Maybe#(CsrIndx) csrIdx, Data writeVal, Data curCrmd, Data curEcfg,
   Data curEstat);

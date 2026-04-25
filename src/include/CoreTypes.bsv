@@ -68,6 +68,7 @@ typedef struct {
   Addr                pc;
 `ifdef CONFIG_DIFFTEST
   Instruction         inst;
+  DiffArchCsrState    csrSnapshot;
 `else
 `ifdef CONFIG_VSIM
   Instruction         inst;
@@ -123,7 +124,6 @@ typedef struct {
   Addr     pc;
   Addr     predPc;
   Addr     instPaddr;
-  Bit#(4)  reqId;
 } FetchMissCtx deriving(Bits, Eq);
 
 typedef struct {

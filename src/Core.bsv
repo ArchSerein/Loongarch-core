@@ -39,15 +39,10 @@ interface Core;
   method Action hostToCpu(Addr startpc);
 `endif
 `ifdef CONFIG_DIFFTEST
+`ifdef CONFIG_BSIM
   method ActionValue#(DiffTrace) diffTrace;
   method Bool diffTraceValid;
-  method Bit#(142) diffCommitBundle;
-  method Bit#(1024) diffRegsBundle;
-  method Bit#(832) diffCsrBundle;
-  method Bit#(130) diffExcpBundle;
-  method Bit#(200) diffStoreBundle;
-  method Bit#(136) diffLoadBundle;
-  method Action diffTraceDeq;
+`endif
   (* always_ready *)
   method Bool diffStepValid;
   (* always_ready *)
@@ -508,6 +503,7 @@ module mkCore(Core);
       pc: execPkt.pc,
 `ifdef CONFIG_DIFFTEST
       inst: execPkt.inst,
+      csrSnapshot: csrf.diffSnapshot,
 `endif
       excp: execPkt.excp,
       memPaddr: execPkt.memPaddr,
@@ -531,6 +527,7 @@ module mkCore(Core);
       pc: execPkt.pc,
 `ifdef CONFIG_DIFFTEST
       inst: execPkt.inst,
+      csrSnapshot: csrf.diffSnapshot,
 `endif
       excp: execPkt.excp,
       memPaddr: execPkt.memPaddr,
@@ -555,6 +552,10 @@ module mkCore(Core);
       Bool memDCacheSideEffect =
         isStore || isSc || isBarrier || cacopNeedsDCache;
       Bool memIsCsrWrite = (eInst.iType == Csrw || eInst.iType == Csrxchg);
+      Bool memWritesInterruptCsr = False;
+      if (memIsCsrWrite &&& eInst.csr matches tagged Valid .csrIdx) begin
+        memWritesInterruptCsr = coreIsInterruptControlCsr(csrIdx);
+      end
       let intCsrView = coreInterruptCsrView(
         memIsCsrWrite ? eInst.csr : tagged Invalid, eInst.addr, csrf.crmd,
         csrf.ecfg, csrf.estat);
@@ -568,7 +569,7 @@ module mkCore(Core);
       Bool has_int_raw = coreHasInterrupt(memCrmd, memEcfg, memEstat);
       Bool hasPendingDCacheResp = dCacheRespSrcQ.notEmpty;
       Bool has_int = !memDCacheSideEffect && !memReqIssued && !hasPendingDCacheResp &&
-        has_int_raw && (!delayInterrupt || hasIntPrev);
+        !memWritesInterruptCsr && has_int_raw && (!delayInterrupt || hasIntPrev);
       ExcpInfo memExcp = has_int ? mkExcp(`ECODE_INT, 0, 0) : execPkt.excp;
       Bool canIssueMem = !memExcp.valid && !memExcpPending;
       ByteMask m = fromMaybe(5'b00000, execPkt.mask);
@@ -650,6 +651,7 @@ module mkCore(Core);
           pc: execPkt.pc,
 `ifdef CONFIG_DIFFTEST
           inst: execPkt.inst,
+          csrSnapshot: csrf.diffSnapshot,
 `endif
           excp: memExcp,
           memPaddr: execPkt.memPaddr,
@@ -670,6 +672,10 @@ module mkCore(Core);
       Bool isTlbsrch = (eInst.iType == Tlbsrch);
       Bool memDCacheSideEffect = isTlbsrch;
       Bool memIsCsrWrite = (eInst.iType == Csrw || eInst.iType == Csrxchg);
+      Bool memWritesInterruptCsr = False;
+      if (memIsCsrWrite &&& eInst.csr matches tagged Valid .csrIdx) begin
+        memWritesInterruptCsr = coreIsInterruptControlCsr(csrIdx);
+      end
       let intCsrView = coreInterruptCsrView(
         memIsCsrWrite ? eInst.csr : tagged Invalid, eInst.addr, csrf.crmd,
         csrf.ecfg, csrf.estat);
@@ -682,7 +688,7 @@ module mkCore(Core);
       Bool delayInterrupt = timerPending && !softPending;
       Bool has_int_raw = coreHasInterrupt(memCrmd, memEcfg, memEstat);
       Bool has_int = !memDCacheSideEffect && !memReqIssued && !dCacheRespSrcQ.notEmpty &&
-        has_int_raw && (!delayInterrupt || hasIntPrev);
+        !memWritesInterruptCsr && has_int_raw && (!delayInterrupt || hasIntPrev);
       ExcpInfo memExcp = has_int ? mkExcp(`ECODE_INT, 0, 0) : execPkt.excp;
 
       hasIntPrev <= has_int_raw;
@@ -695,6 +701,7 @@ module mkCore(Core);
         pc: execPkt.pc,
 `ifdef CONFIG_DIFFTEST
         inst: execPkt.inst,
+        csrSnapshot: csrf.diffSnapshot,
 `endif
         excp: memExcp,
         memPaddr: execPkt.memPaddr,
@@ -710,6 +717,7 @@ module mkCore(Core);
         pc: execPkt.pc,
 `ifdef CONFIG_DIFFTEST
         inst: execPkt.inst,
+        csrSnapshot: csrf.diffSnapshot,
 `endif
         excp: execPkt.excp,
         memPaddr: execPkt.memPaddr,
@@ -749,6 +757,9 @@ module mkCore(Core);
       if (wbReady) begin
         Bool wen = False;
         Bool wbIsCsrWrite =(mInst.iType == Csrw || mInst.iType == Csrxchg);
+`ifdef CONFIG_DIFFTEST
+        let currDiffCsrState = memPkt.csrSnapshot;
+`endif
         if (wb_has_excp) begin
           Addr exEntry <- csrf.raiseException(wb_ecode, wb_esubcode, memPkt.pc, wbExcp.badv);
           pcReg[2] <= exEntry;
@@ -834,8 +845,12 @@ module mkCore(Core);
 
         let diffCsrState =
           (mInst.iType == Tlbrd) ?
-          csrf.diffSnapshotAfterTlbrd(tlb.readEntry(csrf.tlbReadIndex).ne, tlb.readEntry(csrf.tlbReadIndex).ps, tlb.readEntry(csrf.tlbReadIndex).ehi, tlb.readEntry(csrf.tlbReadIndex).elo0, tlb.readEntry(csrf.tlbReadIndex).elo1, tlb.readEntry(csrf.tlbReadIndex).asid):
-          csrf.diffSnapshotAfterWrite(
+          diffSnapshotAfterTlbrdFromState(currDiffCsrState,
+          tlb.readEntry(csrf.tlbReadIndex).ne, tlb.readEntry(csrf.tlbReadIndex).ps,
+          tlb.readEntry(csrf.tlbReadIndex).ehi, tlb.readEntry(csrf.tlbReadIndex).elo0,
+          tlb.readEntry(csrf.tlbReadIndex).elo1, tlb.readEntry(csrf.tlbReadIndex).asid):
+          diffSnapshotAfterWriteFromState(
+          currDiffCsrState,
           diffCsrIdx,
           diffCsrVal,
           wb_has_excp,
@@ -931,20 +946,13 @@ module mkCore(Core);
 `endif
 
 `ifdef CONFIG_DIFFTEST
+  `ifdef CONFIG_BSIM
   method ActionValue#(DiffTrace) diffTrace;
     let ret <- difftest.diffTrace;
     return ret;
   endmethod
   method Bool diffTraceValid = difftest.diffTraceValid;
-  method Bit#(142) diffCommitBundle = difftest.diffCommitBundle;
-  method Bit#(1024) diffRegsBundle = difftest.diffRegsBundle;
-  method Bit#(832) diffCsrBundle = difftest.diffCsrBundle;
-  method Bit#(130) diffExcpBundle = difftest.diffExcpBundle;
-  method Bit#(200) diffStoreBundle = difftest.diffStoreBundle;
-  method Bit#(136) diffLoadBundle = difftest.diffLoadBundle;
-  method Action diffTraceDeq;
-    difftest.diffTraceDeq;
-  endmethod
+  `endif
   method Bool diffStepValid = difftest.diffStepValid;
   method Bit#(142) liveDiffCommitBundle = difftest.liveDiffCommitBundle;
   method Bit#(1024) liveDiffRegsBundle = difftest.liveDiffRegsBundle;

@@ -9,16 +9,10 @@ import Vector::*;
 interface Difftest;
   method Action enqTrace(DiffTrace t);
   method Bool enqTraceReady;
-  method Action clearLive;
+`ifdef CONFIG_BSIM
   method ActionValue#(DiffTrace) diffTrace;
   method Bool diffTraceValid;
-  method Bit#(142) diffCommitBundle;
-  method Bit#(1024) diffRegsBundle;
-  method Bit#(832) diffCsrBundle;
-  method Bit#(130) diffExcpBundle;
-  method Bit#(200) diffStoreBundle;
-  method Bit#(136) diffLoadBundle;
-  method Action diffTraceDeq;
+`endif
   method Bool diffStepValid;
   method Bit#(142) liveDiffCommitBundle;
   method Bit#(1024) liveDiffRegsBundle;
@@ -174,7 +168,10 @@ function DiffLoadEvent diffLoadEventOf(Maybe#(DiffMemOp) diffMemInfo,
 endfunction
 
 module mkDifftest(Difftest);
+`ifdef CONFIG_BSIM
   Fifo#(2, DiffTrace) diffTraceFifo <- mkCFFifo;
+`endif
+  Wire#(Bool) liveDiffStepPulse <- mkDWire(False);
   Reg#(Bool) liveDiffStepValidReg <- mkReg(False);
   Reg#(Bit#(142)) liveDiffCommitBundleReg <- mkReg(0);
   Reg#(Bit#(1024)) liveDiffRegsBundleReg <- mkReg(0);
@@ -183,9 +180,15 @@ module mkDifftest(Difftest);
   Reg#(Bit#(200)) liveDiffStoreBundleReg <- mkReg(0);
   Reg#(Bit#(136)) liveDiffLoadBundleReg <- mkReg(0);
 
+  rule latchLiveDiffStepValid;
+    liveDiffStepValidReg <= liveDiffStepPulse;
+  endrule
+
   method Action enqTrace(DiffTrace t);
+`ifdef CONFIG_BSIM
     diffTraceFifo.enq(t);
-    liveDiffStepValidReg <= True;
+`endif
+    liveDiffStepPulse <= True;
     liveDiffCommitBundleReg <= diffCommitBundleOf(t.commit);
     liveDiffRegsBundleReg <= diffRegsBundleOf(t.regs);
     liveDiffCsrBundleReg <= diffCsrBundleOf(t.csr);
@@ -194,12 +197,13 @@ module mkDifftest(Difftest);
     liveDiffLoadBundleReg <= diffLoadBundleOf(t.load);
   endmethod
 
+`ifdef CONFIG_BSIM
   method Bool enqTraceReady = diffTraceFifo.notFull;
+`else
+  method Bool enqTraceReady = True;
+`endif
 
-  method Action clearLive;
-    liveDiffStepValidReg <= False;
-  endmethod
-
+`ifdef CONFIG_BSIM
   method ActionValue#(DiffTrace) diffTrace if (diffTraceFifo.notEmpty);
     let ret = diffTraceFifo.first;
     diffTraceFifo.deq;
@@ -207,22 +211,7 @@ module mkDifftest(Difftest);
   endmethod
 
   method Bool diffTraceValid = diffTraceFifo.notEmpty;
-  method Bit#(142) diffCommitBundle if (diffTraceFifo.notEmpty) =
-    diffCommitBundleOf(diffTraceFifo.first.commit);
-  method Bit#(1024) diffRegsBundle if (diffTraceFifo.notEmpty) =
-    diffRegsBundleOf(diffTraceFifo.first.regs);
-  method Bit#(832) diffCsrBundle if (diffTraceFifo.notEmpty) =
-    diffCsrBundleOf(diffTraceFifo.first.csr);
-  method Bit#(130) diffExcpBundle if (diffTraceFifo.notEmpty) =
-    diffExcpBundleOf(diffTraceFifo.first.excp);
-  method Bit#(200) diffStoreBundle if (diffTraceFifo.notEmpty) =
-    diffStoreBundleOf(diffTraceFifo.first.store);
-  method Bit#(136) diffLoadBundle if (diffTraceFifo.notEmpty) =
-    diffLoadBundleOf(diffTraceFifo.first.load);
-
-  method Action diffTraceDeq if (diffTraceFifo.notEmpty);
-    diffTraceFifo.deq;
-  endmethod
+`endif
 
   method Bool diffStepValid = liveDiffStepValidReg;
   method Bit#(142) liveDiffCommitBundle = liveDiffCommitBundleReg;

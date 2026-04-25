@@ -23,11 +23,6 @@ interface CsrFile;
   method Data tlbidx;
   method Data rd(CsrIndx idx);
   method Bit#(64) stableCounterValue;
-`ifdef CONFIG_DIFFTEST
-  method DiffArchCsrState diffSnapshot;
-  method DiffArchCsrState diffSnapshotAfterWrite(Maybe#(CsrIndx) idx, Data val, Bool raiseExcp, Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv, Bool isErtn);
-  method DiffArchCsrState diffSnapshotAfterTlbrd(Bool ne, Bit#(6) ps, Data ehi, Data elo0, Data elo1, Data asidVal);
-`endif
   method Action wr(Maybe#(CsrIndx) idx, Data val);
   method Data tlbehi;
   method Bit#(5) tlbReadIndex;
@@ -43,8 +38,13 @@ interface CsrFile;
   method ActionValue#(Addr) raiseException(Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv);
   method ActionValue#(Addr) returnFromException;
   `ifdef CONFIG_BSIM
-  method ActionValue#(CpuToHostData) cpuToHost;
-  method Bool cpuToHostValid;
+    method ActionValue#(CpuToHostData) cpuToHost;
+    method Bool cpuToHostValid;
+  `endif
+  `ifdef CONFIG_DIFFTEST
+    method DiffArchCsrState diffSnapshot;
+    method DiffArchCsrState diffSnapshotAfterWrite(Maybe#(CsrIndx) idx, Data val, Bool raiseExcp, Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv, Bool isErtn);
+    method DiffArchCsrState diffSnapshotAfterTlbrd(Bool ne, Bit#(6) ps, Data ehi, Data elo0, Data elo1, Data asidVal);
   `endif
 endinterface
 
@@ -89,6 +89,288 @@ function Data updateTimerView(Data tcfg, Data tval, Bool timerInt, Bool wrote_tc
   return (next_timerInt ? 32'h80000000 : 32'h0) | next_tval;
 endfunction
 
+function DiffArchCsrState diffSnapshotAfterWriteFromState(
+    DiffArchCsrState curr,
+    Maybe#(CsrIndx) csrIdx,
+    Data val,
+    Bool raiseExcp,
+    Bit#(6) ecode,
+    Bit#(9) esubcode,
+    Addr pc,
+    Addr badv,
+    Bool isErtn);
+  Data next_crmd = curr.crmd;
+  Data next_prmd = curr.prmd;
+  Data next_euen = curr.euen;
+  Data next_ecfg = curr.ecfg;
+  Data next_era = curr.era;
+  Data next_badv = curr.badv;
+  Data next_eentry = curr.eentry;
+  Data next_tlbidx = curr.tlbidx;
+  Data next_tlbehi = curr.tlbehi;
+  Data next_tlbelo0 = curr.tlbelo0;
+  Data next_tlbelo1 = curr.tlbelo1;
+  Data next_asid = curr.asid;
+  Data next_pgdl = curr.pgdl;
+  Data next_pgdh = curr.pgdh;
+  Data next_save0 = curr.save0;
+  Data next_save1 = curr.save1;
+  Data next_save2 = curr.save2;
+  Data next_save3 = curr.save3;
+  Data next_tid = curr.tid;
+  Data next_tcfg = curr.tcfg;
+  Data next_tval = curr.tval;
+  Bool next_llbit = unpack(curr.llbctl[0]);
+  Bool next_llbctlKlo = unpack(curr.llbctl[2]);
+  Data next_tlbrentry = curr.tlbrentry;
+  Data next_dmw0 = curr.dmw0;
+  Data next_dmw1 = curr.dmw1;
+  Data next_estat_raw = curr.estat;
+  Bool wrote_tcfg = False;
+  Bool cleared_timer_int = False;
+
+  if (raiseExcp) begin
+    next_crmd[`CSR_CRMD_PLV] = 2'b0;
+    next_crmd[`CSR_CRMD_IE] = 1'b0;
+    if (ecode == `ECODE_TLBR) begin
+      next_crmd[`CSR_CRMD_DA] = 1'b1;
+      next_crmd[`CSR_CRMD_PG] = 1'b0;
+    end
+    next_prmd[`CSR_PRMD_PPLV] = curr.crmd[`CSR_CRMD_PLV];
+    next_prmd[`CSR_PRMD_PIE] = curr.crmd[`CSR_CRMD_IE];
+    next_estat_raw[`CSR_ESTAT_ECODE] = ecode;
+    next_estat_raw[`CSR_ESTAT_ESUBCODE] = esubcode;
+    next_era = pc;
+    if (updateBadvOnException(ecode)) begin
+      next_badv = badv;
+    end
+    if (updateTlbehiOnException(ecode)) begin
+      next_tlbehi[`CSR_TLBEHI_VPPN] = badv[31:13];
+    end
+  end else if (isErtn) begin
+    next_crmd[`CSR_CRMD_PLV] = curr.prmd[`CSR_PRMD_PPLV];
+    next_crmd[`CSR_CRMD_IE] = curr.prmd[`CSR_PRMD_PIE];
+    if (curr.estat[`CSR_ESTAT_ECODE] == `ECODE_TLBR) begin
+      next_crmd[`CSR_CRMD_DA] = 1'b0;
+      next_crmd[`CSR_CRMD_PG] = 1'b1;
+    end
+    if (!next_llbctlKlo) begin
+      next_llbit = False;
+    end
+    next_llbctlKlo = False;
+  end else if (csrIdx matches tagged Valid .idx) begin
+    case (idx)
+      `CSR_CRMD: next_crmd = (val & 32'h000001FF) | (next_crmd & 32'hFFFFFE00);
+      `CSR_PRMD: next_prmd = (val & 32'h00000007) | (next_prmd & 32'hFFFFFFF8);
+      `CSR_EUEN: next_euen = (val & 32'h00000001) | (next_euen & 32'hFFFFFFFE);
+      `CSR_ECFG: next_ecfg = (val & 32'h00001BFF) | (next_ecfg & 32'hFFFFE400);
+      `CSR_ESTAT: next_estat_raw = (val & 32'h00000003) | (next_estat_raw & 32'hFFFFFFFC);
+      `CSR_ERA: next_era = val;
+      `CSR_BADV: next_badv = val;
+      `CSR_EENTRY: next_eentry = (val & 32'hFFFFFFC0) | (next_eentry & 32'h0000003F);
+      `CSR_TLBIDX: next_tlbidx = (val & 32'hBF00001F) | (next_tlbidx & 32'h40FFFFE0);
+      `CSR_TLBEHI: next_tlbehi = (val & 32'hFFFFE000) | (next_tlbehi & 32'h00001FFF);
+      `CSR_TLBEL0: next_tlbelo0 = (val & 32'h0FFFFF7F) | (next_tlbelo0 & 32'hF0000080);
+      `CSR_TLBEL1: next_tlbelo1 = (val & 32'h0FFFFF7F) | (next_tlbelo1 & 32'hF0000080);
+      `CSR_ASID: next_asid = (val & 32'h000003FF) | (next_asid & 32'hFFFFFC00);
+      `CSR_PGDL: next_pgdl = (val & 32'hFFFFF000) | (next_pgdl & 32'h00000FFF);
+      `CSR_PGDH: next_pgdh = (val & 32'hFFFFF000) | (next_pgdh & 32'h00000FFF);
+      `CSR_SAVE0: next_save0 = val;
+      `CSR_SAVE1: next_save1 = val;
+      `CSR_SAVE2: next_save2 = val;
+      `CSR_SAVE3: next_save3 = val;
+      `CSR_TID: next_tid = val;
+      `CSR_TCFG: begin
+        next_tcfg = val;
+        next_tval = {val[`CSR_TCFG_INITV], 2'b0};
+        wrote_tcfg = True;
+      end
+      `CSR_TICLR: begin
+      end
+      `CSR_LLBCTL: begin
+        if (val[1] == 1) next_llbit = False;
+        next_llbctlKlo = unpack(val[2]);
+      end
+      `CSR_TLBRENTRY: next_tlbrentry = (val & 32'hFFFFFFC0) | (next_tlbrentry & 32'h0000003F);
+      `CSR_DMW0: next_dmw0 = (val & 32'hEE000039) | (next_dmw0 & 32'h11FFFFC6);
+      `CSR_DMW1: next_dmw1 = (val & 32'hEE000039) | (next_dmw1 & 32'h11FFFFC6);
+      default: begin end
+    endcase
+  end
+
+  if (!raiseExcp && !wrote_tcfg && !cleared_timer_int && next_tcfg[`CSR_TCFG_EN] == 1) begin
+    if (next_tval != 0) begin
+      let tval_next = next_tval - 1;
+      if (tval_next == 0) begin
+        if (next_tcfg[`CSR_TCFG_PERIOD] == 1)
+          next_tval = {next_tcfg[`CSR_TCFG_INITV], 2'b0};
+        else
+          next_tval = 0;
+      end else begin
+        next_tval = tval_next;
+      end
+    end
+  end
+
+  return DiffArchCsrState{
+    crmd: next_crmd,
+    prmd: next_prmd,
+    euen: next_euen,
+    ecfg: next_ecfg,
+    era: next_era,
+    badv: next_badv,
+    eentry: next_eentry,
+    tlbidx: next_tlbidx,
+    tlbehi: next_tlbehi,
+    tlbelo0: next_tlbelo0,
+    tlbelo1: next_tlbelo1,
+    asid: next_asid,
+    pgdl: next_pgdl,
+    pgdh: next_pgdh,
+    save0: next_save0,
+    save1: next_save1,
+    save2: next_save2,
+    save3: next_save3,
+    tid: next_tid,
+    tcfg: next_tcfg,
+    tval: next_tval,
+    llbctl: {29'b0, pack(next_llbctlKlo), 1'b0, pack(next_llbit)},
+    tlbrentry: next_tlbrentry,
+    dmw0: next_dmw0,
+    dmw1: next_dmw1,
+    estat: next_estat_raw
+  };
+endfunction
+
+function DiffArchCsrState diffSnapshotFromFields(
+    Data crmd,
+    Data prmd,
+    Data euen,
+    Data ecfg,
+    Data era,
+    Data badv,
+    Data eentry,
+    Data tlbidx,
+    Data tlbehi,
+    Data tlbelo0,
+    Data tlbelo1,
+    Data asid,
+    Data pgdl,
+    Data pgdh,
+    Data save0,
+    Data save1,
+    Data save2,
+    Data save3,
+    Data tid,
+    Data tcfg,
+    Data tval,
+    Bool llbctlKlo,
+    Bool llbit,
+    Data tlbrentry,
+    Data dmw0,
+    Data dmw1,
+    Data estat);
+  return DiffArchCsrState{
+    crmd: crmd,
+    prmd: prmd,
+    euen: euen,
+    ecfg: ecfg,
+    era: era,
+    badv: badv,
+    eentry: eentry,
+    tlbidx: tlbidx,
+    tlbehi: tlbehi,
+    tlbelo0: tlbelo0,
+    tlbelo1: tlbelo1,
+    asid: asid,
+    pgdl: pgdl,
+    pgdh: pgdh,
+    save0: save0,
+    save1: save1,
+    save2: save2,
+    save3: save3,
+    tid: tid,
+    tcfg: tcfg,
+    tval: tval,
+    llbctl: {29'b0, pack(llbctlKlo), 1'b0, pack(llbit)},
+    tlbrentry: tlbrentry,
+    dmw0: dmw0,
+    dmw1: dmw1,
+    estat: estat
+  };
+endfunction
+
+function DiffArchCsrState diffSnapshotAfterTlbrdFromState(
+    DiffArchCsrState curr,
+    Bool ne,
+    Bit#(6) ps,
+    Data ehi,
+    Data elo0,
+    Data elo1,
+    Data asidVal);
+  Data next_tlbidx = zeroExtend(curr.tlbidx[`CSR_TLBIDX_INDEX]);
+  Data next_tlbehi = 0;
+  Data next_tlbelo0 = 0;
+  Data next_tlbelo1 = 0;
+  Data next_asid = curr.asid;
+  Data next_tval = curr.tval;
+  Data next_tcfg = curr.tcfg;
+
+  if (ne) begin
+    next_tlbidx[31] = 1'b1;
+    next_asid = next_asid & 32'hFFFFFC00;
+  end else begin
+    next_tlbidx[29:24] = ps;
+    next_tlbehi = ehi;
+    next_tlbelo0 = elo0;
+    next_tlbelo1 = elo1;
+    next_asid = (next_asid & 32'hFFFFFC00) | (asidVal & 32'h000003FF);
+  end
+
+  if (next_tcfg[`CSR_TCFG_EN] == 1) begin
+    if (next_tval != 0) begin
+      let tval_next = next_tval - 1;
+      if (tval_next == 0) begin
+        if (next_tcfg[`CSR_TCFG_PERIOD] == 1)
+          next_tval = {next_tcfg[`CSR_TCFG_INITV], 2'b0};
+        else
+          next_tval = 0;
+      end else begin
+        next_tval = tval_next;
+      end
+    end
+  end
+
+  return DiffArchCsrState{
+    crmd: curr.crmd,
+    prmd: curr.prmd,
+    euen: curr.euen,
+    ecfg: curr.ecfg,
+    era: curr.era,
+    badv: curr.badv,
+    eentry: curr.eentry,
+    tlbidx: next_tlbidx,
+    tlbehi: next_tlbehi,
+    tlbelo0: next_tlbelo0,
+    tlbelo1: next_tlbelo1,
+    asid: next_asid,
+    pgdl: curr.pgdl,
+    pgdh: curr.pgdh,
+    save0: curr.save0,
+    save1: curr.save1,
+    save2: curr.save2,
+    save3: curr.save3,
+    tid: curr.tid,
+    tcfg: next_tcfg,
+    tval: next_tval,
+    llbctl: curr.llbctl,
+    tlbrentry: curr.tlbrentry,
+    dmw0: curr.dmw0,
+    dmw1: curr.dmw1,
+    estat: curr.estat
+  };
+endfunction
+
 (* synthesize *)
 module mkCsrFile(CsrFile);
   Reg#(Bit#(64)) commitInsts <- mkReg(0);
@@ -124,8 +406,8 @@ module mkCsrFile(CsrFile);
 
   Reg#(Data)    csr_tid <- mkReg(0);
   Reg#(Data)    csr_tcfg <- mkReg(0);
-  Ehr#(2, Data) csr_tval <- mkEhr(0); // port 0: timer rule, port 1: wr
-  Ehr#(2, Bool) timerInt <- mkEhr(False); // port 0: timer rule, port 1: TICLR
+  Reg#(Data)    csr_tval <- mkRegU;
+  Reg#(Bool)    wrote_tcfg <- mkReg(False);
 
   Reg#(Bool) llbit <- mkReg(False);
   Reg#(Bool) llbctlKlo <- mkReg(False);
@@ -136,27 +418,18 @@ module mkCsrFile(CsrFile);
 
   rule count;
     cycles <= cycles + 1;
-  endrule
-
-  function Action retireBookkeeping(Bool wrote_tcfg, Bool cleared_timer_int);
-    action
-      if (!wrote_tcfg && !cleared_timer_int && csr_tcfg[`CSR_TCFG_EN] == 1) begin
-        if (csr_tval[1] != 0) begin
-          let tval_next = csr_tval[1] - 1;
-          if (tval_next == 0) begin
-            timerInt[1] <= True;
-            if (csr_tcfg[`CSR_TCFG_PERIOD] == 1)
-              csr_tval[1] <= {csr_tcfg[`CSR_TCFG_INITV], 2'b0};
-            else
-              csr_tval[1] <= 0;
-          end else begin
-            csr_tval[1] <= tval_next;
-          end
-        end
+    Data next_tval = csr_tval;
+    if (wrote_tcfg) begin
+      next_tval = { csr_tcfg[`CSR_TCFG_INITV], 2'b0 };
+    end else if (csr_tcfg[`CSR_TCFG_EN] == 1) begin
+      if (csr_tval == 0) begin
+        next_tval = csr_tcfg[`CSR_TCFG_PERIOD] == 1'b1 ? { csr_tcfg[`CSR_TCFG_INITV], 2'b0 } : 0;
+      end else begin
+        next_tval = csr_tval - 1;
       end
-      commitInsts <= commitInsts + 1;
-    endaction
-  endfunction
+    end
+    csr_tval <= next_tval;
+  endrule
 
   method Data crmd;
     return csr_crmd;
@@ -171,7 +444,7 @@ module mkCsrFile(CsrFile);
   endmethod
 
   method Data estat;
-    return csr_estat | (timerInt[1] ? 32'h00000800 : 0);
+    return csr_estat;
   endmethod
 
   method Data tcfg;
@@ -179,7 +452,7 @@ module mkCsrFile(CsrFile);
   endmethod
 
   method Data tval;
-    return csr_tval[1];
+    return csr_tval;
   endmethod
 
   method Data dmw0;
@@ -201,7 +474,7 @@ module mkCsrFile(CsrFile);
         `CSR_PRMD: res = csr_prmd;
         `CSR_EUEN: res = csr_euen; 
         `CSR_ECFG: res = csr_ecfg;
-        `CSR_ESTAT: res = csr_estat | (timerInt[1] ? 32'h00000800 : 0); 
+        `CSR_ESTAT: res = csr_estat;
         `CSR_ERA: res = csr_era;
         `CSR_BADV: res = csr_badv; 
         `CSR_EENTRY: res = csr_eentry;
@@ -220,7 +493,7 @@ module mkCsrFile(CsrFile);
         `CSR_SAVE3: res = csr_save3; 
         `CSR_TID: res = csr_tid;
         `CSR_TCFG: res = csr_tcfg; 
-        `CSR_TVAL: res = csr_tval[1];
+        `CSR_TVAL: res = csr_tval;
         `CSR_TICLR: res = 0; 
         `CSR_LLBCTL: res = {29'b0, pack(llbctlKlo), 1'b0, pack(llbit)};
         `CSR_TLBRENTRY: res = csr_tlbrentry; 
@@ -238,278 +511,32 @@ module mkCsrFile(CsrFile);
 
 `ifdef CONFIG_DIFFTEST
   method DiffArchCsrState diffSnapshot;
-    return DiffArchCsrState{
-      crmd: csr_crmd,
-      prmd: csr_prmd,
-      euen: csr_euen,
-      ecfg: csr_ecfg,
-      era: csr_era,
-      badv: csr_badv,
-      eentry: csr_eentry,
-      tlbidx: csr_tlbidx,
-      tlbehi: csr_tlbehi,
-      tlbelo0: csr_tlbelo0,
-      tlbelo1: csr_tlbelo1,
-      asid: csr_asid,
-      pgdl: csr_pgdl,
-      pgdh: csr_pgdh,
-      save0: csr_save0,
-      save1: csr_save1,
-      save2: csr_save2,
-      save3: csr_save3,
-      tid: csr_tid,
-      tcfg: csr_tcfg,
-      tval: csr_tval[1],
-      llbctl: {29'b0, pack(llbctlKlo), 1'b0, pack(llbit)},
-      tlbrentry: csr_tlbrentry,
-      dmw0: csr_dmw0,
-      dmw1: csr_dmw1,
-      estat: csr_estat | (timerInt[1] ? 32'h00000800 : 0)
-    };
+    return diffSnapshotFromFields(csr_crmd, csr_prmd, csr_euen, csr_ecfg, csr_era, csr_badv,
+      csr_eentry, csr_tlbidx, csr_tlbehi, csr_tlbelo0, csr_tlbelo1, csr_asid, csr_pgdl,
+      csr_pgdh, csr_save0, csr_save1, csr_save2, csr_save3, csr_tid, csr_tcfg, csr_tval,
+      llbctlKlo, llbit, csr_tlbrentry, csr_dmw0, csr_dmw1, csr_estat);
   endmethod
 
   method DiffArchCsrState diffSnapshotAfterWrite(Maybe#(CsrIndx) csrIdx, Data val, Bool raiseExcp,
       Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv, Bool isErtn);
-    Data next_crmd = csr_crmd;
-    Data next_prmd = csr_prmd;
-    Data next_euen = csr_euen;
-    Data next_ecfg = csr_ecfg;
-    Data next_era = csr_era;
-    Data next_badv = csr_badv;
-    Data next_eentry = csr_eentry;
-    Data next_tlbidx = csr_tlbidx;
-    Data next_tlbehi = csr_tlbehi;
-    Data next_tlbelo0 = csr_tlbelo0;
-    Data next_tlbelo1 = csr_tlbelo1;
-    Data next_asid = csr_asid;
-    Data next_pgdl = csr_pgdl;
-    Data next_pgdh = csr_pgdh;
-    Data next_save0 = csr_save0;
-    Data next_save1 = csr_save1;
-    Data next_save2 = csr_save2;
-    Data next_save3 = csr_save3;
-    Data next_tid = csr_tid;
-    Data next_tcfg = csr_tcfg;
-    Data next_tval = csr_tval[1];
-    Bool next_timerInt = timerInt[1];
-    Bool next_llbit = llbit;
-    Bool next_llbctlKlo = llbctlKlo;
-    Data next_tlbrentry = csr_tlbrentry;
-    Data next_dmw0 = csr_dmw0;
-    Data next_dmw1 = csr_dmw1;
-    Data next_estat_raw = csr_estat;
-    Bool wrote_tcfg = False;
-    Bool cleared_timer_int = False;
-
-    if (raiseExcp) begin
-      next_crmd[`CSR_CRMD_PLV] = 2'b0;
-      next_crmd[`CSR_CRMD_IE] = 1'b0;
-      if (ecode == `ECODE_TLBR) begin
-        next_crmd[`CSR_CRMD_DA] = 1'b1;
-        next_crmd[`CSR_CRMD_PG] = 1'b0;
-      end
-      next_prmd[`CSR_PRMD_PPLV] = csr_crmd[`CSR_CRMD_PLV];
-      next_prmd[`CSR_PRMD_PIE] = csr_crmd[`CSR_CRMD_IE];
-      next_estat_raw[`CSR_ESTAT_ECODE] = ecode;
-      next_estat_raw[`CSR_ESTAT_ESUBCODE] = esubcode;
-      next_era = pc;
-      if (updateBadvOnException(ecode)) begin
-        next_badv = badv;
-      end
-      if (updateTlbehiOnException(ecode)) begin
-        next_tlbehi[`CSR_TLBEHI_VPPN] = badv[31:13];
-      end
-    end else if (isErtn) begin
-      next_crmd[`CSR_CRMD_PLV] = csr_prmd[`CSR_PRMD_PPLV];
-      next_crmd[`CSR_CRMD_IE] = csr_prmd[`CSR_PRMD_PIE];
-      if (csr_estat[`CSR_ESTAT_ECODE] == `ECODE_TLBR) begin
-        next_crmd[`CSR_CRMD_DA] = 1'b0;
-        next_crmd[`CSR_CRMD_PG] = 1'b1;
-      end
-      if (!next_llbctlKlo) begin
-        next_llbit = False;
-      end
-      next_llbctlKlo = False;
-    end else if (csrIdx matches tagged Valid .idx) begin
-      case (idx)
-        `CSR_CRMD: next_crmd = (val & 32'h000001FF) | (next_crmd & 32'hFFFFFE00);
-        `CSR_PRMD: next_prmd = (val & 32'h00000007) | (next_prmd & 32'hFFFFFFF8);
-        `CSR_EUEN: next_euen = (val & 32'h00000001) | (next_euen & 32'hFFFFFFFE);
-        `CSR_ECFG: next_ecfg = (val & 32'h00001BFF) | (next_ecfg & 32'hFFFFE400);
-        `CSR_ESTAT: next_estat_raw = (val & 32'h00000003) | (next_estat_raw & 32'hFFFFFFFC);
-        `CSR_ERA: next_era = val;
-        `CSR_BADV: next_badv = val;
-        `CSR_EENTRY: next_eentry = (val & 32'hFFFFFFC0) | (next_eentry & 32'h0000003F);
-        `CSR_TLBIDX: next_tlbidx = (val & 32'hBF00001F) | (next_tlbidx & 32'h40FFFFE0);
-        `CSR_TLBEHI: next_tlbehi = (val & 32'hFFFFE000) | (next_tlbehi & 32'h00001FFF);
-        `CSR_TLBEL0: next_tlbelo0 = (val & 32'h0FFFFF7F) | (next_tlbelo0 & 32'hF0000080);
-        `CSR_TLBEL1: next_tlbelo1 = (val & 32'h0FFFFF7F) | (next_tlbelo1 & 32'hF0000080);
-        `CSR_ASID: next_asid = (val & 32'h000003FF) | (next_asid & 32'hFFFFFC00);
-        `CSR_PGDL: next_pgdl = (val & 32'hFFFFF000) | (next_pgdl & 32'h00000FFF);
-        `CSR_PGDH: next_pgdh = (val & 32'hFFFFF000) | (next_pgdh & 32'h00000FFF);
-        `CSR_SAVE0: next_save0 = val;
-        `CSR_SAVE1: next_save1 = val;
-        `CSR_SAVE2: next_save2 = val;
-        `CSR_SAVE3: next_save3 = val;
-        `CSR_TID: next_tid = val;
-        `CSR_TCFG: begin
-          next_tcfg = val;
-          next_tval = {val[`CSR_TCFG_INITV], 2'b0};
-          wrote_tcfg = True;
-          if (val[`CSR_TCFG_EN] == 1 && val[`CSR_TCFG_INITV] == 0) begin
-            next_timerInt = True;
-          end
-        end
-        `CSR_TICLR: begin
-          if (val[`CSR_TICLR_CLR] == 1) begin
-            next_timerInt = False;
-            cleared_timer_int = True;
-          end
-        end
-        `CSR_LLBCTL: begin
-          if (val[1] == 1) next_llbit = False;
-          next_llbctlKlo = unpack(val[2]);
-        end
-        `CSR_TLBRENTRY: next_tlbrentry = (val & 32'hFFFFFFC0) | (next_tlbrentry & 32'h0000003F);
-        `CSR_DMW0: next_dmw0 = (val & 32'hEE000039) | (next_dmw0 & 32'h11FFFFC6);
-        `CSR_DMW1: next_dmw1 = (val & 32'hEE000039) | (next_dmw1 & 32'h11FFFFC6);
-        default: begin end
-      endcase
-    end
-
-    if (!raiseExcp && !wrote_tcfg && !cleared_timer_int && next_tcfg[`CSR_TCFG_EN] == 1) begin
-      if (next_tval != 0) begin
-        let tval_next = next_tval - 1;
-        if (tval_next == 0) begin
-          next_timerInt = True;
-          if (next_tcfg[`CSR_TCFG_PERIOD] == 1)
-            next_tval = {next_tcfg[`CSR_TCFG_INITV], 2'b0};
-          else
-            next_tval = 0;
-        end else begin
-          next_tval = tval_next;
-        end
-      end
-    end
-
-    return DiffArchCsrState{
-      crmd: next_crmd,
-      prmd: next_prmd,
-      euen: next_euen,
-      ecfg: next_ecfg,
-      era: next_era,
-      badv: next_badv,
-      eentry: next_eentry,
-      tlbidx: next_tlbidx,
-      tlbehi: next_tlbehi,
-      tlbelo0: next_tlbelo0,
-      tlbelo1: next_tlbelo1,
-      asid: next_asid,
-      pgdl: next_pgdl,
-      pgdh: next_pgdh,
-      save0: next_save0,
-      save1: next_save1,
-      save2: next_save2,
-      save3: next_save3,
-      tid: next_tid,
-      tcfg: next_tcfg,
-      tval: next_tval,
-      llbctl: {29'b0, pack(next_llbctlKlo), 1'b0, pack(next_llbit)},
-      tlbrentry: next_tlbrentry,
-      dmw0: next_dmw0,
-      dmw1: next_dmw1,
-      estat: next_estat_raw | (next_timerInt ? 32'h00000800 : 0)
-    };
+    let curr = diffSnapshotFromFields(csr_crmd, csr_prmd, csr_euen, csr_ecfg, csr_era, csr_badv,
+      csr_eentry, csr_tlbidx, csr_tlbehi, csr_tlbelo0, csr_tlbelo1, csr_asid, csr_pgdl,
+      csr_pgdh, csr_save0, csr_save1, csr_save2, csr_save3, csr_tid, csr_tcfg, csr_tval,
+      llbctlKlo, llbit, csr_tlbrentry, csr_dmw0, csr_dmw1, csr_estat);
+    return diffSnapshotAfterWriteFromState(curr, csrIdx, val, raiseExcp, ecode, esubcode, pc,
+      badv, isErtn);
   endmethod
 
   method DiffArchCsrState diffSnapshotAfterTlbrd(Bool ne, Bit#(6) ps, Data ehi, Data elo0, Data elo1, Data asidVal);
-    Data next_crmd = csr_crmd;
-    Data next_prmd = csr_prmd;
-    Data next_euen = csr_euen;
-    Data next_ecfg = csr_ecfg;
-    Data next_era = csr_era;
-    Data next_badv = csr_badv;
-    Data next_eentry = csr_eentry;
-    Data next_tlbidx = zeroExtend(csr_tlbidx[`CSR_TLBIDX_INDEX]);
-    Data next_tlbehi = 0;
-    Data next_tlbelo0 = 0;
-    Data next_tlbelo1 = 0;
-    Data next_asid = csr_asid;
-    Data next_pgdl = csr_pgdl;
-    Data next_pgdh = csr_pgdh;
-    Data next_save0 = csr_save0;
-    Data next_save1 = csr_save1;
-    Data next_save2 = csr_save2;
-    Data next_save3 = csr_save3;
-    Data next_tid = csr_tid;
-    Data next_tcfg = csr_tcfg;
-    Data next_tval = csr_tval[1];
-    Bool next_timerInt = timerInt[1];
-    Data next_tlbrentry = csr_tlbrentry;
-    Data next_dmw0 = csr_dmw0;
-    Data next_dmw1 = csr_dmw1;
-    Data next_estat_raw = csr_estat;
-
-    if (ne) begin
-      next_tlbidx[31] = 1'b1;
-      next_asid = next_asid & 32'hFFFFFC00;
-    end else begin
-      next_tlbidx[29:24] = ps;
-      next_tlbehi = ehi;
-      next_tlbelo0 = elo0;
-      next_tlbelo1 = elo1;
-      next_asid = (next_asid & 32'hFFFFFC00) | (asidVal & 32'h000003FF);
-    end
-
-    if (next_tcfg[`CSR_TCFG_EN] == 1) begin
-      if (next_tval != 0) begin
-        let tval_next = next_tval - 1;
-        if (tval_next == 0) begin
-          next_timerInt = True;
-          if (next_tcfg[`CSR_TCFG_PERIOD] == 1)
-            next_tval = {next_tcfg[`CSR_TCFG_INITV], 2'b0};
-          else
-            next_tval = 0;
-        end else begin
-          next_tval = tval_next;
-        end
-      end
-    end
-
-    return DiffArchCsrState{
-      crmd: next_crmd,
-      prmd: next_prmd,
-      euen: next_euen,
-      ecfg: next_ecfg,
-      era: next_era,
-      badv: next_badv,
-      eentry: next_eentry,
-      tlbidx: next_tlbidx,
-      tlbehi: next_tlbehi,
-      tlbelo0: next_tlbelo0,
-      tlbelo1: next_tlbelo1,
-      asid: next_asid,
-      pgdl: next_pgdl,
-      pgdh: next_pgdh,
-      save0: next_save0,
-      save1: next_save1,
-      save2: next_save2,
-      save3: next_save3,
-      tid: next_tid,
-      tcfg: next_tcfg,
-      tval: next_tval,
-      llbctl: {29'b0, pack(llbctlKlo), 1'b0, pack(llbit)},
-      tlbrentry: next_tlbrentry,
-      dmw0: next_dmw0,
-      dmw1: next_dmw1,
-      estat: next_estat_raw | (next_timerInt ? 32'h00000800 : 0)
-    };
+    let curr = diffSnapshotFromFields(csr_crmd, csr_prmd, csr_euen, csr_ecfg, csr_era, csr_badv,
+      csr_eentry, csr_tlbidx, csr_tlbehi, csr_tlbelo0, csr_tlbelo1, csr_asid, csr_pgdl,
+      csr_pgdh, csr_save0, csr_save1, csr_save2, csr_save3, csr_tid, csr_tcfg, csr_tval,
+      llbctlKlo, llbit, csr_tlbrentry, csr_dmw0, csr_dmw1, csr_estat);
+    return diffSnapshotAfterTlbrdFromState(curr, ne, ps, ehi, elo0, elo1, asidVal);
   endmethod
 `endif
 
   method Action wr(Maybe#(CsrIndx) csrIdx, Data val);
-    Bool wrote_tcfg = False;
-    Bool cleared_timer_int = False;
     if (csrIdx matches tagged Valid .idx) begin
       case (idx)
         `CSR_CRMD: csr_crmd <= (val & 32'h000001FF) | (csr_crmd   &
@@ -562,18 +589,11 @@ module mkCsrFile(CsrFile);
 
         `CSR_TCFG: begin
           csr_tcfg <= val;
-          csr_tval[1] <= {val[`CSR_TCFG_INITV], 2'b0};
-          wrote_tcfg = True;
-          if (val[`CSR_TCFG_EN] == 1 && val[`CSR_TCFG_INITV] == 0) begin
-            timerInt[1] <= True;
-          end
+          wrote_tcfg <= True;
         end
 
         `CSR_TICLR: begin
-          if (val[`CSR_TICLR_CLR] == 1) begin
-            timerInt[1] <= False;
-            cleared_timer_int = True;
-          end
+          csr_estat[`CSR_ESTAT_IS_3] <= 1'b0;
         end
 
         `CSR_LLBCTL: begin
@@ -592,7 +612,6 @@ module mkCsrFile(CsrFile);
           32'h11FFFFC6);
         endcase
       end
-      retireBookkeeping(wrote_tcfg, cleared_timer_int);
     endmethod
 
     method Data tlbehi;
@@ -629,7 +648,6 @@ module mkCsrFile(CsrFile);
 
     method Action applyTlbsrchResult(Data res);
       csr_tlbidx <= (res & 32'hBF00001F) | (csr_tlbidx & 32'h40FFFFE0);
-      retireBookkeeping(False, False);
     endmethod
 
     method Action applyTlbrdResult(Bool ne, Bit#(6) ps, Data ehi, Data elo0,
@@ -649,26 +667,23 @@ module mkCsrFile(CsrFile);
         csr_asid <= (csr_asid & 32'hFFFFFC00) | (asidVal & 32'h000003FF);
       end
       csr_tlbidx <= next_tlbidx;
-      retireBookkeeping(False, False);
-    endmethod
-
-    method Action commitTlbOp;
-      retireBookkeeping(False, False);
     endmethod
 
     method ActionValue#(Addr) raiseException(Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv);
-      Data curCrmd = csr_crmd;
-      Data nextCrmd = curCrmd;
+      Data nextCrmd   = csr_crmd;
+      Bit#(2) currPlv = csr_crmd[`CSR_CRMD_PLV];
+      Bit#(1) currIe  = csr_crmd[`CSR_CRMD_IE];
       nextCrmd[`CSR_CRMD_PLV] = 2'b0;
       nextCrmd[`CSR_CRMD_IE] = 1'b0;
+      // TLB 重填异常切换到直接地址翻译模式
       if (ecode == `ECODE_TLBR) begin
         nextCrmd[`CSR_CRMD_DA] = 1'b1;
         nextCrmd[`CSR_CRMD_PG] = 1'b0;
       end
 
       Data nextPrmd = csr_prmd;
-      nextPrmd[`CSR_PRMD_PPLV] = curCrmd[`CSR_CRMD_PLV];
-      nextPrmd[`CSR_PRMD_PIE] = curCrmd[`CSR_CRMD_IE];
+      nextPrmd[`CSR_PRMD_PPLV] = currPlv;
+      nextPrmd[`CSR_PRMD_PIE] = currIe;
 
       Data nextEstat = csr_estat;
       nextEstat[`CSR_ESTAT_ECODE] = ecode;
@@ -700,7 +715,6 @@ module mkCsrFile(CsrFile);
       end
       llbctlKlo <= False;
       csr_crmd <= nextCrmd;
-      retireBookkeeping(False, False);
       return csr_era;
     endmethod
 

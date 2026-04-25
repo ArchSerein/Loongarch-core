@@ -13,16 +13,13 @@ from pathlib import Path
 
 
 DIFF_PORTS = [
-    "EN_diffTrace",
-    "diffTrace",
-    "diffTraceValid",
-    "diffCommitBundle",
-    "diffRegsBundle",
-    "diffCsrBundle",
-    "diffExcpBundle",
-    "diffStoreBundle",
-    "diffLoadBundle",
-    "EN_diffTraceDeq",
+    "diffStepValid",
+    "liveDiffCommitBundle",
+    "liveDiffRegsBundle",
+    "liveDiffCsrBundle",
+    "liveDiffExcpBundle",
+    "liveDiffStoreBundle",
+    "liveDiffLoadBundle",
 ]
 
 
@@ -46,170 +43,122 @@ def render_wrapper(enable_difftest: bool) -> str:
 
     if enable_difftest:
         diff_decl = """
-  wire [2463:0] diffTraceUnused;
-  wire          diffTraceReadyUnused;
-  wire          diffTraceValid;
-  wire          diffTraceValidReadyUnused;
-  wire [141:0]  diffCommitBundle;
-  wire          diffCommitBundleReadyUnused;
-  wire [1023:0] diffRegsBundle;
-  wire          diffRegsBundleReadyUnused;
-  wire [831:0]  diffCsrBundle;
-  wire          diffCsrBundleReadyUnused;
-  wire [129:0]  diffExcpBundle;
-  wire          diffExcpBundleReadyUnused;
-  wire [199:0]  diffStoreBundle;
-  wire          diffStoreBundleReadyUnused;
-  wire [135:0]  diffLoadBundle;
-  wire          diffLoadBundleReadyUnused;
-  wire          diffTraceDeq;
-  wire          diffTraceDeqReadyUnused;
+  wire          diffStepValid;
+  wire [141:0]  liveDiffCommitBundle;
+  wire [1023:0] liveDiffRegsBundle;
+  wire [831:0]  liveDiffCsrBundle;
+  wire [129:0]  liveDiffExcpBundle;
+  wire [199:0]  liveDiffStoreBundle;
+  wire [135:0]  liveDiffLoadBundle;
 """
         diff_conn_ports = [
-            ".EN_diffTrace        (1'b0)",
-            ".diffTrace           (diffTraceUnused)",
-            ".RDY_diffTrace       (diffTraceReadyUnused)",
-            ".diffTraceValid      (diffTraceValid)",
-            ".RDY_diffTraceValid  (diffTraceValidReadyUnused)",
-            ".diffCommitBundle    (diffCommitBundle)",
-            ".RDY_diffCommitBundle(diffCommitBundleReadyUnused)",
-            ".diffRegsBundle      (diffRegsBundle)",
-            ".RDY_diffRegsBundle  (diffRegsBundleReadyUnused)",
-            ".diffCsrBundle       (diffCsrBundle)",
-            ".RDY_diffCsrBundle   (diffCsrBundleReadyUnused)",
-            ".diffExcpBundle      (diffExcpBundle)",
-            ".RDY_diffExcpBundle  (diffExcpBundleReadyUnused)",
-            ".diffStoreBundle     (diffStoreBundle)",
-            ".RDY_diffStoreBundle (diffStoreBundleReadyUnused)",
-            ".diffLoadBundle      (diffLoadBundle)",
-            ".RDY_diffLoadBundle  (diffLoadBundleReadyUnused)",
-            ".EN_diffTraceDeq     (diffTraceDeq)",
-            ".RDY_diffTraceDeq    (diffTraceDeqReadyUnused)",
+            ".diffStepValid       (diffStepValid)",
+            ".liveDiffCommitBundle(liveDiffCommitBundle)",
+            ".liveDiffRegsBundle  (liveDiffRegsBundle)",
+            ".liveDiffCsrBundle   (liveDiffCsrBundle)",
+            ".liveDiffExcpBundle  (liveDiffExcpBundle)",
+            ".liveDiffStoreBundle (liveDiffStoreBundle)",
+            ".liveDiffLoadBundle  (liveDiffLoadBundle)",
         ]
         diff_logic = """
 `ifdef DIFFTEST_EN
   reg  [63:0] cycleCnt;
   reg  [63:0] instrCnt;
-  reg         diffStepValid_r;
-  reg  [141:0]  diffCommitBundle_r;
-  reg  [1023:0] diffRegsBundle_r;
-  reg  [831:0]  diffCsrBundle_r;
-  reg  [129:0]  diffExcpBundle_r;
-  reg  [199:0]  diffStoreBundle_r;
-  reg  [135:0]  diffLoadBundle_r;
-
-  wire         cmt_valid       = diffStepValid_r && diffCommitBundle_r[141];
-  wire [31:0]  cmt_pc          = diffCommitBundle_r[140:109];
-  wire [31:0]  cmt_next_pc     = diffCommitBundle_r[108:77];
-  wire [31:0]  cmt_inst        = diffCommitBundle_r[76:45];
-  wire         cmt_wen         = diffCommitBundle_r[44];
-  wire [4:0]   cmt_wdest_raw   = diffCommitBundle_r[43:39];
-  wire [31:0]  cmt_wdata       = diffCommitBundle_r[38:7];
-  wire         cmt_skip        = diffCommitBundle_r[6];
-  wire         cmt_tlbfill_en  = diffCommitBundle_r[5];
-  wire [4:0]   cmt_rand_index  = diffCommitBundle_r[4:0];
+  wire         cmt_valid       = diffStepValid && liveDiffCommitBundle[141];
+  wire [31:0]  cmt_pc          = liveDiffCommitBundle[140:109];
+  wire [31:0]  cmt_next_pc     = liveDiffCommitBundle[108:77];
+  wire [31:0]  cmt_inst        = liveDiffCommitBundle[76:45];
+  wire         cmt_wen         = liveDiffCommitBundle[44];
+  wire [4:0]   cmt_wdest_raw   = liveDiffCommitBundle[43:39];
+  wire [31:0]  cmt_wdata       = liveDiffCommitBundle[38:7];
+  wire         cmt_skip        = liveDiffCommitBundle[6];
+  wire         cmt_tlbfill_en  = liveDiffCommitBundle[5];
+  wire [4:0]   cmt_rand_index  = liveDiffCommitBundle[4:0];
   wire [7:0]   cmt_wdest       = {3'b0, cmt_wdest_raw};
 
-  wire         excp_valid      = diffStepValid_r && diffExcpBundle_r[129];
-  wire         excp_eret       = diffExcpBundle_r[128];
-  wire [31:0]  excp_intr       = diffExcpBundle_r[127:96];
-  wire [31:0]  excp_cause      = diffExcpBundle_r[95:64];
-  wire [31:0]  excp_pc         = diffExcpBundle_r[63:32];
-  wire [31:0]  excp_inst       = diffExcpBundle_r[31:0];
+  wire         excp_valid      = diffStepValid && liveDiffExcpBundle[129];
+  wire         excp_eret       = liveDiffExcpBundle[128];
+  wire [31:0]  excp_intr       = liveDiffExcpBundle[127:96];
+  wire [31:0]  excp_cause      = liveDiffExcpBundle[95:64];
+  wire [31:0]  excp_pc         = liveDiffExcpBundle[63:32];
+  wire [31:0]  excp_inst       = liveDiffExcpBundle[31:0];
 
-  wire [7:0]   store_valid     = diffStepValid_r ? diffStoreBundle_r[199:192] : 8'b0;
-  wire [63:0]  store_paddr     = diffStoreBundle_r[191:128];
-  wire [63:0]  store_vaddr     = diffStoreBundle_r[127:64];
-  wire [63:0]  store_data      = diffStoreBundle_r[63:0];
+  wire [7:0]   store_valid     = diffStepValid ? liveDiffStoreBundle[199:192] : 8'b0;
+  wire [63:0]  store_paddr     = liveDiffStoreBundle[191:128];
+  wire [63:0]  store_vaddr     = liveDiffStoreBundle[127:64];
+  wire [63:0]  store_data      = liveDiffStoreBundle[63:0];
 
-  wire [7:0]   load_valid      = diffStepValid_r ? diffLoadBundle_r[135:128] : 8'b0;
-  wire [63:0]  load_paddr      = diffLoadBundle_r[127:64];
-  wire [63:0]  load_vaddr      = diffLoadBundle_r[63:0];
+  wire [7:0]   load_valid      = diffStepValid ? liveDiffLoadBundle[135:128] : 8'b0;
+  wire [63:0]  load_paddr      = liveDiffLoadBundle[127:64];
+  wire [63:0]  load_vaddr      = liveDiffLoadBundle[63:0];
 
-  wire [31:0] csr_crmd         = diffCsrBundle_r[831:800];
-  wire [31:0] csr_prmd         = diffCsrBundle_r[799:768];
-  wire [31:0] csr_euen         = diffCsrBundle_r[767:736];
-  wire [31:0] csr_ecfg         = diffCsrBundle_r[735:704];
-  wire [31:0] csr_era          = diffCsrBundle_r[703:672];
-  wire [31:0] csr_badv         = diffCsrBundle_r[671:640];
-  wire [31:0] csr_eentry       = diffCsrBundle_r[639:608];
-  wire [31:0] csr_tlbidx       = diffCsrBundle_r[607:576];
-  wire [31:0] csr_tlbehi       = diffCsrBundle_r[575:544];
-  wire [31:0] csr_tlbelo0      = diffCsrBundle_r[543:512];
-  wire [31:0] csr_tlbelo1      = diffCsrBundle_r[511:480];
-  wire [31:0] csr_asid         = diffCsrBundle_r[479:448];
-  wire [31:0] csr_pgdl         = diffCsrBundle_r[447:416];
-  wire [31:0] csr_pgdh         = diffCsrBundle_r[415:384];
-  wire [31:0] csr_save0        = diffCsrBundle_r[383:352];
-  wire [31:0] csr_save1        = diffCsrBundle_r[351:320];
-  wire [31:0] csr_save2        = diffCsrBundle_r[319:288];
-  wire [31:0] csr_save3        = diffCsrBundle_r[287:256];
-  wire [31:0] csr_tid          = diffCsrBundle_r[255:224];
-  wire [31:0] csr_tcfg         = diffCsrBundle_r[223:192];
-  wire [31:0] csr_tval         = diffCsrBundle_r[191:160];
-  wire [31:0] csr_llbctl       = diffCsrBundle_r[159:128];
-  wire [31:0] csr_tlbrentry    = diffCsrBundle_r[127:96];
-  wire [31:0] csr_dmw0         = diffCsrBundle_r[95:64];
-  wire [31:0] csr_dmw1         = diffCsrBundle_r[63:32];
-  wire [31:0] csr_estat        = diffCsrBundle_r[31:0];
+  wire [31:0] csr_crmd         = liveDiffCsrBundle[831:800];
+  wire [31:0] csr_prmd         = liveDiffCsrBundle[799:768];
+  wire [31:0] csr_euen         = liveDiffCsrBundle[767:736];
+  wire [31:0] csr_ecfg         = liveDiffCsrBundle[735:704];
+  wire [31:0] csr_era          = liveDiffCsrBundle[703:672];
+  wire [31:0] csr_badv         = liveDiffCsrBundle[671:640];
+  wire [31:0] csr_eentry       = liveDiffCsrBundle[639:608];
+  wire [31:0] csr_tlbidx       = liveDiffCsrBundle[607:576];
+  wire [31:0] csr_tlbehi       = liveDiffCsrBundle[575:544];
+  wire [31:0] csr_tlbelo0      = liveDiffCsrBundle[543:512];
+  wire [31:0] csr_tlbelo1      = liveDiffCsrBundle[511:480];
+  wire [31:0] csr_asid         = liveDiffCsrBundle[479:448];
+  wire [31:0] csr_pgdl         = liveDiffCsrBundle[447:416];
+  wire [31:0] csr_pgdh         = liveDiffCsrBundle[415:384];
+  wire [31:0] csr_save0        = liveDiffCsrBundle[383:352];
+  wire [31:0] csr_save1        = liveDiffCsrBundle[351:320];
+  wire [31:0] csr_save2        = liveDiffCsrBundle[319:288];
+  wire [31:0] csr_save3        = liveDiffCsrBundle[287:256];
+  wire [31:0] csr_tid          = liveDiffCsrBundle[255:224];
+  wire [31:0] csr_tcfg         = liveDiffCsrBundle[223:192];
+  wire [31:0] csr_tval         = liveDiffCsrBundle[191:160];
+  wire [31:0] csr_llbctl       = liveDiffCsrBundle[159:128];
+  wire [31:0] csr_tlbrentry    = liveDiffCsrBundle[127:96];
+  wire [31:0] csr_dmw0         = liveDiffCsrBundle[95:64];
+  wire [31:0] csr_dmw1         = liveDiffCsrBundle[63:32];
+  wire [31:0] csr_estat        = liveDiffCsrBundle[31:0];
 
   wire [31:0] gpr [0:31];
-  assign gpr[0]  = diffRegsBundle_r[1023:992];
-  assign gpr[1]  = diffRegsBundle_r[991:960];
-  assign gpr[2]  = diffRegsBundle_r[959:928];
-  assign gpr[3]  = diffRegsBundle_r[927:896];
-  assign gpr[4]  = diffRegsBundle_r[895:864];
-  assign gpr[5]  = diffRegsBundle_r[863:832];
-  assign gpr[6]  = diffRegsBundle_r[831:800];
-  assign gpr[7]  = diffRegsBundle_r[799:768];
-  assign gpr[8]  = diffRegsBundle_r[767:736];
-  assign gpr[9]  = diffRegsBundle_r[735:704];
-  assign gpr[10] = diffRegsBundle_r[703:672];
-  assign gpr[11] = diffRegsBundle_r[671:640];
-  assign gpr[12] = diffRegsBundle_r[639:608];
-  assign gpr[13] = diffRegsBundle_r[607:576];
-  assign gpr[14] = diffRegsBundle_r[575:544];
-  assign gpr[15] = diffRegsBundle_r[543:512];
-  assign gpr[16] = diffRegsBundle_r[511:480];
-  assign gpr[17] = diffRegsBundle_r[479:448];
-  assign gpr[18] = diffRegsBundle_r[447:416];
-  assign gpr[19] = diffRegsBundle_r[415:384];
-  assign gpr[20] = diffRegsBundle_r[383:352];
-  assign gpr[21] = diffRegsBundle_r[351:320];
-  assign gpr[22] = diffRegsBundle_r[319:288];
-  assign gpr[23] = diffRegsBundle_r[287:256];
-  assign gpr[24] = diffRegsBundle_r[255:224];
-  assign gpr[25] = diffRegsBundle_r[223:192];
-  assign gpr[26] = diffRegsBundle_r[191:160];
-  assign gpr[27] = diffRegsBundle_r[159:128];
-  assign gpr[28] = diffRegsBundle_r[127:96];
-  assign gpr[29] = diffRegsBundle_r[95:64];
-  assign gpr[30] = diffRegsBundle_r[63:32];
-  assign gpr[31] = diffRegsBundle_r[31:0];
-  assign diffTraceDeq = diffTraceValid;
+  assign gpr[0]  = liveDiffRegsBundle[1023:992];
+  assign gpr[1]  = liveDiffRegsBundle[991:960];
+  assign gpr[2]  = liveDiffRegsBundle[959:928];
+  assign gpr[3]  = liveDiffRegsBundle[927:896];
+  assign gpr[4]  = liveDiffRegsBundle[895:864];
+  assign gpr[5]  = liveDiffRegsBundle[863:832];
+  assign gpr[6]  = liveDiffRegsBundle[831:800];
+  assign gpr[7]  = liveDiffRegsBundle[799:768];
+  assign gpr[8]  = liveDiffRegsBundle[767:736];
+  assign gpr[9]  = liveDiffRegsBundle[735:704];
+  assign gpr[10] = liveDiffRegsBundle[703:672];
+  assign gpr[11] = liveDiffRegsBundle[671:640];
+  assign gpr[12] = liveDiffRegsBundle[639:608];
+  assign gpr[13] = liveDiffRegsBundle[607:576];
+  assign gpr[14] = liveDiffRegsBundle[575:544];
+  assign gpr[15] = liveDiffRegsBundle[543:512];
+  assign gpr[16] = liveDiffRegsBundle[511:480];
+  assign gpr[17] = liveDiffRegsBundle[479:448];
+  assign gpr[18] = liveDiffRegsBundle[447:416];
+  assign gpr[19] = liveDiffRegsBundle[415:384];
+  assign gpr[20] = liveDiffRegsBundle[383:352];
+  assign gpr[21] = liveDiffRegsBundle[351:320];
+  assign gpr[22] = liveDiffRegsBundle[319:288];
+  assign gpr[23] = liveDiffRegsBundle[287:256];
+  assign gpr[24] = liveDiffRegsBundle[255:224];
+  assign gpr[25] = liveDiffRegsBundle[223:192];
+  assign gpr[26] = liveDiffRegsBundle[191:160];
+  assign gpr[27] = liveDiffRegsBundle[159:128];
+  assign gpr[28] = liveDiffRegsBundle[127:96];
+  assign gpr[29] = liveDiffRegsBundle[95:64];
+  assign gpr[30] = liveDiffRegsBundle[63:32];
+  assign gpr[31] = liveDiffRegsBundle[31:0];
 
   always @(posedge aclk) begin
     if (reset) begin
       cycleCnt <= 64'b0;
       instrCnt <= 64'b0;
-      diffStepValid_r <= 1'b0;
-      diffCommitBundle_r <= 142'b0;
-      diffRegsBundle_r <= 1024'b0;
-      diffCsrBundle_r <= 832'b0;
-      diffExcpBundle_r <= 130'b0;
-      diffStoreBundle_r <= 200'b0;
-      diffLoadBundle_r <= 136'b0;
     end else begin
       cycleCnt <= cycleCnt + 64'b1;
-      diffStepValid_r <= diffTraceValid;
-      if (diffTraceValid) begin
-        diffCommitBundle_r <= diffCommitBundle;
-        diffRegsBundle_r <= diffRegsBundle;
-        diffCsrBundle_r <= diffCsrBundle;
-        diffExcpBundle_r <= diffExcpBundle;
-        diffStoreBundle_r <= diffStoreBundle;
-        diffLoadBundle_r <= diffLoadBundle;
-      end
       if (cmt_valid) begin
         instrCnt <= instrCnt + 64'b1;
       end
