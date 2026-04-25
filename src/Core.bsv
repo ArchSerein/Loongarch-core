@@ -64,6 +64,24 @@ interface Core;
   method Bit#(136) liveDiffLoadBundle;
 `endif
   interface AxiMemMaster axiMem;
+`ifdef CONFIG_VSIM
+  (* always_ready, always_enabled *)
+  method Action debugInput(Bool breakPoint, Bool inforFlag, RIndx regNum);
+  (* always_ready *)
+  method Bool wsValid;
+  (* always_ready *)
+  method Data rfRdata;
+  (* always_ready *)
+  method Addr debug0WbPc;
+  (* always_ready *)
+  method Bit#(4) debug0WbRfWen;
+  (* always_ready *)
+  method RIndx debug0WbRfWnum;
+  (* always_ready *)
+  method Data debug0WbRfWdata;
+  (* always_ready *)
+  method Instruction debug0WbInst;
+`endif
 endinterface
 
 (* synthesize *)
