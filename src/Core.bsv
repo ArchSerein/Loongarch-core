@@ -424,7 +424,7 @@ module mkCore(Core);
           dTrans.esubcode = `ESUBCODE_ADEM;
         end
         memPaddr = dTrans.pa;
-        memUseCache = matUseCache(dTrans.mat);
+        memUseCache = matUseCache(transType, dTrans.mat, crmd, accessType);
         if (dTrans.excValid) begin
           eExcp = mkExcp(dTrans.ecode, dTrans.esubcode, dTrans.badv);
         end

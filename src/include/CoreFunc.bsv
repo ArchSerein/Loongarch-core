@@ -29,8 +29,15 @@ function MatType getDataMatType(Data crmd);
   return unpack(crmd[`CSR_CRMD_DATM]);
 endfunction
 
-function Bool matUseCache(MatType mat);
-  return mat == Cc;
+function Bool matUseCache(MmuTranslateType transType, MatType mat, Data crmd,
+                          MmuAccessType accessType);
+  if (accessType == MmuFetch) begin
+    if (transType == Direct) return getFetchMatType(crmd) == Cc;
+    else return mat == Cc;
+  end else begin
+    if (transType == Direct) return getDataMatType(crmd) == Cc;
+    else return mat == Cc;
+  end
 endfunction
 
 function Data coreApplyByteMask(Data oldData, Data newData, Bit#(WordSz) byteEn);

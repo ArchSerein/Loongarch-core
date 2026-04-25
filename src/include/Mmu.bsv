@@ -3,23 +3,6 @@ import Tlb::*;
 import CoreTypes::*;
 `include "CsrAddr.bsv"
 
-typedef enum {
-  MmuFetch,
-  MmuLoad,
-  MmuStore
-} MmuAccessType deriving(Bits, Eq);
-
-typedef struct {
-  Addr    pa;
-  MatType mat;
-  Bool    fromDmw;
-  Bool    fromTlb;
-  Bool    excValid;
-  Bit#(6) ecode;
-  Bit#(9) esubcode;
-  Addr    badv;
-} MmuResult deriving(Bits, Eq);
-
 function Bool mmuIsFetch(MmuAccessType t);
   return t == MmuFetch;
 endfunction

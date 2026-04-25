@@ -133,4 +133,21 @@ typedef struct {
   ExcpInfo    excp;
 } FetchResult deriving(Bits, Eq);
 
+typedef enum {
+  MmuFetch,
+  MmuLoad,
+  MmuStore
+} MmuAccessType deriving(Bits, Eq);
+
+typedef struct {
+  Addr    pa;
+  MatType mat;
+  Bool    fromDmw;
+  Bool    fromTlb;
+  Bool    excValid;
+  Bit#(6) ecode;
+  Bit#(9) esubcode;
+  Addr    badv;
+} MmuResult deriving(Bits, Eq);
+
 Addr startpc = 32'h1c000000;
