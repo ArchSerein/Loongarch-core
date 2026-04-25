@@ -433,6 +433,9 @@ module mkCore(Core);
       r2eFifo.deq();
       e2mFifo.enq(E2M{
         pc: rrfPkt.pc,
+`ifdef CONFIG_DIFFTEST
+        inst: rrfPkt.inst,
+`endif
         excp: eExcp,
         mask: rrfPkt.rInst.mask,
         memPaddr: memPaddr,
@@ -617,18 +620,29 @@ module mkCore(Core);
         end
 
         `ifdef CONFIG_DIFFTEST
-        // diffMemInfo
-        // TODO:
-        Maybe#(DiffMemOp) diffMemInfo = tagged valid {};
+        Maybe#(DiffMemOp) diffMemInfo = tagged Invalid;
+        if (canIssueMem && (isLoad || isStore || isSc)) begin
+          diffMemInfo = tagged Valid DiffMemOp{
+            isLoad: isLoad,
+            isStore: isStore || isSc,
+            isSc: isSc,
+            paddr: execPkt.memPaddr,
+            vaddr: eInst.addr,
+            storeData: storeWData
+          };
+        end
         `endif
         m2wFifo.enq(M2W{
           pc: execPkt.pc,
+`ifdef CONFIG_DIFFTEST
+          inst: execPkt.inst,
+`endif
           excp: memExcp,
           memPaddr: execPkt.memPaddr,
           isNeedFlush: execPkt.isNeedFlush,
           mInst: tagged Valid eInst
 `ifdef CONFIG_DIFFTEST
-          , diffMem: diffMemInfo;
+          , diffMem: diffMemInfo
 `endif
         });
       end
@@ -680,6 +694,9 @@ module mkCore(Core);
       e2mFifo.deq();
       m2wFifo.enq(M2W{
         pc: execPkt.pc,
+`ifdef CONFIG_DIFFTEST
+        inst: execPkt.inst,
+`endif
         excp: execPkt.excp,
         memPaddr: execPkt.memPaddr,
         isNeedFlush: execPkt.isNeedFlush,
@@ -767,68 +784,41 @@ module mkCore(Core);
           end
 
           if (!wbFlush && memPkt.isNeedFlush) begin
-            pcReg[3] <= memPkt.pc + 4;
+            pcReg[2] <= memPkt.pc + 4;
             wbFlush = True;
           end
         end
 
-        if (!wbFlush) begin
-          wbRetire = True;
 `ifdef CONFIG_DIFFTEST
-          Bool diffCommitErtn = (!wb_has_excp) && (mInst.iType == Ertn);
-          Addr commitNextPc = diffCommitErtn ? ertnTarget : (mInst.mispredict ? mInst.addr : (memPkt.pc + 4));
+        Bool diffCommitErtn = (!wb_has_excp) && (mInst.iType == Ertn);
+        Addr commitNextPc = diffCommitErtn ? ertnTarget : (mInst.mispredict ? mInst.addr : (memPkt.pc + 4));
 
-          Maybe#(RIndx) diffDst = tagged Invalid;
-          Maybe#(CsrIndx) diffCsrIdx = tagged Invalid;
-          Data diffCsrVal = mInst.data;
-          if (wen && isValid(mInst.dst)) begin
-            diffDst = mInst.dst;
+        Maybe#(RIndx) diffDst = tagged Invalid;
+        Maybe#(CsrIndx) diffCsrIdx = tagged Invalid;
+        Data diffCsrVal = mInst.data;
+        if (wen && isValid(mInst.dst)) begin
+          diffDst = mInst.dst;
+        end
+        if (!wb_has_excp) begin
+          if (mInst.iType == Tlbsrch) begin
+            diffCsrIdx = tagged Valid `CSR_TLBIDX;
+            diffCsrVal = csrf.tlbidx;
+          end else if (mInst.iType == Csrw || mInst.iType == Csrxchg) begin
+            diffCsrIdx = mInst.csr;
+            diffCsrVal = mInst.addr;
           end
-          if (!wb_has_excp) begin
-            if (mInst.iType == Tlbsrch) begin
-              diffCsrIdx = tagged Valid `CSR_TLBIDX;
-              diffCsrVal = csrf.tlbidx;
-            end else if (mInst.iType == Csrw || mInst.iType == Csrxchg) begin
-              diffCsrIdx = mInst.csr;
-              diffCsrVal = mInst.addr;
-            end
-          end
+        end
 
-          DiffStoreEvent storeEvent = DiffStoreEvent{
-            valid: 0,
-            paddr: 0,
-            vaddr: 0,
-            data: 0
-          };
-          DiffLoadEvent loadEvent = DiffLoadEvent{
-            valid: 0,
-            paddr: 0,
-            vaddr: 0
-          };
+        DiffStoreEvent storeEvent = !wb_has_excp ?
+          diffStoreEventOf(memPkt.diffMem, mInst.iType, mInst.mask, mInst.data) :
+          DiffStoreEvent{valid: 0, paddr: 0, vaddr: 0, data: 0};
+        DiffLoadEvent loadEvent = !wb_has_excp ?
+          diffLoadEventOf(memPkt.diffMem, mInst.iType, mInst.mask) :
+          DiffLoadEvent{valid: 0, paddr: 0, vaddr: 0};
 
-          if (!wb_has_excp) begin
-            if (memPkt.diffMem matches tagged Valid .diffMem) begin
-              if (diffMem.isStore && (!diffMem.isSc || mInst.data == scSucc)) begin
-                storeEvent = DiffStoreEvent{
-                  valid: diffStoreCode(mInst.iType, fromMaybe(5'b0, mInst.mask)[3:0], mInst.data == scSucc),
-                  paddr: zeroExtend(diffMem.paddr),
-                  vaddr: zeroExtend(diffMem.vaddr),
-                  data: zeroExtend(diffMem.storeData)
-                };
-              end
-              if (diffMem.isLoad) begin
-                loadEvent = DiffLoadEvent{
-                  valid: diffLoadCode(mInst.iType, mInst.mask),
-                  paddr: zeroExtend(diffMem.paddr),
-                  vaddr: zeroExtend(diffMem.vaddr)
-                };
-              end
-            end
-          end
+        let diffRegsState = rf.diffSnapshotAfterWrite(diffDst, mInst.data);
 
-          let diffRegsState = rf.diffSnapshotAfterWrite(diffDst, mInst.data);
-
-          let diffCsrState =
+        let diffCsrState =
           (mInst.iType == Tlbrd) ?
           csrf.diffSnapshotAfterTlbrd(tlb.readEntry(csrf.tlbReadIndex).ne, tlb.readEntry(csrf.tlbReadIndex).ps, tlb.readEntry(csrf.tlbReadIndex).ehi, tlb.readEntry(csrf.tlbReadIndex).elo0, tlb.readEntry(csrf.tlbReadIndex).elo1, tlb.readEntry(csrf.tlbReadIndex).asid):
           csrf.diffSnapshotAfterWrite(
@@ -842,36 +832,38 @@ module mkCore(Core);
           diffCommitErtn
           );
 
-          let diffCommitState = DiffCommit{
-            valid: !wb_has_excp,
-            pc: memPkt.pc,
-            nextPc: commitNextPc,
-            inst: memPkt.inst,
-            wen: wen,
-            wdest: fromMaybe(0, mInst.dst),
-            wdata: mInst.data,
-            skip: False,
-            isTlbfill: (!wb_has_excp) && (mInst.iType == Tlbfill),
-            tlbfillIndex: wbTlbfillIndex
-          };
-          let diffExcpState = DiffExcpEvent{
-            excpValid: wb_has_excp,
-            eret: (mInst.iType == Ertn),
-            interrupt: mkInterruptNo(csrf.estat),
-            exception: has_int ? 0 : zeroExtend(wbExcp.ecode),
-            exceptionPC: memPkt.pc,
-            exceptionInst: memPkt.inst
-          };
+        let diffCommitState = DiffCommit{
+          valid: !wb_has_excp,
+          pc: memPkt.pc,
+          nextPc: commitNextPc,
+          inst: memPkt.inst,
+          wen: wen,
+          wdest: fromMaybe(0, mInst.dst),
+          wdata: mInst.data,
+          skip: False,
+          isTlbfill: (!wb_has_excp) && (mInst.iType == Tlbfill),
+          tlbfillIndex: wbTlbfillIndex
+        };
+        let diffExcpState = DiffExcpEvent{
+          excpValid: wb_has_excp,
+          eret: (mInst.iType == Ertn),
+          interrupt: mkInterruptNo(csrf.estat),
+          exception: has_int ? 0 : zeroExtend(wbExcp.ecode),
+          exceptionPC: memPkt.pc,
+          exceptionInst: memPkt.inst
+        };
 
-          difftest.enqTrace(DiffTrace{
-            commit: diffCommitState,
-            regs: diffRegsState,
-            csr: diffCsrState,
-            excp: diffExcpState,
-            store: storeEvent,
-            load: loadEvent
-          });
+        difftest.enqTrace(DiffTrace{
+          commit: diffCommitState,
+          regs: diffRegsState,
+          csr: diffCsrState,
+          excp: diffExcpState,
+          store: storeEvent,
+          load: loadEvent
+        });
 `endif
+        if (!wbFlush) begin
+          wbRetire = True;
         end
       end
     end else begin
@@ -896,9 +888,6 @@ module mkCore(Core);
       // reach the retire path that clears these in-flight flags.
       mulInFlight <= False;
       divInFlight <= False;
-`ifdef CONFIG_DIFFTEST
-      difftest.clearLive;
-`endif
     end else if (wbRetire) begin
       if (isValid(memPkt.mInst)) begin
         let retiredType = fromMaybe(?, memPkt.mInst).iType;

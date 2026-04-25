@@ -551,6 +551,9 @@ module mkDCache(DCache);
   endrule
 
   method Action req(MemReq r);
+    `ifdef CONFIG_MTRACE
+      $display("va %x\tpa %x op %x %s", r.addr, r.paddr, r.op, r.useCache ? "True" : "False");
+    `endif
     reqQ.enq(r);
   endmethod
 

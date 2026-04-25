@@ -129,6 +129,50 @@ function Bit#(136) diffLoadBundleOf(DiffLoadEvent l);
   };
 endfunction
 
+function DiffStoreEvent diffStoreEventOf(Maybe#(DiffMemOp) diffMemInfo,
+    IType iType, Maybe#(ByteMask) mask, Data result);
+  DiffStoreEvent ret = DiffStoreEvent{
+    valid: 0,
+    paddr: 0,
+    vaddr: 0,
+    data: 0
+  };
+
+  if (diffMemInfo matches tagged Valid .diffMem) begin
+    if (diffMem.isStore && (!diffMem.isSc || result == scSucc)) begin
+      ret = DiffStoreEvent{
+        valid: diffStoreCode(iType, fromMaybe(5'b0, mask)[3:0], result == scSucc),
+        paddr: zeroExtend(diffMem.paddr),
+        vaddr: zeroExtend(diffMem.vaddr),
+        data: zeroExtend(diffMem.storeData)
+      };
+    end
+  end
+
+  return ret;
+endfunction
+
+function DiffLoadEvent diffLoadEventOf(Maybe#(DiffMemOp) diffMemInfo,
+    IType iType, Maybe#(ByteMask) mask);
+  DiffLoadEvent ret = DiffLoadEvent{
+    valid: 0,
+    paddr: 0,
+    vaddr: 0
+  };
+
+  if (diffMemInfo matches tagged Valid .diffMem) begin
+    if (diffMem.isLoad) begin
+      ret = DiffLoadEvent{
+        valid: diffLoadCode(iType, mask),
+        paddr: zeroExtend(diffMem.paddr),
+        vaddr: zeroExtend(diffMem.vaddr)
+      };
+    end
+  end
+
+  return ret;
+endfunction
+
 module mkDifftest(Difftest);
   Fifo#(2, DiffTrace) diffTraceFifo <- mkCFFifo;
   Reg#(Bool) liveDiffStepValidReg <- mkReg(False);
