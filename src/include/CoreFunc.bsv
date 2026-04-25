@@ -197,3 +197,33 @@ function Data mkInterruptNo(Data estat);
   
   return intNo;
 endfunction
+
+function Bool e2mHasValidInst(E2M pkt);
+  return isValid(pkt.eInst);
+endfunction
+
+function Bool e2mIsTlbsrch(E2M pkt);
+  Bool ret = False;
+  if (pkt.eInst matches tagged Valid .inst) begin
+    ret = inst.iType == Tlbsrch;
+  end
+  return ret;
+endfunction
+
+function Bool e2mNeedsTlbsrchResp(E2M pkt);
+  return e2mIsTlbsrch(pkt) && !pkt.excp.valid;
+endfunction
+
+function Bool e2mMayUseDCache(E2M pkt);
+  Bool ret = False;
+  if (pkt.eInst matches tagged Valid .inst) begin
+    Bool isLoad = (inst.iType == Ld || inst.iType == Ll);
+    Bool isStore = (inst.iType == St);
+    Bool isSc = (inst.iType == Sc);
+    Bool isBarrier = coreIsBarrier(inst.iType);
+    Bool isCacop = (inst.iType == Cacop);
+    Bool cacopNeedsDCache = isCacop && fromMaybe(0, inst.cacheOp)[2:0] != 3'b000;
+    ret = isLoad || isStore || isSc || isBarrier || cacopNeedsDCache;
+  end
+  return ret;
+endfunction

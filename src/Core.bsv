@@ -111,130 +111,126 @@ module mkCore(Core);
   Reg#(Bool)           lrValidReg <- mkReg(False);
   Reg#(Addr)            lrAddrReg <- mkRegU;
 
-  rule doFetch;
-    case (translateFetchState)
-      FTransIdle: begin
-        Addr pc = pcReg[0];
-        Addr btbPc = btb.predPc(pc);
-        Bool bhtPred = bht.predict(pc);
-        Addr predPc = bhtPred ? btbPc: pc + 4;
-        Data crmd = csrf.crmd;
+  rule doFetchIdle (translateFetchState == FTransIdle);
+    Addr pc = pcReg[0];
+    Addr btbPc = btb.predPc(pc);
+    Bool bhtPred = bht.predict(pc);
+    Addr predPc = bhtPred ? btbPc: pc + 4;
+    Data crmd = csrf.crmd;
 
-        fetchReqReg <= FetchTransReq{
-          pc: pc,
-          predPc: predPc,
-          crmd: crmd,
-          asid: csrf.asid,
-          dmw0: csrf.dmw0,
-          dmw1: csrf.dmw1,
-          transType: getMmuTranslateType(crmd),
-          reqId: iCacheReqId
+    fetchReqReg <= FetchTransReq{
+      pc: pc,
+      predPc: predPc,
+      crmd: crmd,
+      asid: csrf.asid,
+      dmw0: csrf.dmw0,
+      dmw1: csrf.dmw1,
+      transType: getMmuTranslateType(crmd),
+      reqId: iCacheReqId
+    };
+    iCacheReqId <= iCacheReqId + 1;
+    pcReg[0] <= predPc;
+    translateFetchState <= FTransProbe;
+  endrule
+
+  rule doFetchProbe (translateFetchState == FTransProbe);
+    let req = fetchReqReg;
+    ICacheProbeResp probeRes = iCache.probe(req.pc);
+    TlbLookupResult tlbRes = tlb.lookupFetch(req.pc, req.asid);
+    MmuResult fTrans = MmuResult{
+      pa: req.pc,
+      mat: getFetchMatType(req.crmd),
+      fromDmw: False,
+      fromTlb: False,
+      excValid: False,
+      ecode: 0,
+      esubcode: 0,
+      badv: req.pc
+    };
+
+    if (req.transType == Translate) begin
+      fTrans = mmuTranslate(req.pc, MmuFetch, req.crmd, req.asid, req.dmw0,
+        req.dmw1, tlbRes);
+    end else if (req.transType == None) begin
+      fTrans.excValid = True;
+      fTrans.ecode = `ECODE_ADE;
+      fTrans.esubcode = `ESUBCODE_ADEF;
+    end
+
+    if (req.pc[1:0] != 2'b00) begin
+      fetchResultReg <= FetchResult{
+        inst: 0,
+        instPaddr: 0,
+        excp: mkExcp(`ECODE_ADE, `ESUBCODE_ADEF, req.pc)
+      };
+      translateFetchState <= FTransDone;
+    end else if (fTrans.excValid) begin
+      fetchResultReg <= FetchResult{
+        inst: 0,
+        instPaddr: 0,
+        excp: mkExcp(fTrans.ecode, fTrans.esubcode, fTrans.badv)
+      };
+      translateFetchState <= FTransDone;
+    end else begin
+      Bool fetchUseCache = matUseCache(req.transType, fTrans.mat, req.crmd,MmuFetch);
+      ICacheTag paTag = getITag(fTrans.pa);
+      Bool hit = False;
+      ICacheWayIdx hitWay = 0;
+      Instruction hitInst = 0;
+
+      for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
+        if (probeRes[w].valid && probeRes[w].tag == paTag) begin
+          hit = True;
+          hitWay = fromInteger(w);
+          hitInst = probeRes[w].inst;
+        end
+      end
+
+      if (fetchUseCache && hit) begin
+        iCache.commitHit(req.pc, hitWay);
+        fetchResultReg <= FetchResult{
+          inst: hitInst,
+          instPaddr: fTrans.pa,
+          excp: mkNoExcp
         };
-        iCacheReqId <= iCacheReqId + 1;
-        pcReg[0] <= predPc;
-        translateFetchState <= FTransProbe;
-      end
-
-      FTransProbe: begin
-        let req = fetchReqReg;
-        ICacheProbeResp probeRes = iCache.probe(req.pc);
-        TlbLookupResult tlbRes = tlb.lookupFetch(req.pc, req.asid);
-        MmuResult fTrans = MmuResult{
-          pa: req.pc,
-          mat: getFetchMatType(req.crmd),
-          fromDmw: False,
-          fromTlb: False,
-          excValid: False,
-          ecode: 0,
-          esubcode: 0,
-          badv: req.pc
-        };
-
-        if (req.transType == Translate) begin
-          fTrans = mmuTranslate(req.pc, MmuFetch, req.crmd, req.asid, req.dmw0,
-            req.dmw1, tlbRes);
-        end else if (req.transType == None) begin
-          fTrans.excValid = True;
-          fTrans.ecode = `ECODE_ADE;
-          fTrans.esubcode = `ESUBCODE_ADEF;
-        end
-
-        if (req.pc[1:0] != 2'b00) begin
-          fetchResultReg <= FetchResult{
-            inst: 0,
-            instPaddr: 0,
-            excp: mkExcp(`ECODE_ADE, `ESUBCODE_ADEF, req.pc)
-          };
-          translateFetchState <= FTransDone;
-        end else if (fTrans.excValid) begin
-          fetchResultReg <= FetchResult{
-            inst: 0,
-            instPaddr: 0,
-            excp: mkExcp(fTrans.ecode, fTrans.esubcode, fTrans.badv)
-          };
-          translateFetchState <= FTransDone;
-        end else begin
-          Bool fetchUseCache = matUseCache(fTrans.mat);
-          ICacheTag paTag = getITag(fTrans.pa);
-          Bool hit = False;
-          ICacheWayIdx hitWay = 0;
-          Instruction hitInst = 0;
-
-          for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
-            if (probeRes[w].valid && probeRes[w].tag == paTag) begin
-              hit = True;
-              hitWay = fromInteger(w);
-              hitInst = probeRes[w].inst;
-            end
-          end
-
-          if (fetchUseCache && hit) begin
-            iCache.commitHit(req.pc, hitWay);
-            fetchResultReg <= FetchResult{
-              inst: hitInst,
-              instPaddr: fTrans.pa,
-              excp: mkNoExcp
-            };
-            translateFetchState <= FTransDone;
-          end else begin
-            iCache.refillReq(fTrans.pa, fetchUseCache);
-            fetchMissReg <= FetchMissCtx{
-              pc: req.pc,
-              predPc: req.predPc,
-              instPaddr: fTrans.pa,
-              reqId: req.reqId
-            };
-            translateFetchState <= FTransWaitRefill;
-          end
-        end
-      end
-
-      FTransWaitRefill: begin
-        let miss = fetchMissReg;
-        let iResp <- iCache.refillResp;
-        if (iResp.addr == miss.instPaddr) begin
-          fetchResultReg <= FetchResult{
-            inst: iResp.inst,
-            instPaddr: miss.instPaddr,
-            excp: mkNoExcp
-          };
-          translateFetchState <= FTransDone;
-        end
-      end
-
-      FTransDone: begin
-        let req = fetchReqReg;
-        let result = fetchResultReg;
-        f2dFifo.enq(F2D{
+        translateFetchState <= FTransDone;
+      end else begin
+        iCache.refillReq(fTrans.pa, fetchUseCache);
+        fetchMissReg <= FetchMissCtx{
           pc: req.pc,
           predPc: req.predPc,
-          inst: result.inst,
-          instPaddr: result.instPaddr,
-          excp: result.excp
-        });
-        translateFetchState <= FTransIdle;
+          instPaddr: fTrans.pa,
+          reqId: req.reqId
+        };
+        translateFetchState <= FTransWaitRefill;
       end
-    endcase
+    end
+  endrule
+
+  rule doFetchWaitRefill (translateFetchState == FTransWaitRefill);
+    let miss = fetchMissReg;
+    let iResp <- iCache.refillResp;
+    if (iResp.addr == miss.instPaddr) begin
+      fetchResultReg <= FetchResult{
+        inst: iResp.inst,
+        instPaddr: miss.instPaddr,
+        excp: mkNoExcp
+      };
+      translateFetchState <= FTransDone;
+    end
+  endrule
+
+  rule doFetchDone (translateFetchState == FTransDone);
+    let req = fetchReqReg;
+    let result = fetchResultReg;
+    f2dFifo.enq(F2D{
+      pc: req.pc,
+      predPc: req.predPc,
+      inst: result.inst,
+      instPaddr: result.instPaddr,
+      excp: result.excp
+    });
+    translateFetchState <= FTransIdle;
   endrule
 
   rule doDecode;
@@ -447,21 +443,100 @@ module mkCore(Core);
     end
   endrule
 
-  rule doMemory;
+  rule doMemoryDCacheResp (memReqIssued && e2mHasValidInst(e2mFifo.first));
     let execPkt = e2mFifo.first();
+    let eInst = fromMaybe(?, execPkt.eInst);
+    Bool isLoad = (eInst.iType == Ld || eInst.iType == Ll);
+    Bool isStore = (eInst.iType == St);
+    Bool isSc = (eInst.iType == Sc);
+    Bool canIssueMem = !execPkt.excp.valid && !memExcpPending;
+    ByteMask m = fromMaybe(5'b00000, execPkt.mask);
+    Data storeData = eInst.data;
+    let storePkt = selectStoreData(storeData, eInst.addr[1:0], m[3:0]);
+    Data storeWData = tpl_2(storePkt);
+    let d <- dCache.resp();
 
-    if (isValid(execPkt.eInst)) begin
-      let eInst = fromMaybe(?, execPkt.eInst);
+    dCacheRespSrcQ.deq();
+    if (isLoad) begin
+      if (eInst.iType == Ld) begin
+        eInst.data = selectLoadData(d.data, eInst.addr[1:0], m[3:0], m[4] == 1'b1);
+      end else begin
+        eInst.data = d.data;
+        lrValidReg <= True;
+        lrAddrReg <= execPkt.memPaddr;
+      end
+    end
+
+    e2mFifo.deq();
+    memReqIssued <= False;
+    hasIntPrev <= coreHasInterrupt(csrf.crmd, csrf.ecfg, csrf.estat);
+    if (canIssueMem && (isStore || isSc)) begin
+      lrValidReg <= False;
+    end
+
+    `ifdef CONFIG_DIFFTEST
+    Maybe#(DiffMemOp) diffMemInfo = tagged Invalid;
+    if (canIssueMem && (isLoad || isStore || isSc)) begin
+      diffMemInfo = tagged Valid DiffMemOp{
+        isLoad: isLoad,
+        isStore: isStore || isSc,
+        isSc: isSc,
+        paddr: execPkt.memPaddr,
+        vaddr: eInst.addr,
+        storeData: storeWData
+      };
+    end
+    `endif
+    m2wFifo.enq(M2W{
+      pc: execPkt.pc,
+`ifdef CONFIG_DIFFTEST
+      inst: execPkt.inst,
+`endif
+      excp: execPkt.excp,
+      memPaddr: execPkt.memPaddr,
+      isNeedFlush: execPkt.isNeedFlush,
+      mInst: tagged Valid eInst
+`ifdef CONFIG_DIFFTEST
+      , diffMem: diffMemInfo
+`endif
+    });
+  endrule
+
+  rule doMemoryTlbsrchResp (!memReqIssued && !memExcpPending &&
+      e2mNeedsTlbsrchResp(e2mFifo.first));
+    let execPkt = e2mFifo.first();
+    let eInst = fromMaybe(?, execPkt.eInst);
+    let res <- tlb.searchResp;
+    csrf.applyTlbsrchResult(res);
+    hasIntPrev <= coreHasInterrupt(csrf.crmd, csrf.ecfg, csrf.estat);
+    e2mFifo.deq();
+    m2wFifo.enq(M2W{
+      pc: execPkt.pc,
+`ifdef CONFIG_DIFFTEST
+      inst: execPkt.inst,
+`endif
+      excp: execPkt.excp,
+      memPaddr: execPkt.memPaddr,
+      isNeedFlush: execPkt.isNeedFlush,
+      mInst: tagged Valid eInst
+`ifdef CONFIG_DIFFTEST
+      , diffMem: tagged Invalid
+`endif
+    });
+  endrule
+
+  rule doMemoryDCacheReq (!memReqIssued && e2mMayUseDCache(e2mFifo.first));
+    let execPkt = e2mFifo.first();
+    let eInst = fromMaybe(?, execPkt.eInst);
       Bool memReady = True;
       Bool isLoad = (eInst.iType == Ld || eInst.iType == Ll);
       Bool isStore = (eInst.iType == St);
       Bool isSc = (eInst.iType == Sc);
       Bool isBarrier = coreIsBarrier(eInst.iType);
       Bool isCacop = (eInst.iType == Cacop);
-      Bool isTlbsrch = (eInst.iType == Tlbsrch);
       Bool cacopNeedsDCache = isCacop && fromMaybe(0, eInst.cacheOp)[2:0] != 3'b000;
       Bool memDCacheSideEffect =
-        isStore || isSc || isBarrier || cacopNeedsDCache || isTlbsrch;
+        isStore || isSc || isBarrier || cacopNeedsDCache;
       Bool memIsCsrWrite = (eInst.iType == Csrw || eInst.iType == Csrxchg);
       let intCsrView = coreInterruptCsrView(
         memIsCsrWrite ? eInst.csr : tagged Invalid, eInst.addr, csrf.crmd,
@@ -481,6 +556,9 @@ module mkCore(Core);
       Bool canIssueMem = !memExcp.valid && !memExcpPending;
       ByteMask m = fromMaybe(5'b00000, execPkt.mask);
       Data storeData = eInst.data;
+      let storePkt = selectStoreData(storeData, eInst.addr[1:0], m[3:0]);
+      Bit#(WordSz) storeByteEn = tpl_1(storePkt);
+      Data storeWData = tpl_2(storePkt);
 
       hasIntPrev <= has_int_raw;
 
@@ -496,15 +574,6 @@ module mkCore(Core);
       Bool needsDCache = canIssueMem &&
         (isLoad || isStore || scStore || isBarrier || cacopNeedsDCache);
 
-      if (canIssueMem && isTlbsrch) begin
-        if (tlb.searchRespValid) begin
-          let res <- tlb.searchResp;
-          csrf.applyTlbsrchResult(res);
-        end else begin
-          memReady = False;
-        end
-      end
-
       if (needsDCache) begin
         if (!memReqIssued) begin
           if (!m2wFifo.notEmpty && !dCacheRespSrcQ.notEmpty) begin
@@ -513,9 +582,8 @@ module mkCore(Core);
             MemOp memOp = Ld;
 
             if (isStore || scStore) begin
-              let storePkt = selectStoreData(storeData, eInst.addr[1:0], m[3:0]);
-              byteEn = tpl_1(storePkt);
-              wData = tpl_2(storePkt);
+              byteEn = storeByteEn;
+              wData = storeWData;
               memOp = St;
             end else if (isBarrier) begin
               memOp = Barrier;
@@ -536,18 +604,6 @@ module mkCore(Core);
             memReqIssued <= True;
           end
           memReady = False;
-        end else begin
-          let d <- dCache.resp();
-          dCacheRespSrcQ.deq();
-          if (eInst.iType == Ld || eInst.iType == Ll) begin
-            if (eInst.iType == Ld) begin
-              eInst.data = selectLoadData(d.data, eInst.addr[1:0], m[3:0], m[4] == 1'b1);
-            end else begin
-              eInst.data = d.data;
-              lrValidReg <= True;
-              lrAddrReg <= execPkt.memPaddr;
-            end
-          end
         end
       end
 
@@ -576,6 +632,50 @@ module mkCore(Core);
 `endif
         });
       end
+  endrule
+
+  rule doMemoryBypass (!memReqIssued && !e2mMayUseDCache(e2mFifo.first) &&
+      (memExcpPending || !e2mNeedsTlbsrchResp(e2mFifo.first)));
+    let execPkt = e2mFifo.first();
+    if (isValid(execPkt.eInst)) begin
+      let eInst = fromMaybe(?, execPkt.eInst);
+      Bool isTlbsrch = (eInst.iType == Tlbsrch);
+      Bool memDCacheSideEffect = isTlbsrch;
+      Bool memIsCsrWrite = (eInst.iType == Csrw || eInst.iType == Csrxchg);
+      let intCsrView = coreInterruptCsrView(
+        memIsCsrWrite ? eInst.csr : tagged Invalid, eInst.addr, csrf.crmd,
+        csrf.ecfg, csrf.estat);
+      Data memCrmd = tpl_1(intCsrView);
+      Data memEcfg = tpl_2(intCsrView);
+      Data memEstat = tpl_3(intCsrView);
+      Data pendingInterruptBits = corePendingInterruptBits(memEcfg, memEstat);
+      Bool timerPending = ((pendingInterruptBits & 32'h00000800) != 0);
+      Bool softPending = ((pendingInterruptBits & 32'h00000003) != 0);
+      Bool delayInterrupt = timerPending && !softPending;
+      Bool has_int_raw = coreHasInterrupt(memCrmd, memEcfg, memEstat);
+      Bool has_int = !memDCacheSideEffect && !memReqIssued && !dCacheRespSrcQ.notEmpty &&
+        has_int_raw && (!delayInterrupt || hasIntPrev);
+      ExcpInfo memExcp = has_int ? mkExcp(`ECODE_INT, 0, 0) : execPkt.excp;
+
+      hasIntPrev <= has_int_raw;
+      if (memExcp.valid) begin
+        memExcpPending <= True;
+      end
+
+      e2mFifo.deq();
+      m2wFifo.enq(M2W{
+        pc: execPkt.pc,
+`ifdef CONFIG_DIFFTEST
+        inst: execPkt.inst,
+`endif
+        excp: memExcp,
+        memPaddr: execPkt.memPaddr,
+        isNeedFlush: execPkt.isNeedFlush,
+        mInst: tagged Valid eInst
+`ifdef CONFIG_DIFFTEST
+        , diffMem: tagged Invalid
+`endif
+      });
     end else begin
       e2mFifo.deq();
       m2wFifo.enq(M2W{
@@ -639,7 +739,7 @@ module mkCore(Core);
           if (mInst.iType == Ertn) begin
             Addr era <- csrf.returnFromException;
             ertnTarget = era;
-            pcReg[3] <= era;
+            pcReg[2] <= era;
             wbFlush = True;
           end else if (mInst.iType == Tlbsrch) begin
             noAction;
