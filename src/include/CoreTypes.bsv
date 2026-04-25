@@ -7,6 +7,18 @@ import DiffTypes::*;
 
 typedef 4 StoreBufEntries;
 
+// IF1 -> IF2 packet: carries PC selection result and CSR context for translation
+typedef struct {
+  Addr             pc;
+  Addr             predPc;
+  Data             crmd;
+  Data             asid;
+  Data             dmw0;
+  Data             dmw1;
+  MmuTranslateType transType;
+} F1toF2 deriving(Bits, Eq);
+
+// IF2 -> ID packet (replaces old F2D)
 typedef struct {
   Addr        pc;
   Addr        predPc;
@@ -47,6 +59,8 @@ typedef struct {
   ExcpInfo    excp;
 }   R2E deriving(Bits, Eq);
 
+// EXE -> MEM packet: addr carries AGU result; memPaddr/memUseCache
+// will be filled in by the MEM stage after D-MMU translation
 typedef struct {
   Addr                pc;
 `ifdef CONFIG_DIFFTEST
@@ -58,12 +72,11 @@ typedef struct {
 `endif
   ExcpInfo            excp;
   Maybe#(ByteMask)    mask;
-  Addr                memPaddr;
-  Bool                memUseCache;
   Bool                isNeedFlush;
   Maybe#(ExecInst)    eInst;
 }   E2M deriving(Bits, Eq);
 
+// MEM -> WB packet: carries translated physical address from MEM stage
 typedef struct {
   Addr                pc;
 `ifdef CONFIG_DIFFTEST
@@ -91,13 +104,6 @@ typedef struct {
 } ExcpInfo deriving(Bits, Eq);
 
 typedef enum {
-  FTransIdle,
-  FTransProbe,
-  FTransWaitRefill,
-  FTransDone
-} FetchTransState deriving(Bits, Eq);
-
-typedef enum {
   Direct,
   Translate,
   None
@@ -109,28 +115,6 @@ typedef enum {
   Reserved,
   Reserved1
 } MatType deriving(Bits, Eq);
-
-typedef struct {
-  Addr             pc;
-  Addr             predPc;
-  Data             crmd;
-  Data             asid;
-  Data             dmw0;
-  Data             dmw1;
-  MmuTranslateType transType;
-} FetchTransReq deriving(Bits, Eq);
-
-typedef struct {
-  Addr     pc;
-  Addr     predPc;
-  Addr     instPaddr;
-} FetchMissCtx deriving(Bits, Eq);
-
-typedef struct {
-  Instruction inst;
-  Addr        instPaddr;
-  ExcpInfo    excp;
-} FetchResult deriving(Bits, Eq);
 
 typedef enum {
   MmuFetch,
