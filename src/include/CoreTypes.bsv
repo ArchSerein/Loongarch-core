@@ -103,8 +103,8 @@ typedef enum {
 } MmuTranslateType deriving(Bits, Eq);
 
 typedef enum {
-  Cc,
   Suc,
+  Cc,
   Reserved,
   Reserved1
 } MatType deriving(Bits, Eq);
@@ -117,7 +117,6 @@ typedef struct {
   Data             dmw0;
   Data             dmw1;
   MmuTranslateType transType;
-  Bit#(4)          reqId;
 } FetchTransReq deriving(Bits, Eq);
 
 typedef struct {

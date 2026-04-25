@@ -86,7 +86,7 @@ endinterface
 
 (* synthesize *)
 module mkCore(Core);
-  Ehr#(4, Addr)         pcReg <- mkEhr(startpc);
+  Ehr#(3, Addr)         pcReg <- mkEhr(startpc);
   CsrFile                csrf <- mkCsrFile;
   RFile                    rf <- mkRFile;
   ICache               iCache <- mkICache;
@@ -111,7 +111,6 @@ module mkCore(Core);
   Reg#(FetchTransReq)  fetchReqReg <- mkRegU;
   Reg#(FetchMissCtx)  fetchMissReg <- mkRegU;
   Reg#(FetchResult) fetchResultReg <- mkRegU;
-  Reg#(Bit#(4))       iCacheReqId <- mkReg(0);
 
   // pipeline stage fifo
   Fifo#(2, F2D)           f2dFifo <- mkCFFifo;
@@ -143,10 +142,8 @@ module mkCore(Core);
       asid: csrf.asid,
       dmw0: csrf.dmw0,
       dmw1: csrf.dmw1,
-      transType: getMmuTranslateType(crmd),
-      reqId: iCacheReqId
+      transType: getMmuTranslateType(crmd)
     };
-    iCacheReqId <= iCacheReqId + 1;
     pcReg[0] <= predPc;
     translateFetchState <= FTransProbe;
   endrule
@@ -217,8 +214,7 @@ module mkCore(Core);
         fetchMissReg <= FetchMissCtx{
           pc: req.pc,
           predPc: req.predPc,
-          instPaddr: fTrans.pa,
-          reqId: req.reqId
+          instPaddr: fTrans.pa
         };
         translateFetchState <= FTransWaitRefill;
       end
@@ -880,6 +876,11 @@ module mkCore(Core);
           load: loadEvent
         });
 `endif
+        `ifdef CONFIG_TRACE_PERFORMANCE
+          if (!wb_has_excp) begin
+            inst_count();
+          end
+        `endif
         if (!wbFlush) begin
           wbRetire = True;
         end
@@ -895,6 +896,7 @@ module mkCore(Core);
       dCacheRespSrcQ.clear();
       memReqIssued <= False;
       memExcpPending <= False;
+      translateFetchState <= FTransIdle;
       f2dFifo.clear();
       d2rFifo.clear();
       r2eFifo.clear();
@@ -913,9 +915,6 @@ module mkCore(Core);
       m2wFifo.deq();
       csrSb.deq();
       sb.remove();
-      `ifdef CONFIG_TRACE_PERFORMANCE
-        inst_count();
-      `endif
     end
   endrule
 
