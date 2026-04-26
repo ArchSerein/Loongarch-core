@@ -239,3 +239,18 @@ function Bool e2mMayUseDCache(E2M pkt);
   end
   return ret;
 endfunction
+
+function ExcpInfo checkMemHasExcp(Maybe#(ByteMask) mask, Addr addr, ExcpInfo excp);
+  ByteMask m = fromMaybe(5'b00000, mask);
+  if (!excp.valid) begin
+    Bit#(4) rawEn = m[3:0];
+    Bool exAle = False;
+    if (rawEn == 4'b0011) begin
+      exAle = (addr[0] != 1'b0);
+    end else if (rawEn == 4'b1111) begin
+      exAle = (addr[1:0] != 2'b00);
+    end
+    if (exAle) excp = mkExcp(`ECODE_ALE, `ESUBCODE_NONE, addr);
+  end
+  return excp;
+endfunction

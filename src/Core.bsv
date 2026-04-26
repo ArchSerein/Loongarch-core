@@ -43,6 +43,7 @@ interface Core;
   method ActionValue#(DiffTrace) diffTrace;
   method Bool diffTraceValid;
 `endif
+`ifdef CONFIG_VSIM
   (* always_ready *)
   method Bool diffStepValid;
   (* always_ready *)
@@ -57,6 +58,7 @@ interface Core;
   method Bit#(200) liveDiffStoreBundle;
   (* always_ready *)
   method Bit#(136) liveDiffLoadBundle;
+`endif
 `endif
   interface AxiMemMaster axiMem;
 `ifdef CONFIG_VSIM
@@ -93,25 +95,26 @@ module mkCore(Core);
   AxiMemMaster        axiMux <- mkAxiArbiter2(iCache.axiMem, dCache.axiMem);
   Btb#(6)                 btb <- mkBtb; // 64-entry BTB
   Bht#(8)                 bht <- mkBht;
-  Scoreboard#(8)           sb <- mkCFScoreboard;
   SFifo#(8, Maybe#(CsrIndx), Maybe#(CsrIndx)) csrSb <- mkCFSFifo(coreIsCsrConflict);
   Reg#(Bool)       hasIntPrev <- mkReg(False);
   TlbArray                tlb <- mkTlb;
 
   // Forwarding wires: written by later stages, read by doRrf
-  // Avoids reading e2mFifo.first / m2wFifo.first which carry implicit guards
-  Wire#(Maybe#(ExecInst)) exeForward <- mkDWire(tagged Invalid);
-  Wire#(Maybe#(ExecInst)) memForward <- mkDWire(tagged Invalid);
+  Wire#(ForwardType) exeForward <- mkDWire(ForwardType{valid: False,
+    stall: False, index: 0, data: 0});
+  Wire#(ForwardType) memForward <- mkDWire(ForwardType{valid: False,
+    stall: False, index: 0, data: 0});
 `ifdef CONFIG_DIFFTEST
   Difftest difftest <- mkDifftest;
 `endif
 
   // 7-stage pipeline FIFOs
   Fifo#(2, F1toF2)       f1f2Fifo <- mkCFFifo;  // IF1 -> IF2
-  Fifo#(8, F2D)            f2dFifo <- mkCFFifo;  // IF2 -> ID (instruction buffer, depth 8)
+  Fifo#(2, F2D)            f2dFifo <- mkCFFifo;  // IF2 -> ID
   Fifo#(2, D2R)            d2rFifo <- mkCFFifo;  // ID -> RR
   Fifo#(2, R2E)            r2eFifo <- mkCFFifo;  // RR -> EXE
   Fifo#(2, E2M)            e2mFifo <- mkCFFifo;  // EXE -> MEM
+  Fifo#(2, M1toM2)        m1m2Fifo <- mkCFFifo;  // MEM1 -> MEM2
   Fifo#(2, M2W)            m2wFifo <- mkCFFifo;  // MEM -> WB
 
   // I-Cache miss tracking: IF2 waits for refill
@@ -122,12 +125,9 @@ module mkCore(Core);
 `ifdef CONFIG_BSIM
   Fifo#(2, CpuToHostData) toHostFifo <- mkCFFifo;
 `endif
-  Fifo#(2, Bool) dCacheRespSrcQ <- mkCFFifo;
-  Reg#(Bool) memReqIssued <- mkReg(False);
   Reg#(Bool) memExcpPending <- mkReg(False);
   Reg#(Bool)           lrValidReg <- mkReg(False);
   Reg#(Addr)            lrAddrReg <- mkRegU;
-  Reg#(Addr)      memPendingPaddr <- mkRegU; // paddr saved when D-Cache req issued
 
   // ============================================================
   // Stage 1: IF1 — PC selection, start I-Cache probe, start I-TLB lookup
@@ -138,15 +138,18 @@ module mkCore(Core);
     Bool bhtPred = bht.predict(pc);
     Addr predPc = bhtPred ? btbPc : pc + 4;
     Data crmd = csrf.crmd;
+    Data asid = csrf.asid;
 
+    tlb.fetchLookupReq(pc, asid);
     f1f2Fifo.enq(F1toF2{
       pc: pc,
       predPc: predPc,
       crmd: crmd,
-      asid: csrf.asid,
+      asid: asid,
       dmw0: csrf.dmw0,
       dmw1: csrf.dmw1,
-      transType: getMmuTranslateType(crmd)
+      transType: getMmuTranslateType(crmd),
+      probeRes: iCache.probe(pc)
     });
     pcReg[0] <= predPc;
   endrule
@@ -172,8 +175,8 @@ module mkCore(Core);
 
   rule doIF2 (!if2WaitRefill);
     let req = f1f2Fifo.first();
-    ICacheProbeResp probeRes = iCache.probe(req.pc);
-    TlbLookupResult tlbRes = tlb.lookupFetch(req.pc, req.asid);
+    ICacheProbeResp probeRes = req.probeRes;
+    TlbLookupResult tlbRes <- tlb.fetchLookupResp;
     MmuResult fTrans = MmuResult{
       pa: req.pc,
       mat: getFetchMatType(req.crmd),
@@ -310,22 +313,11 @@ module mkCore(Core);
     Data rVal2 = rf.rd2(fromMaybe(?, rInst.src2));
     Data csrVal = csrf.rd(fromMaybe(?, rInst.csr));
 
-    // Bypass from EXE stage (e2mFifo)
-    // Separate notEmpty check from first() call to avoid implicit guard issues
-    if (e2mFifo.notEmpty) begin
-      let ePkt = e2mFifo.first;
-      if (isValid(ePkt.eInst)) begin
-        let eInst = fromMaybe(?, ePkt.eInst);
-        if (isValid(eInst.dst) && fromMaybe(?, eInst.dst) != 0) begin
-          if (rInst.src1 matches tagged Valid .s1 &&& s1 == fromMaybe(?, eInst.dst))
-            rVal1 = eInst.data;
-          if (rInst.src2 matches tagged Valid .s2 &&& s2 == fromMaybe(?, eInst.dst))
-            rVal2 = eInst.data;
-        end
-      end
-    end
+    // Bypass logic: youngest to oldest
+    // Priority: EXE (wire) > E2M (FIFO) > MEM (wire) > M2W (FIFO)
+    // Note: WB stage bypass is handled by mkBypassRFile
 
-    // Bypass from MEM stage (m2wFifo)
+    // 1. Bypass from M2W FIFO (instructions waiting for WB)
     if (m2wFifo.notEmpty) begin
       let mPkt = m2wFifo.first;
       if (isValid(mPkt.mInst)) begin
@@ -339,26 +331,68 @@ module mkCore(Core);
       end
     end
 
-    // Load-to-use hazard: if a load is in EXE (e2mFifo), its data isn't ready yet.
-    // Must stall. Detect by checking if e2mFifo has a load-type instruction whose
-    // dst matches our src.
-    Bool loadUseHazard = False;
+    // 2. Bypass from MEM stage (instruction currently in MEM)
+    if (memForward.valid) begin
+      if (rInst.src1 matches tagged Valid .s1 &&& s1 == memForward.index)
+        rVal1 = memForward.data;
+      if (rInst.src2 matches tagged Valid .s2 &&& s2 == memForward.index)
+        rVal2 = memForward.data;
+    end
+
+    // 3. Bypass from E2M FIFO (instructions waiting for MEM)
     if (e2mFifo.notEmpty) begin
       let ePkt = e2mFifo.first;
       if (isValid(ePkt.eInst)) begin
         let eInst = fromMaybe(?, ePkt.eInst);
-        Bool isLoad = (eInst.iType == Ld || eInst.iType == Ll);
-        if (isLoad && isValid(eInst.dst) && fromMaybe(?, eInst.dst) != 0) begin
+        if (isValid(eInst.dst) && fromMaybe(?, eInst.dst) != 0) begin
           if (rInst.src1 matches tagged Valid .s1 &&& s1 == fromMaybe(?, eInst.dst))
-            loadUseHazard = True;
+            rVal1 = eInst.data;
           if (rInst.src2 matches tagged Valid .s2 &&& s2 == fromMaybe(?, eInst.dst))
-            loadUseHazard = True;
+            rVal2 = eInst.data;
         end
       end
     end
 
-    // Only stall on scoreboard conflicts, CSR conflicts, or load-to-use hazards
-    if (!sb.search1(rInst.src1) && !sb.search2(rInst.src2) && !csrConflict && !loadUseHazard) begin
+    // 4. Bypass from EXE stage (instruction currently in EXE)
+    if (exeForward.valid) begin
+      if (rInst.src1 matches tagged Valid .s1 &&& s1 == exeForward.index)
+        rVal1 = exeForward.data;
+      if (rInst.src2 matches tagged Valid .s2 &&& s2 == exeForward.index)
+        rVal2 = exeForward.data;
+    end
+
+    Bool exeHazard = False;
+    if (exeForward.valid && exeForward.stall && exeForward.index != 0) begin
+      if (rInst.src1 matches tagged Valid .s1 &&& s1 == exeForward.index)
+        exeHazard = True;
+      if (rInst.src2 matches tagged Valid .s2 &&& s2 == exeForward.index)
+        exeHazard = True;
+    end
+    Bool memHazard = False;
+    if (memForward.valid && memForward.stall && memForward.index != 0) begin
+      if (rInst.src1 matches tagged Valid .s1 &&& s1 == memForward.index)
+        memHazard = True;
+      if (rInst.src2 matches tagged Valid .s2 &&& s2 == memForward.index)
+        memHazard = True;
+    end
+    Bool m1m2Hazard = False;
+    if (m1m2Fifo.notEmpty) begin
+      let m12Pkt = m1m2Fifo.first;
+      if (m12Pkt.m2Op == M2OpDCache || m12Pkt.m2Op == M2OpTlb) begin
+        if (m12Pkt.eInst matches tagged Valid .m12Inst) begin
+          if (m12Inst.dst matches tagged Valid .dst &&& dst != 0) begin
+            if (rInst.src1 matches tagged Valid .s1 &&& s1 == dst)
+              m1m2Hazard = True;
+            if (rInst.src2 matches tagged Valid .s2 &&& s2 == dst)
+              m1m2Hazard = True;
+          end
+        end
+      end
+    end
+
+    Bool isNeedStall = csrConflict || exeHazard || memHazard || m1m2Hazard;
+
+    if (!isNeedStall) begin
       r2eFifo.enq(R2E{pc: decodePkt.pc, predPc: decodePkt.predPc,
 `ifdef CONFIG_DIFFTEST
         inst: decodePkt.inst,
@@ -368,7 +402,6 @@ module mkCore(Core);
         isNeedFlush: isNeedFlush,
         rInst: rInst, excp: decodePkt.excp});
       csrSb.enq(isCsrWrite ? targetCsr : tagged Invalid);
-      sb.insert(rInst.dst);
       d2rFifo.deq();
     end
   endrule
@@ -381,7 +414,8 @@ module mkCore(Core);
     let rrfPkt = r2eFifo.first();
 
     Bool doNormalExec = True;
-    if (isValid(rrfPkt.rInst.muldivFunc)) begin
+    ForwardType nextExeForward = ForwardType{valid: False, stall: False, index: 0, data: 0};
+    if (!rrfPkt.excp.valid && isValid(rrfPkt.rInst.muldivFunc)) begin
       let mdFunc = fromMaybe(?, rrfPkt.rInst.muldivFunc);
       Bool is_mul = (mdFunc == MulW || mdFunc == MulhW || mdFunc == MulhWu);
       Bool is_div = (mdFunc == DivW || mdFunc == DivWu || mdFunc == ModW || mdFunc == ModWu);
@@ -408,12 +442,8 @@ module mkCore(Core);
           divInFlight <= False;
         end
       end
-    end
 
-    if (!rrfPkt.excp.valid && rrfPkt.rInst.iType == Tlbsrch &&
-        (e2mFifo.notEmpty || m2wFifo.notEmpty || memReqIssued ||
-         dCacheRespSrcQ.notEmpty)) begin
-      doNormalExec = False;
+      nextExeForward = ForwardType{valid: False, stall: True, index: 0, data: 0};
     end
 
     if (doNormalExec) begin
@@ -437,10 +467,6 @@ module mkCore(Core);
         eInst.data = truncateLSB(csrf.stableCounterValue);
       end
 
-      if (!eExcp.valid && eInst.iType == Tlbsrch) begin
-        tlb.searchReq(csrf.tlbehi, csrf.asid);
-      end
-
       if (eInst.mispredict) begin
         pcReg[1] <= eInst.addr;
         iCache.squash();
@@ -452,21 +478,26 @@ module mkCore(Core);
       end
       bht.update(rrfPkt.pc, eInst.brTaken);
 
-      // Alignment check for memory operations (kept in EXE)
+      // Alignment check for memory operations
       Bool isMemTypeInst = eInst.iType == Ld || eInst.iType == St || eInst.iType == Ll || eInst.iType == Sc;
+      Bool isTlbSerial = (eInst.iType == Tlbsrch || eInst.iType == Tlbrd ||
+            eInst.iType == Tlbwr || eInst.iType == Tlbfill || eInst.iType == Invtlb);
       ByteMask m = fromMaybe(5'b00000, rrfPkt.rInst.mask);
-      if (!eExcp.valid && isMemTypeInst) begin
-        Bit#(4) rawEn = m[3:0];
-        Bool exAle = False;
-        if (rawEn == 4'b0011) begin
-          exAle = (eInst.addr[0] != 1'b0);
-        end else if (rawEn == 4'b1111) begin
-          exAle = (eInst.addr[1:0] != 2'b00);
-        end
-        if (exAle) eExcp = mkExcp(`ECODE_ALE, `ESUBCODE_NONE, eInst.addr);
+      if (isMemTypeInst) begin
+        eExcp = checkMemHasExcp(rrfPkt.rInst.mask, eInst.addr, eExcp);
+      end
+
+      Bool dCacheCacop = (eInst.iType == Cacop) && fromMaybe(0, eInst.cacheOp)[2:0] != 3'b000;
+      Bool dataTlbLookupPending = (isMemTypeInst || dCacheCacop) &&
+        getMmuTranslateType(csrf.crmd) == Translate;
+      if (dataTlbLookupPending) begin
+        tlb.dataLookupReq(eInst.addr, csrf.asid);
       end
 
       r2eFifo.deq();
+      nextExeForward = ForwardType{valid: isValid(eInst.dst),
+        stall: isMemTypeInst || isTlbSerial,
+        index: fromMaybe(0, eInst.dst), data: eInst.data};
       // E2M no longer carries memPaddr/memUseCache — those are computed in MEM
       e2mFifo.enq(E2M{
         pc: rrfPkt.pc,
@@ -476,137 +507,64 @@ module mkCore(Core);
         excp: eExcp,
         mask: rrfPkt.rInst.mask,
         isNeedFlush: rrfPkt.isNeedFlush,
+        dataTlbLookupPending: dataTlbLookupPending,
         eInst: tagged Valid eInst
       });
     end
+    exeForward <= nextExeForward;
   endrule
 
   // ============================================================
-  // Stage 6: MEM — D-TLB/D-MMU translation, D-Cache request/response
+  // Stage 6a/6b: MEM1 dispatch and MEM2 response collection
   // ============================================================
-  rule doMemoryDCacheResp (memReqIssued && e2mHasValidInst(e2mFifo.first));
+  rule doMemoryStage1;
     let execPkt = e2mFifo.first();
-    let eInst = fromMaybe(?, execPkt.eInst);
-    Bool isLoad = (eInst.iType == Ld || eInst.iType == Ll);
-    Bool isStore = (eInst.iType == St);
-    Bool isSc = (eInst.iType == Sc);
-    Bool canIssueMem = !execPkt.excp.valid && !memExcpPending;
-    ByteMask m = fromMaybe(5'b00000, execPkt.mask);
-    Data storeData = eInst.data;
-    let storePkt = selectStoreData(storeData, eInst.addr[1:0], m[3:0]);
-    Data storeWData = tpl_2(storePkt);
-    let d <- dCache.resp();
-    Addr respPaddr = memPendingPaddr;
+    Mem2Op nextOp = M2OpNone;
+    Addr memPaddr = 0;
+    ExcpInfo memExcp = execPkt.excp;
+    Maybe#(ExecInst) nextInst = execPkt.eInst;
 
-    dCacheRespSrcQ.deq();
-    if (isLoad) begin
-      if (eInst.iType == Ld) begin
-        eInst.data = selectLoadData(d.data, eInst.addr[1:0], m[3:0], m[4] == 1'b1);
-      end else begin
-        eInst.data = d.data;
-        lrValidReg <= True;
-        lrAddrReg <= respPaddr;
-      end
-    end
-
-    e2mFifo.deq();
-    memReqIssued <= False;
-    hasIntPrev <= coreHasInterrupt(csrf.crmd, csrf.ecfg, csrf.estat);
-    if (canIssueMem && (isStore || isSc)) begin
-      lrValidReg <= False;
-    end
-
-    `ifdef CONFIG_DIFFTEST
-    Maybe#(DiffMemOp) diffMemInfo = tagged Invalid;
-    if (canIssueMem && (isLoad || isStore || isSc)) begin
-      diffMemInfo = tagged Valid DiffMemOp{
-        isLoad: isLoad,
-        isStore: isStore || isSc,
-        isSc: isSc,
-        paddr: respPaddr,
-        vaddr: eInst.addr,
-        storeData: storeWData
-      };
-    end
-    `endif
-    m2wFifo.enq(M2W{
-      pc: execPkt.pc,
-`ifdef CONFIG_DIFFTEST
-      inst: execPkt.inst,
-      csrSnapshot: csrf.diffSnapshot,
-`endif
-      excp: execPkt.excp,
-      memPaddr: respPaddr,
-      isNeedFlush: execPkt.isNeedFlush,
-      mInst: tagged Valid eInst
-`ifdef CONFIG_DIFFTEST
-      , diffMem: diffMemInfo
-`endif
-    });
-  endrule
-
-  rule doMemoryTlbsrchResp (!memReqIssued && !memExcpPending &&
-      e2mNeedsTlbsrchResp(e2mFifo.first));
-    let execPkt = e2mFifo.first();
-    let eInst = fromMaybe(?, execPkt.eInst);
-    let res <- tlb.searchResp;
-    csrf.applyTlbsrchResult(res);
-    hasIntPrev <= coreHasInterrupt(csrf.crmd, csrf.ecfg, csrf.estat);
-    e2mFifo.deq();
-    m2wFifo.enq(M2W{
-      pc: execPkt.pc,
-`ifdef CONFIG_DIFFTEST
-      inst: execPkt.inst,
-      csrSnapshot: csrf.diffSnapshot,
-`endif
-      excp: execPkt.excp,
-      memPaddr: 0,
-      isNeedFlush: execPkt.isNeedFlush,
-      mInst: tagged Valid eInst
-`ifdef CONFIG_DIFFTEST
-      , diffMem: tagged Invalid
-`endif
-    });
-  endrule
-
-  rule doMemoryDCacheReq (!memReqIssued && e2mMayUseDCache(e2mFifo.first));
-    let execPkt = e2mFifo.first();
-    let eInst = fromMaybe(?, execPkt.eInst);
-      Bool memReady = True;
+    if (execPkt.eInst matches tagged Valid .eInst) begin
+      ExecInst memInst = eInst;
       Bool isLoad = (eInst.iType == Ld || eInst.iType == Ll);
       Bool isStore = (eInst.iType == St);
       Bool isSc = (eInst.iType == Sc);
       Bool isBarrier = coreIsBarrier(eInst.iType);
       Bool isCacop = (eInst.iType == Cacop);
       Bool cacopNeedsDCache = isCacop && fromMaybe(0, eInst.cacheOp)[2:0] != 3'b000;
-      Bool memDCacheSideEffect =
-        isStore || isSc || isBarrier || cacopNeedsDCache;
+      Bool isTlbOp = (eInst.iType == Tlbsrch || eInst.iType == Tlbrd ||
+        eInst.iType == Tlbwr || eInst.iType == Tlbfill || eInst.iType == Invtlb);
+      Bool memDCacheSideEffect = isStore || isSc || isBarrier ||
+        cacopNeedsDCache || isTlbOp;
       Bool memIsCsrWrite = (eInst.iType == Csrw || eInst.iType == Csrxchg);
       Bool memWritesInterruptCsr = False;
       if (memIsCsrWrite &&& eInst.csr matches tagged Valid .csrIdx) begin
         memWritesInterruptCsr = coreIsInterruptControlCsr(csrIdx);
       end
+
       let intCsrView = coreInterruptCsrView(
         memIsCsrWrite ? eInst.csr : tagged Invalid, eInst.addr, csrf.crmd,
         csrf.ecfg, csrf.estat);
-      Data memCrmd = tpl_1(intCsrView);
-      Data memEcfg = tpl_2(intCsrView);
-      Data memEstat = tpl_3(intCsrView);
-      Data pendingInterruptBits = corePendingInterruptBits(memEcfg, memEstat);
+      Data pendingInterruptBits = corePendingInterruptBits(tpl_2(intCsrView),
+        tpl_3(intCsrView));
       Bool timerPending = ((pendingInterruptBits & 32'h00000800) != 0);
       Bool softPending = ((pendingInterruptBits & 32'h00000003) != 0);
       Bool delayInterrupt = timerPending && !softPending;
-      Bool has_int_raw = coreHasInterrupt(memCrmd, memEcfg, memEstat);
-      Bool hasPendingDCacheResp = dCacheRespSrcQ.notEmpty;
-      Bool has_int = !memDCacheSideEffect && !memReqIssued && !hasPendingDCacheResp &&
-        !memWritesInterruptCsr && has_int_raw && (!delayInterrupt || hasIntPrev);
-      ExcpInfo memExcp = has_int ? mkExcp(`ECODE_INT, 0, 0) : execPkt.excp;
+      Bool has_int_raw = coreHasInterrupt(tpl_1(intCsrView), tpl_2(intCsrView),
+        tpl_3(intCsrView));
+      Bool has_int = !memDCacheSideEffect && !memWritesInterruptCsr &&
+        has_int_raw && (!delayInterrupt || hasIntPrev);
+      memExcp = has_int ? mkExcp(`ECODE_INT, 0, 0) : execPkt.excp;
       Bool canIssueMem = !memExcp.valid && !memExcpPending;
       ByteMask m = fromMaybe(5'b00000, execPkt.mask);
-      Data storeData = eInst.data;
-      let storePkt = selectStoreData(storeData, eInst.addr[1:0], m[3:0]);
+      let storePkt = selectStoreData(eInst.data, eInst.addr[1:0], m[3:0]);
       Bit#(WordSz) storeByteEn = tpl_1(storePkt);
       Data storeWData = tpl_2(storePkt);
+      Bool memUseCache = True;
+      TlbLookupResult tlbRes = noTlbLookup;
+      if (execPkt.dataTlbLookupPending) begin
+        tlbRes <- tlb.dataLookupResp;
+      end
 
       hasIntPrev <= has_int_raw;
 
@@ -614,25 +572,16 @@ module mkCore(Core);
         memExcpPending <= True;
       end
 
-      // D-MMU translation: moved from EXE to MEM
-      Addr memPaddr = eInst.addr;
-      Bool memUseCache = True;
+      memPaddr = eInst.addr;
       if (canIssueMem) begin
         Bool dCacheCacop = isCacop && cacopNeedsDCache;
         if (isLoad || isStore || isSc || dCacheCacop) begin
-          MmuAccessType accessType =
-            (isStore || isSc) ? MmuStore : MmuLoad;
+          MmuAccessType accessType = (isStore || isSc) ? MmuStore : MmuLoad;
           Data crmd = csrf.crmd;
           MmuTranslateType transType = getMmuTranslateType(crmd);
-          TlbLookupResult tlbRes = tlb.lookupData(eInst.addr, csrf.asid);
           MmuResult dTrans = MmuResult{
-            pa: eInst.addr,
-            mat: getDataMatType(crmd),
-            fromDmw: False,
-            fromTlb: False,
-            excValid: False,
-            ecode: 0,
-            esubcode: 0,
+            pa: eInst.addr, mat: getDataMatType(crmd), fromDmw: False,
+            fromTlb: False, excValid: False, ecode: 0, esubcode: 0,
             badv: eInst.addr
           };
           if (transType == Translate) begin
@@ -654,189 +603,170 @@ module mkCore(Core);
       end
 
       if (canIssueMem && isSc) begin
-        eInst.data = (lrValidReg && lrAddrReg == memPaddr) ? scSucc : scFail;
+        memInst.data = (lrValidReg && lrAddrReg == memPaddr) ? scSucc : scFail;
+        nextInst = tagged Valid memInst;
       end
 
-      Bool scStore = isSc && eInst.data == scSucc;
+      Bool scStore = isSc && memInst.data == scSucc;
       Bool needsDCache = canIssueMem &&
         (isLoad || isStore || scStore || isBarrier || cacopNeedsDCache);
 
       if (needsDCache) begin
-        if (!memReqIssued) begin
-          if (!m2wFifo.notEmpty && !dCacheRespSrcQ.notEmpty) begin
-            Bit#(WordSz) byteEn = 4'b0000;
-            Data wData = 0;
-            MemOp memOp = Ld;
-
-            if (isStore || scStore) begin
-              byteEn = storeByteEn;
-              wData = storeWData;
-              memOp = St;
-            end else if (isBarrier) begin
-              memOp = Barrier;
-            end else if (cacopNeedsDCache) begin
-              memOp = Cacop;
-            end
-
-            dCache.req(MemReq {
-              op: memOp,
-              addr: eInst.addr,
-              paddr: memPaddr,
-              useCache: (memOp == Cacop || memOp == Barrier) ? True : memUseCache,
-              data: wData,
-              byteEn: byteEn,
-              cacheOp: isCacop ? fromMaybe(0, eInst.cacheOp) : 5'b0
-            });
-            dCacheRespSrcQ.enq(True);
-            memReqIssued <= True;
-            memPendingPaddr <= memPaddr;
-          end
-          memReady = False;
-        end
-      end
-
-      if (memReady) begin
-        e2mFifo.deq();
-        if (memReqIssued) begin
-          memReqIssued <= False;
-        end
-        if (canIssueMem && (isStore || isSc)) begin
-          lrValidReg <= False;
+        Bit#(WordSz) byteEn = 4'b0000;
+        Data wData = 0;
+        MemOp memOp = Ld;
+        if (isStore || scStore) begin
+          byteEn = storeByteEn;
+          wData = storeWData;
+          memOp = St;
+        end else if (isBarrier) begin
+          memOp = Barrier;
+        end else if (cacopNeedsDCache) begin
+          memOp = Cacop;
         end
 
-        `ifdef CONFIG_DIFFTEST
-        Maybe#(DiffMemOp) diffMemInfo = tagged Invalid;
-        if (canIssueMem && (isLoad || isStore || isSc)) begin
-          diffMemInfo = tagged Valid DiffMemOp{
-            isLoad: isLoad,
-            isStore: isStore || isSc,
-            isSc: isSc,
-            paddr: memPaddr,
-            vaddr: eInst.addr,
-            storeData: storeWData
-          };
-        end
-        `endif
-        m2wFifo.enq(M2W{
-          pc: execPkt.pc,
-`ifdef CONFIG_DIFFTEST
-          inst: execPkt.inst,
-          csrSnapshot: csrf.diffSnapshot,
-`endif
-          excp: memExcp,
-          memPaddr: memPaddr,
-          isNeedFlush: execPkt.isNeedFlush,
-          mInst: tagged Valid eInst
-`ifdef CONFIG_DIFFTEST
-          , diffMem: diffMemInfo
-`endif
+        dCache.req(MemReq {
+          op: memOp,
+          addr: memInst.addr,
+          paddr: memPaddr,
+          useCache: (memOp == Cacop || memOp == Barrier) ? True : memUseCache,
+          data: wData,
+          byteEn: byteEn,
+          cacheOp: isCacop ? fromMaybe(0, eInst.cacheOp) : 5'b0
         });
+        nextOp = M2OpDCache;
+      end else if (canIssueMem && isTlbOp) begin
+        TlbOp op = TlbOpSearch;
+        if (eInst.iType == Tlbrd) op = TlbOpRead;
+        else if (eInst.iType == Tlbwr) op = TlbOpWrite;
+        else if (eInst.iType == Tlbfill) op = TlbOpFill;
+        else if (eInst.iType == Invtlb) op = TlbOpInv;
+        tlb.req(TlbReq{
+          op: op,
+          tlbidx: (eInst.iType == Tlbrd) ? zeroExtend(csrf.tlbReadIndex) : csrf.tlbWriteIdx,
+          invOp: truncate(fromMaybe(0, eInst.imm)),
+          ehi: csrf.tlbWriteEhi,
+          elo0: csrf.tlbWriteElo0,
+          elo1: csrf.tlbWriteElo1,
+          asid: csrf.tlbWriteAsid,
+          va: eInst.addr
+        });
+        nextOp = M2OpTlb;
       end
+
+      if (nextOp == M2OpNone && isValid(eInst.dst) && fromMaybe(0, eInst.dst) != 0) begin
+        memForward <= ForwardType{valid: True, stall: False,
+          index: fromMaybe(0, eInst.dst), data: eInst.data};
+      end else if (nextOp != M2OpNone && isValid(eInst.dst) &&
+          fromMaybe(0, eInst.dst) != 0) begin
+        memForward <= ForwardType{valid: True, stall: True,
+          index: fromMaybe(0, eInst.dst), data: 0};
+      end
+    end
+
+    e2mFifo.deq();
+    m1m2Fifo.enq(M1toM2{
+      pc: execPkt.pc,
+`ifdef CONFIG_DIFFTEST
+      inst: execPkt.inst,
+      csrSnapshot: csrf.diffSnapshot,
+`endif
+      excp: memExcp,
+      mask: execPkt.mask,
+      isNeedFlush: execPkt.isNeedFlush,
+      eInst: nextInst,
+      m2Op: nextOp,
+      memPaddr: memPaddr
+    });
   endrule
 
-  rule doMemoryBypass (!memReqIssued && !e2mMayUseDCache(e2mFifo.first) &&
-      (memExcpPending || !e2mNeedsTlbsrchResp(e2mFifo.first)));
-    let execPkt = e2mFifo.first();
-    if (isValid(execPkt.eInst)) begin
-      let eInst = fromMaybe(?, execPkt.eInst);
-      Bool isTlbsrch = (eInst.iType == Tlbsrch);
-      Bool memDCacheSideEffect = isTlbsrch;
-      Bool memIsCsrWrite = (eInst.iType == Csrw || eInst.iType == Csrxchg);
-      Bool memWritesInterruptCsr = False;
-      if (memIsCsrWrite &&& eInst.csr matches tagged Valid .csrIdx) begin
-        memWritesInterruptCsr = coreIsInterruptControlCsr(csrIdx);
-      end
-      let intCsrView = coreInterruptCsrView(
-        memIsCsrWrite ? eInst.csr : tagged Invalid, eInst.addr, csrf.crmd,
-        csrf.ecfg, csrf.estat);
-      Data memCrmd = tpl_1(intCsrView);
-      Data memEcfg = tpl_2(intCsrView);
-      Data memEstat = tpl_3(intCsrView);
-      Data pendingInterruptBits = corePendingInterruptBits(memEcfg, memEstat);
-      Bool timerPending = ((pendingInterruptBits & 32'h00000800) != 0);
-      Bool softPending = ((pendingInterruptBits & 32'h00000003) != 0);
-      Bool delayInterrupt = timerPending && !softPending;
-      Bool has_int_raw = coreHasInterrupt(memCrmd, memEcfg, memEstat);
-      Bool has_int = !memDCacheSideEffect && !memReqIssued && !dCacheRespSrcQ.notEmpty &&
-        !memWritesInterruptCsr && has_int_raw && (!delayInterrupt || hasIntPrev);
-      ExcpInfo memExcp = has_int ? mkExcp(`ECODE_INT, 0, 0) : execPkt.excp;
+  rule doMemoryStage2;
+    let memPkt = m1m2Fifo.first();
+    Maybe#(ExecInst) nextInst = memPkt.eInst;
+    Maybe#(TlbReadResult) tlbResult = tagged Invalid;
+    ExcpInfo memExcp = memPkt.excp;
 
-      hasIntPrev <= has_int_raw;
-      if (memExcp.valid) begin
-        memExcpPending <= True;
-      end
-
-      // D-MMU translation for bypass path (e.g. CSR writes, non-cache ops)
-      Addr memPaddr = eInst.addr;
-      if (!memExcp.valid && !execPkt.excp.valid) begin
-        Bool isMemType = (eInst.iType == Ld || eInst.iType == St ||
-                          eInst.iType == Ll || eInst.iType == Sc);
-        Bool dCacheCacop = (eInst.iType == Cacop) &&
-                           fromMaybe(0, eInst.cacheOp)[2:0] != 3'b000;
-        if (isMemType || dCacheCacop) begin
-          MmuAccessType accessType =
-            (eInst.iType == St || eInst.iType == Sc) ? MmuStore : MmuLoad;
-          Data crmd = csrf.crmd;
-          MmuTranslateType transType = getMmuTranslateType(crmd);
-          TlbLookupResult tlbRes = tlb.lookupData(eInst.addr, csrf.asid);
-          MmuResult dTrans = MmuResult{
-            pa: eInst.addr,
-            mat: getDataMatType(crmd),
-            fromDmw: False,
-            fromTlb: False,
-            excValid: False,
-            ecode: 0,
-            esubcode: 0,
-            badv: eInst.addr
-          };
-          if (transType == Translate) begin
-            dTrans = mmuTranslate(eInst.addr, accessType, crmd, csrf.asid,
-              csrf.dmw0, csrf.dmw1, tlbRes);
-          end else if (transType == None) begin
-            dTrans.excValid = True;
-            dTrans.ecode = `ECODE_ADE;
-            dTrans.esubcode = `ESUBCODE_ADEM;
-          end
-          memPaddr = dTrans.pa;
-          if (dTrans.excValid) begin
-            memExcp = mkExcp(dTrans.ecode, dTrans.esubcode, dTrans.badv);
-            memExcpPending <= True;
-          end
+    if (memPkt.m2Op == M2OpDCache &&& memPkt.eInst matches tagged Valid .mInst) begin
+      let d <- dCache.resp();
+      ExecInst doneInst = mInst;
+      Bool isLoad = (doneInst.iType == Ld || doneInst.iType == Ll);
+      Bool isStore = (doneInst.iType == St);
+      Bool isSc = (doneInst.iType == Sc);
+      ByteMask m = fromMaybe(5'b00000, memPkt.mask);
+      if (isLoad) begin
+        if (doneInst.iType == Ld) begin
+          doneInst.data = selectLoadData(d.data, doneInst.addr[1:0],
+            m[3:0], m[4] == 1'b1);
+        end else begin
+          doneInst.data = d.data;
+          lrValidReg <= True;
+          lrAddrReg <= memPkt.memPaddr;
         end
       end
-
-      e2mFifo.deq();
-      m2wFifo.enq(M2W{
-        pc: execPkt.pc,
-`ifdef CONFIG_DIFFTEST
-        inst: execPkt.inst,
-        csrSnapshot: csrf.diffSnapshot,
-`endif
-        excp: memExcp,
-        memPaddr: memPaddr,
-        isNeedFlush: execPkt.isNeedFlush,
-        mInst: tagged Valid eInst
-`ifdef CONFIG_DIFFTEST
-        , diffMem: tagged Invalid
-`endif
-      });
-    end else begin
-      e2mFifo.deq();
-      m2wFifo.enq(M2W{
-        pc: execPkt.pc,
-`ifdef CONFIG_DIFFTEST
-        inst: execPkt.inst,
-        csrSnapshot: csrf.diffSnapshot,
-`endif
-        excp: execPkt.excp,
-        memPaddr: 0,
-        isNeedFlush: execPkt.isNeedFlush,
-        mInst: tagged Invalid
-`ifdef CONFIG_DIFFTEST
-        , diffMem: tagged Invalid
-`endif
-      });
+      if (!memExcp.valid && (isStore || isSc)) begin
+        lrValidReg <= False;
+      end
+      nextInst = tagged Valid doneInst;
+      if (isValid(doneInst.dst) && fromMaybe(0, doneInst.dst) != 0) begin
+        memForward <= ForwardType{valid: True, stall: False,
+          index: fromMaybe(0, doneInst.dst), data: doneInst.data};
+      end
+    end else if (memPkt.m2Op == M2OpTlb &&&
+        memPkt.eInst matches tagged Valid .mInst) begin
+      let res <- tlb.resp();
+      tlbResult = tagged Valid res;
+      if (!memExcp.valid) begin
+        if (mInst.iType == Tlbsrch) begin
+          Data srchResult = 0;
+          if (res.ne) srchResult[`CSR_TLBIDX_NE] = 1'b1;
+          else srchResult[`CSR_TLBIDX_INDEX] = res.ehi[`CSR_TLBIDX_INDEX];
+          csrf.applyTlbsrchResult(srchResult);
+        end else if (mInst.iType == Tlbrd) begin
+          csrf.applyTlbrdResult(res.ne, res.ps, res.ehi, res.elo0,
+            res.elo1, res.asid);
+        end else if (mInst.iType == Tlbwr || mInst.iType == Tlbfill) begin
+          csrf.commitTlbOp;
+        end
+      end
     end
+
+`ifdef CONFIG_DIFFTEST
+    Maybe#(DiffMemOp) diffMemInfo = tagged Invalid;
+    if (memPkt.m2Op == M2OpDCache &&& nextInst matches tagged Valid .dInst) begin
+      Bool isLoad = (dInst.iType == Ld || dInst.iType == Ll);
+      Bool isStore = (dInst.iType == St);
+      Bool isSc = (dInst.iType == Sc);
+      ByteMask m = fromMaybe(5'b00000, memPkt.mask);
+      let storePkt = selectStoreData(dInst.data, dInst.addr[1:0], m[3:0]);
+      if (!memExcp.valid && (isLoad || isStore || isSc)) begin
+        diffMemInfo = tagged Valid DiffMemOp{
+          isLoad: isLoad,
+          isStore: isStore || isSc,
+          isSc: isSc,
+          paddr: memPkt.memPaddr,
+          vaddr: dInst.addr,
+          storeData: tpl_2(storePkt)
+        };
+      end
+    end
+`endif
+
+    m1m2Fifo.deq();
+    m2wFifo.enq(M2W{
+      pc: memPkt.pc,
+`ifdef CONFIG_DIFFTEST
+      inst: memPkt.inst,
+      csrSnapshot: memPkt.csrSnapshot,
+`endif
+      excp: memExcp,
+      memPaddr: memPkt.memPaddr,
+      isNeedFlush: memPkt.isNeedFlush,
+      mInst: nextInst,
+      tlbResult: tlbResult
+`ifdef CONFIG_DIFFTEST
+      , diffMem: diffMemInfo
+`endif
+    });
   endrule
 
   // ============================================================
@@ -895,23 +825,10 @@ module mkCore(Core);
             ertnTarget = era;
             pcReg[2] <= era;
             wbFlush = True;
-          end else if (mInst.iType == Tlbsrch) begin
-            noAction;
-          end else if (mInst.iType == Invtlb) begin
-            tlb.invtlb(truncate(fromMaybe(0, mInst.imm)), mInst.data, mInst.addr);
-          end else if (mInst.iType == Tlbwr) begin
-            tlb.writeEntry(csrf.tlbWriteIdx, csrf.tlbWriteEhi, csrf.tlbWriteElo0,
-              csrf.tlbWriteElo1, csrf.tlbWriteAsid);
-            csrf.commitTlbOp;
           end else if (mInst.iType == Tlbfill) begin
-            let idx <- tlb.fillEntry(csrf.tlbWriteIdx, csrf.tlbWriteEhi,
-              csrf.tlbWriteElo0, csrf.tlbWriteElo1, csrf.tlbWriteAsid);
-            wbTlbfillIndex = zeroExtend(idx);
-            csrf.commitTlbOp;
-          end else if (mInst.iType == Tlbrd) begin
-            let tlbRead = tlb.readEntry(csrf.tlbReadIndex);
-            csrf.applyTlbrdResult(tlbRead.ne, tlbRead.ps, tlbRead.ehi,
-              tlbRead.elo0, tlbRead.elo1, tlbRead.asid);
+            if (memPkt.tlbResult matches tagged Valid .tlbFillRes) begin
+              wbTlbfillIndex = truncate(tlbFillRes.ehi[`CSR_TLBIDX_INDEX]);
+            end
           end else if (mInst.iType == Ibar) begin
             iCache.invalidate;
           end else if (isCacop && fromMaybe(0, mInst.cacheOp)[2:0] == 3'b000) begin
@@ -955,13 +872,7 @@ module mkCore(Core);
 
         let diffRegsState = rf.diffSnapshotAfterWrite(diffDst, mInst.data);
 
-        let diffCsrState =
-          (mInst.iType == Tlbrd) ?
-          diffSnapshotAfterTlbrdFromState(currDiffCsrState,
-          tlb.readEntry(csrf.tlbReadIndex).ne, tlb.readEntry(csrf.tlbReadIndex).ps,
-          tlb.readEntry(csrf.tlbReadIndex).ehi, tlb.readEntry(csrf.tlbReadIndex).elo0,
-          tlb.readEntry(csrf.tlbReadIndex).elo1, tlb.readEntry(csrf.tlbReadIndex).asid):
-          diffSnapshotAfterWriteFromState(
+        DiffArchCsrState diffCsrState = diffSnapshotAfterWriteFromState(
           currDiffCsrState,
           diffCsrIdx,
           diffCsrVal,
@@ -972,6 +883,13 @@ module mkCore(Core);
           wbExcp.badv,
           diffCommitErtn
           );
+        if (mInst.iType == Tlbrd) begin
+          if (memPkt.tlbResult matches tagged Valid .tlbRead) begin
+            diffCsrState = diffSnapshotAfterTlbrdFromState(currDiffCsrState,
+              tlbRead.ne, tlbRead.ps, tlbRead.ehi, tlbRead.elo0,
+              tlbRead.elo1, tlbRead.asid);
+          end
+        end
 
         let diffCommitState = DiffCommit{
           valid: !wb_has_excp,
@@ -1020,8 +938,6 @@ module mkCore(Core);
       lrValidReg <= False;
       iCache.squash();
       dCache.squash();
-      dCacheRespSrcQ.clear();
-      memReqIssued <= False;
       memExcpPending <= False;
       if2WaitRefill <= False;
       f1f2Fifo.clear();
@@ -1029,9 +945,9 @@ module mkCore(Core);
       d2rFifo.clear();
       r2eFifo.clear();
       e2mFifo.clear();
+      m1m2Fifo.clear();
       m2wFifo.clear();
       csrSb.clear();
-      sb.clear();
       mulInFlight <= False;
       divInFlight <= False;
     end else if (wbRetire) begin
@@ -1040,7 +956,6 @@ module mkCore(Core);
       end
       m2wFifo.deq();
       csrSb.deq();
-      sb.remove();
     end
   endrule
 
@@ -1063,7 +978,7 @@ module mkCore(Core);
     return ret;
   endmethod
   method Bool diffTraceValid = difftest.diffTraceValid;
-  `endif
+  `else
   method Bool diffStepValid = difftest.diffStepValid;
   method Bit#(142) liveDiffCommitBundle = difftest.liveDiffCommitBundle;
   method Bit#(1024) liveDiffRegsBundle = difftest.liveDiffRegsBundle;

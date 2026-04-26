@@ -1,5 +1,7 @@
 import Types::*;
 import ProcTypes::*;
+import ICache::*;
+import Tlb::*;
 `include "Autoconf.bsv"
 `ifdef CONFIG_DIFFTEST
 import DiffTypes::*;
@@ -16,6 +18,7 @@ typedef struct {
   Data             dmw0;
   Data             dmw1;
   MmuTranslateType transType;
+  ICacheProbeResp  probeRes;
 } F1toF2 deriving(Bits, Eq);
 
 // IF2 -> ID packet (replaces old F2D)
@@ -73,6 +76,7 @@ typedef struct {
   ExcpInfo            excp;
   Maybe#(ByteMask)    mask;
   Bool                isNeedFlush;
+  Bool                dataTlbLookupPending;
   Maybe#(ExecInst)    eInst;
 }   E2M deriving(Bits, Eq);
 
@@ -94,6 +98,7 @@ typedef struct {
   Addr                memPaddr;
   Bool                isNeedFlush;
   Maybe#(ExecInst)    mInst;
+  Maybe#(TlbReadResult) tlbResult;
 }   M2W deriving(Bits, Eq);
 
 typedef struct {
@@ -132,5 +137,39 @@ typedef struct {
   Bit#(9) esubcode;
   Addr    badv;
 } MmuResult deriving(Bits, Eq);
+
+typedef struct {
+  Bool    valid;
+  Bool    stall;
+  Bit#(5) index;
+  Data    data;
+} ForwardType deriving(Bits, Eq);
+
+
+typedef enum {
+  M2OpNone,
+  M2OpDCache,
+  M2OpTlb
+} Mem2Op deriving(Bits, Eq);
+
+typedef struct {
+  Addr                pc;
+`ifdef CONFIG_DIFFTEST
+  Instruction         inst;
+`else
+`ifdef CONFIG_VSIM
+  Instruction         inst;
+`endif
+`endif
+  ExcpInfo            excp;
+  Maybe#(ByteMask)    mask;
+`ifdef CONFIG_DIFFTEST
+  DiffArchCsrState    csrSnapshot;
+`endif
+  Bool                isNeedFlush;
+  Maybe#(ExecInst)    eInst;
+  Mem2Op              m2Op;
+  Addr                memPaddr;
+} M1toM2 deriving(Bits, Eq);
 
 Addr startpc = 32'h1c000000;

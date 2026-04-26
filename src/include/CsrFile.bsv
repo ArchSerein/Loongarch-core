@@ -669,6 +669,10 @@ module mkCsrFile(CsrFile);
       csr_tlbidx <= next_tlbidx;
     endmethod
 
+    method Action commitTlbOp;
+      noAction;
+    endmethod
+
     method ActionValue#(Addr) raiseException(Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv);
       Data nextCrmd   = csr_crmd;
       Bit#(2) currPlv = csr_crmd[`CSR_CRMD_PLV];
