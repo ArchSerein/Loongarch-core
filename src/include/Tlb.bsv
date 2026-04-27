@@ -323,114 +323,115 @@ module mkTlb(TlbArray);
   // ============================================================
   // Maintenance Scan
   // ============================================================
-  rule doReqPipeline (respFifo.notFull && (reqCnt != 0 || reqFifo.notEmpty));
+  rule doReqStart (respFifo.notFull && reqCnt == 0 && reqFifo.notEmpty);
+    let r = reqFifo.first;
+    reqFifo.deq;
+    TlbReadResult dummyRes = encodeTlbReadResult(emptyEntry);
+
+    if (r.op == TlbOpSearch) begin
+      Bit#(19) vppn = r.ehi[`CSR_TLBEHI_VPPN];
+      Bit#(10) asidVal = r.asid[`CSR_ASID_ASID];
+
+      TlbSearchEntry chunkHit = noSearchHit;
+      TlbIndex baseIdx = tlbChunkBase(0);
+      for (Integer i = 0; i < valueOf(TlbCompareEntries); i = i + 1) begin
+        TlbIndex idx = baseIdx + fromInteger(i);
+        chunkHit = mergeSearchHit(chunkHit, matchSearchEntry(entries[idx], idx, vppn, asidVal));
+      end
+
+      if (fromInteger(valueOf(TlbCompareChunks) - 1) == 0) begin
+        TlbReadResult res = dummyRes;
+        res.ne = !chunkHit.hit;
+        res.ps = chunkHit.ps;
+        if (chunkHit.hit) res.ehi[`CSR_TLBIDX_INDEX] = zeroExtend(chunkHit.idx);
+        respFifo.enq(res);
+      end else begin
+        reqScanCtx <= ReqScanCtx {
+          kind: ReqScanSearch, searchVppn: vppn, searchAsid: asidVal,
+          invOp: 0, invAsid: 0, invVppn: 0
+        };
+        reqSearchHit <= chunkHit;
+        reqCnt <= 1;
+      end
+    end else if (r.op == TlbOpRead) begin
+      TlbIndex idx = truncate(r.tlbidx[`CSR_TLBIDX_INDEX]);
+      let res = encodeTlbReadResult(entries[idx]);
+      respFifo.enq(res);
+    end else if (r.op == TlbOpWrite || r.op == TlbOpFill) begin
+      TlbIndex idx = (r.op == TlbOpFill) ? replaceCnt : truncate(r.tlbidx[`CSR_TLBIDX_INDEX]);
+      TlbEntry ent = decodeTlbEntry(r.ehi, r.elo0, r.elo1, r.asid);
+      ent.ps = r.tlbidx[`CSR_TLBIDX_PS];
+      ent.e = (r.tlbidx[`CSR_TLBIDX_NE] == 1'b0);
+
+      entries[idx] <= ent;
+      if (r.op == TlbOpFill) replaceCnt <= replaceCnt + 1;
+
+      TlbReadResult res = dummyRes;
+      res.ehi[`CSR_TLBIDX_INDEX] = zeroExtend(idx);
+      respFifo.enq(res);
+    end else if (r.op == TlbOpInv) begin
+      Bit#(10) invAsid = r.asid[`CSR_ASID_ASID];
+      Bit#(19) invVppn = r.va[31:13];
+
+      TlbIndex baseIdx = tlbChunkBase(0);
+      for (Integer i = 0; i < valueOf(TlbCompareEntries); i = i + 1) begin
+        TlbIndex idx = baseIdx + fromInteger(i);
+        if (shouldInvalidateEntry(entries[idx], r.invOp, invAsid, invVppn)) entries[idx] <= emptyEntry;
+      end
+
+      if (fromInteger(valueOf(TlbCompareChunks) - 1) == 0) begin
+        respFifo.enq(dummyRes);
+      end else begin
+        reqScanCtx <= ReqScanCtx {
+          kind: ReqScanInv, searchVppn: 0, searchAsid: 0,
+          invOp: r.invOp, invAsid: invAsid, invVppn: invVppn
+        };
+        reqCnt <= 1;
+      end
+    end
+  endrule
+
+  rule doReqSearchScan (respFifo.notFull && reqCnt != 0 && reqScanCtx.kind == ReqScanSearch);
     TlbCompareCnt curCnt = reqCnt;
     ReqScanCtx scanCtx = reqScanCtx;
     TlbSearchEntry oldSearchHit = reqSearchHit;
 
-    if (reqCnt != 0) begin
-      TlbIndex baseIdx = tlbChunkBase(curCnt);
-      if (scanCtx.kind == ReqScanSearch) begin
-        TlbSearchEntry chunkHit = noSearchHit;
-        for (Integer i = 0; i < valueOf(TlbCompareEntries); i = i + 1) begin
-          TlbIndex idx = baseIdx + fromInteger(i);
-          chunkHit = mergeSearchHit(chunkHit, matchSearchEntry(entries[idx], idx, scanCtx.searchVppn, scanCtx.searchAsid));
-        end
+    TlbSearchEntry chunkHit = noSearchHit;
+    TlbIndex baseIdx = tlbChunkBase(curCnt);
+    for (Integer i = 0; i < valueOf(TlbCompareEntries); i = i + 1) begin
+      TlbIndex idx = baseIdx + fromInteger(i);
+      chunkHit = mergeSearchHit(chunkHit, matchSearchEntry(entries[idx], idx, scanCtx.searchVppn, scanCtx.searchAsid));
+    end
 
-        TlbSearchEntry nextHit = mergeSearchHit(oldSearchHit, chunkHit);
-        if (curCnt == fromInteger(valueOf(TlbCompareChunks) - 1)) begin
-          TlbReadResult res = encodeTlbReadResult(emptyEntry);
-          res.ne = !nextHit.hit;
-          res.ps = nextHit.ps;
-          if (nextHit.hit) res.ehi[`CSR_TLBIDX_INDEX] = zeroExtend(nextHit.idx);
-          respFifo.enq(res);
-          reqCnt <= 0;
-        end else begin
-          reqSearchHit <= nextHit;
-          reqCnt <= curCnt + 1;
-        end
-      end else begin
-        for (Integer i = 0; i < valueOf(TlbCompareEntries); i = i + 1) begin
-          TlbIndex idx = baseIdx + fromInteger(i);
-          if (shouldInvalidateEntry(entries[idx], scanCtx.invOp, scanCtx.invAsid, scanCtx.invVppn)) entries[idx] <= emptyEntry;
-        end
-
-        if (curCnt == fromInteger(valueOf(TlbCompareChunks) - 1)) begin
-          respFifo.enq(encodeTlbReadResult(emptyEntry));
-          reqCnt <= 0;
-        end else begin
-          reqCnt <= curCnt + 1;
-        end
-      end
+    TlbSearchEntry nextHit = mergeSearchHit(oldSearchHit, chunkHit);
+    if (curCnt == fromInteger(valueOf(TlbCompareChunks) - 1)) begin
+      TlbReadResult res = encodeTlbReadResult(emptyEntry);
+      res.ne = !nextHit.hit;
+      res.ps = nextHit.ps;
+      if (nextHit.hit) res.ehi[`CSR_TLBIDX_INDEX] = zeroExtend(nextHit.idx);
+      respFifo.enq(res);
+      reqCnt <= 0;
     end else begin
-      let r = reqFifo.first;
-      reqFifo.deq;
-      TlbReadResult dummyRes = encodeTlbReadResult(emptyEntry);
-      
-      if (r.op == TlbOpSearch) begin
-        Bit#(19) vppn = r.ehi[`CSR_TLBEHI_VPPN];
-        Bit#(10) asidVal = r.asid[`CSR_ASID_ASID];
+      reqSearchHit <= nextHit;
+      reqCnt <= curCnt + 1;
+    end
+  endrule
 
-        TlbSearchEntry chunkHit = noSearchHit;
-        TlbIndex baseIdx = tlbChunkBase(0);
-        for (Integer i = 0; i < valueOf(TlbCompareEntries); i = i + 1) begin
-          TlbIndex idx = baseIdx + fromInteger(i);
-          chunkHit = mergeSearchHit(chunkHit, matchSearchEntry(entries[idx], idx, vppn, asidVal));
-        end
+  rule doReqInvScan (respFifo.notFull && reqCnt != 0 && reqScanCtx.kind == ReqScanInv);
+    TlbCompareCnt curCnt = reqCnt;
+    ReqScanCtx scanCtx = reqScanCtx;
 
-        if (fromInteger(valueOf(TlbCompareChunks) - 1) == 0) begin
-          TlbReadResult res = dummyRes;
-          res.ne = !chunkHit.hit;
-          res.ps = chunkHit.ps;
-          if (chunkHit.hit) res.ehi[`CSR_TLBIDX_INDEX] = zeroExtend(chunkHit.idx);
-          respFifo.enq(res);
-        end else begin
-          reqScanCtx <= ReqScanCtx {
-            kind: ReqScanSearch, searchVppn: vppn, searchAsid: asidVal,
-            invOp: 0, invAsid: 0, invVppn: 0
-          };
-          reqSearchHit <= chunkHit;
-          reqCnt <= 1;
-        end
-      end 
-      else if (r.op == TlbOpRead) begin
-        TlbIndex idx = truncate(r.tlbidx[`CSR_TLBIDX_INDEX]);
-        let res = encodeTlbReadResult(entries[idx]);
-        respFifo.enq(res);
-      end 
-      else if (r.op == TlbOpWrite || r.op == TlbOpFill) begin
-        TlbIndex idx = (r.op == TlbOpFill) ? replaceCnt : truncate(r.tlbidx[`CSR_TLBIDX_INDEX]);
-        TlbEntry ent = decodeTlbEntry(r.ehi, r.elo0, r.elo1, r.asid);
-        ent.ps = r.tlbidx[`CSR_TLBIDX_PS];
-        ent.e = (r.tlbidx[`CSR_TLBIDX_NE] == 1'b0);
-        
-        entries[idx] <= ent;
-        if (r.op == TlbOpFill) replaceCnt <= replaceCnt + 1;
-        
-        TlbReadResult res = dummyRes;
-        res.ehi[`CSR_TLBIDX_INDEX] = zeroExtend(idx);
-        respFifo.enq(res);
-      end 
-      else if (r.op == TlbOpInv) begin
-        Bit#(10) invAsid = r.asid[`CSR_ASID_ASID];
-        Bit#(19) invVppn = r.va[31:13];
-        
-        TlbIndex baseIdx = tlbChunkBase(0);
-        for (Integer i = 0; i < valueOf(TlbCompareEntries); i = i + 1) begin
-          TlbIndex idx = baseIdx + fromInteger(i);
-          if (shouldInvalidateEntry(entries[idx], r.invOp, invAsid, invVppn)) entries[idx] <= emptyEntry;
-        end
+    TlbIndex baseIdx = tlbChunkBase(curCnt);
+    for (Integer i = 0; i < valueOf(TlbCompareEntries); i = i + 1) begin
+      TlbIndex idx = baseIdx + fromInteger(i);
+      if (shouldInvalidateEntry(entries[idx], scanCtx.invOp, scanCtx.invAsid, scanCtx.invVppn)) entries[idx] <= emptyEntry;
+    end
 
-        if (fromInteger(valueOf(TlbCompareChunks) - 1) == 0) begin
-          respFifo.enq(dummyRes);
-        end else begin
-          reqScanCtx <= ReqScanCtx {
-            kind: ReqScanInv, searchVppn: 0, searchAsid: 0,
-            invOp: r.invOp, invAsid: invAsid, invVppn: invVppn
-          };
-          reqCnt <= 1;
-        end
-      end
+    if (curCnt == fromInteger(valueOf(TlbCompareChunks) - 1)) begin
+      respFifo.enq(encodeTlbReadResult(emptyEntry));
+      reqCnt <= 0;
+    end else begin
+      reqCnt <= curCnt + 1;
     end
   endrule
 
