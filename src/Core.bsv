@@ -78,6 +78,12 @@ module mkCore(Core);
   // ============================================================
   // Stage 1: IF1 — PC selection, start I-Cache probe, start I-TLB lookup
   // ============================================================
+`ifdef CONFIG_TRACE_PERFORMANCE
+  rule countIfStall (!f1f2Fifo.notFull);
+    perf_pipeline_stall(0);
+  endrule
+`endif
+
   rule doIF1;
     Addr pc = pcReg[0];
     Addr btbPc = btb.predPc(pc);
@@ -106,6 +112,9 @@ module mkCore(Core);
   rule doIF2if2WaitRefill (if2WaitRefill);
     let req = if2PendingReq;
     let iResp <- iCache.refillResp;
+`ifdef CONFIG_TRACE_PERFORMANCE
+    perf_icache_miss_cycle();
+`endif
     if (iResp.addr == if2MissPaddr) begin
       f2dFifo.enq(F2D{
         pc: req.pc,
@@ -189,6 +198,9 @@ module mkCore(Core);
       end else begin
         // Cache miss: issue refill and stall IF2
         // Do NOT dequeue f1f2Fifo — keep entry until refill completes
+`ifdef CONFIG_TRACE_PERFORMANCE
+        perf_icache_miss();
+`endif
         iCache.refillReq(fTrans.pa, fetchUseCache);
         if2PendingReq <= req;
         if2MissPaddr <= fTrans.pa;
@@ -293,6 +305,10 @@ module mkCore(Core);
       regSb.insert(rInst.dst);
       csrSb.enq(isCsrWrite ? targetCsr : tagged Invalid);
       d2rFifo.deq();
+    end else begin
+`ifdef CONFIG_TRACE_PERFORMANCE
+      perf_pipeline_stall(1);
+`endif
     end
   endrule
 
@@ -331,12 +347,22 @@ module mkCore(Core);
           divInFlight <= False;
         end
       end
+    end else begin
+`ifdef CONFIG_TRACE_PERFORMANCE
+      perf_pipeline_stall(2);
+`endif
     end
 
     if (doNormalExec) begin
       ExecInst eInst = exec(rrfPkt.rInst, rrfPkt.rVal1, rrfPkt.rVal2, rrfPkt.pc,
       rrfPkt.predPc, rrfPkt.csrVal);
       ExcpInfo eExcp = rrfPkt.excp;
+
+`ifdef CONFIG_TRACE_PERFORMANCE
+      if (rrfPkt.rInst.iType == Br) begin
+        perf_branch_exec(eInst.mispredict);
+      end
+`endif
 
       if (isValid(rrfPkt.rInst.muldivFunc)) begin
         let mdFunc = fromMaybe(?, rrfPkt.rInst.muldivFunc);
@@ -405,6 +431,12 @@ module mkCore(Core);
   // ============================================================
   // Stage 6a/6b: MEM1 dispatch and MEM2 response collection
   // ============================================================
+`ifdef CONFIG_TRACE_PERFORMANCE
+  rule countMemStall (e2mFifo.notEmpty && !m1m2Fifo.notFull);
+    perf_pipeline_stall(3);
+  endrule
+`endif
+
   function Action doMemoryStage1Body(TlbLookupResult tlbRes);
     action
     let execPkt = e2mFifo.first();

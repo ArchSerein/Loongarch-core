@@ -642,11 +642,39 @@ extern "C" void bdpi_difftest_instr_commit(unsigned char valid, unsigned int pc,
 #ifdef CONFIG_TRACE_PERFORMANCE
 uint64_t inst_cnt;
 uint64_t cycle_cnt;
+
+uint64_t icache_miss_cnt;
+uint64_t icache_miss_cycle_cnt;
+uint64_t dcache_miss_cnt;
+uint64_t dcache_miss_cycle_cnt;
+uint64_t branch_cnt;
+uint64_t branch_mispredict_cnt;
+uint64_t stall_cycles[4]; // 0: IF, 1: ID/RR, 2: EXE, 3: MEM
+
 extern "C" void inst_count() {
   ++inst_cnt;
 }
 extern "C" void cycle_count() {
   ++cycle_cnt;
+}
+extern "C" void perf_icache_miss() {
+  ++icache_miss_cnt;
+}
+extern "C" void perf_icache_miss_cycle() {
+  ++icache_miss_cycle_cnt;
+}
+extern "C" void perf_dcache_miss() {
+  ++dcache_miss_cnt;
+}
+extern "C" void perf_dcache_miss_cycle() {
+  ++dcache_miss_cycle_cnt;
+}
+extern "C" void perf_branch_exec(unsigned char mispredict) {
+  ++branch_cnt;
+  if (mispredict) ++branch_mispredict_cnt;
+}
+extern "C" void perf_pipeline_stall(unsigned char stage) {
+  if (stage < 4) ++stall_cycles[stage];
 }
 #endif
 
@@ -683,7 +711,22 @@ int main(int argc, char** argv) {
 
   #ifdef CONFIG_TRACE_PERFORMANCE
   double ipc = static_cast<double>(inst_cnt) / static_cast<double>(cycle_cnt);
-  printf("Cycles: 0x%lx\nInsts: 0x%lx\nIPC: %f\n", cycle_cnt, inst_cnt, ipc);
+  printf("\n--- Performance Statistics ---\n");
+  printf("Cycles:            0x%lx (%ld)\n", cycle_cnt, cycle_cnt);
+  printf("Instructions:      0x%lx (%ld)\n", inst_cnt, inst_cnt);
+  printf("IPC:               %f\n", ipc);
+  printf("ICache Misses:     %ld\n", icache_miss_cnt);
+  printf("ICache Miss Cycles:%ld (%.2f%%)\n", icache_miss_cycle_cnt, 100.0 * icache_miss_cycle_cnt / cycle_cnt);
+  printf("DCache Misses:     %ld\n", dcache_miss_cnt);
+  printf("DCache Miss Cycles:%ld (%.2f%%)\n", dcache_miss_cycle_cnt, 100.0 * dcache_miss_cycle_cnt / cycle_cnt);
+  printf("Branches:          %ld\n", branch_cnt);
+  printf("Mispredicts:       %ld (%.2f%%)\n", branch_mispredict_cnt, branch_cnt ? 100.0 * branch_mispredict_cnt / branch_cnt : 0);
+  printf("Stall Cycles:\n");
+  printf("  IF:              %ld (%.2f%%)\n", stall_cycles[0], 100.0 * stall_cycles[0] / cycle_cnt);
+  printf("  ID/RR:           %ld (%.2f%%)\n", stall_cycles[1], 100.0 * stall_cycles[1] / cycle_cnt);
+  printf("  EXE:             %ld (%.2f%%)\n", stall_cycles[2], 100.0 * stall_cycles[2] / cycle_cnt);
+  printf("  MEM:             %ld (%.2f%%)\n", stall_cycles[3], 100.0 * stall_cycles[3] / cycle_cnt);
+  printf("------------------------------\n");
   #endif
 
   bk_shutdown(g_sim_hdl);

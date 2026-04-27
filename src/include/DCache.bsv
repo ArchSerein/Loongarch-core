@@ -7,6 +7,9 @@ import Vector::*;
 import Param::*;
 import Assert::*;
 `include "Autoconf.bsv"
+`ifdef CONFIG_TRACE_PERFORMANCE
+import Perf::*;
+`endif
 
 typedef `CONFIG_DCACHE_SETS       DCacheSets; // number of sets
 typedef `CONFIG_DCACHE_WAYS       DCacheWays; // set associativity
@@ -192,6 +195,12 @@ module mkDCache(DCache);
   `endif
   `endif
 
+  `ifdef CONFIG_TRACE_PERFORMANCE
+  rule countMissCycles (state != Ready);
+    perf_dcache_miss_cycle();
+  endrule
+  `endif
+
   rule doLookup (state == Ready);
     let r = reqQ.first;
     reqQ.deq;
@@ -315,6 +324,9 @@ module mkDCache(DCache);
 
       if (!r.useCache) begin
         missReq <= r;
+`ifdef CONFIG_TRACE_PERFORMANCE
+        perf_dcache_miss();
+`endif
         state <= SendUncacheReq;
       end else if (hit) begin
         replacer.access(idx, hitWay);
@@ -362,6 +374,9 @@ module mkDCache(DCache);
           lrValid <= False;
         end else begin
           missReq <= r;
+`ifdef CONFIG_TRACE_PERFORMANCE
+          perf_dcache_miss();
+`endif
           state <= StartMiss;
         end
       end
