@@ -46,15 +46,10 @@ module mkCore(Core);
   AxiMemMaster        axiMux <- mkAxiArbiter2(iCache.axiMem, dCache.axiMem);
   Btb#(6)                 btb <- mkBtb; // 64-entry BTB
   Bht#(8)                 bht <- mkBht;
+  Scoreboard#(8)        regSb <- mkCFScoreboard;
   SFifo#(8, Maybe#(CsrIndx), Maybe#(CsrIndx)) csrSb <- mkCFSFifo(coreIsCsrConflict);
   Reg#(Bool)       hasIntPrev <- mkReg(False);
   TlbArray                tlb <- mkTlb;
-
-  // Forwarding wires: written by later stages, read by doRrf
-  Wire#(ForwardType) exeForward <- mkDWire(ForwardType{valid: False,
-    stall: False, index: 0, data: 0});
-  Wire#(ForwardType) memForward <- mkDWire(ForwardType{valid: False,
-    stall: False, index: 0, data: 0});
 `ifdef CONFIG_DIFFTEST
   Difftest difftest <- mkDifftest;
 `endif
@@ -259,91 +254,33 @@ module mkCore(Core);
 
     Bool isNeedFlush = isBarrier || isTlbSerial || isCsrWrite;
 
-    // Forwarding: check EXE, MEM stages for data bypass
+    ScoreboardSearchResult src1Sb = regSb.search1(rInst.src1);
+    ScoreboardSearchResult src2Sb = regSb.search2(rInst.src2);
+
     Data rVal1 = rf.rd1(fromMaybe(?, rInst.src1));
     Data rVal2 = rf.rd2(fromMaybe(?, rInst.src2));
     Data csrVal = csrf.rd(fromMaybe(?, rInst.csr));
 
-    // Bypass logic: youngest to oldest
-    // Priority: EXE (wire) > E2M (FIFO) > MEM (wire) > M2W (FIFO)
-    // Note: WB stage bypass is handled by mkBypassRFile
-
-    // 1. Bypass from M2W FIFO (instructions waiting for WB)
-    if (m2wFifo.notEmpty) begin
-      let mPkt = m2wFifo.first;
-      if (isValid(mPkt.mInst)) begin
-        let mInst = fromMaybe(?, mPkt.mInst);
-        if (isValid(mInst.dst) && fromMaybe(?, mInst.dst) != 0) begin
-          if (rInst.src1 matches tagged Valid .s1 &&& s1 == fromMaybe(?, mInst.dst))
-            rVal1 = mInst.data;
-          if (rInst.src2 matches tagged Valid .s2 &&& s2 == fromMaybe(?, mInst.dst))
-            rVal2 = mInst.data;
-        end
-      end
+    if (rInst.src1 matches tagged Valid .s1 &&& s1 == 0) begin
+      rVal1 = 0;
+    end else if (src1Sb.found &&&
+        src1Sb.data matches tagged Valid .fwdData1) begin
+      rVal1 = fwdData1;
     end
 
-    // 2. Bypass from MEM stage (instruction currently in MEM)
-    if (memForward.valid) begin
-      if (rInst.src1 matches tagged Valid .s1 &&& s1 == memForward.index)
-        rVal1 = memForward.data;
-      if (rInst.src2 matches tagged Valid .s2 &&& s2 == memForward.index)
-        rVal2 = memForward.data;
+    if (rInst.src2 matches tagged Valid .s2 &&& s2 == 0) begin
+      rVal2 = 0;
+    end else if (src2Sb.found &&&
+        src2Sb.data matches tagged Valid .fwdData2) begin
+      rVal2 = fwdData2;
     end
 
-    // 3. Bypass from E2M FIFO (instructions waiting for MEM)
-    if (e2mFifo.notEmpty) begin
-      let ePkt = e2mFifo.first;
-      if (isValid(ePkt.eInst)) begin
-        let eInst = fromMaybe(?, ePkt.eInst);
-        if (isValid(eInst.dst) && fromMaybe(?, eInst.dst) != 0) begin
-          if (rInst.src1 matches tagged Valid .s1 &&& s1 == fromMaybe(?, eInst.dst))
-            rVal1 = eInst.data;
-          if (rInst.src2 matches tagged Valid .s2 &&& s2 == fromMaybe(?, eInst.dst))
-            rVal2 = eInst.data;
-        end
-      end
-    end
-
-    // 4. Bypass from EXE stage (instruction currently in EXE)
-    if (exeForward.valid) begin
-      if (rInst.src1 matches tagged Valid .s1 &&& s1 == exeForward.index)
-        rVal1 = exeForward.data;
-      if (rInst.src2 matches tagged Valid .s2 &&& s2 == exeForward.index)
-        rVal2 = exeForward.data;
-    end
-
-    Bool exeHazard = False;
-    if (exeForward.valid && exeForward.stall && exeForward.index != 0) begin
-      if (rInst.src1 matches tagged Valid .s1 &&& s1 == exeForward.index)
-        exeHazard = True;
-      if (rInst.src2 matches tagged Valid .s2 &&& s2 == exeForward.index)
-        exeHazard = True;
-    end
-    Bool memHazard = False;
-    if (memForward.valid && memForward.stall && memForward.index != 0) begin
-      if (rInst.src1 matches tagged Valid .s1 &&& s1 == memForward.index)
-        memHazard = True;
-      if (rInst.src2 matches tagged Valid .s2 &&& s2 == memForward.index)
-        memHazard = True;
-    end
-    Bool m1m2Hazard = False;
-    if (m1m2Fifo.notEmpty) begin
-      let m12Pkt = m1m2Fifo.first;
-      if (m12Pkt.m2Op == M2OpDCache || m12Pkt.m2Op == M2OpTlb) begin
-        if (m12Pkt.eInst matches tagged Valid .m12Inst) begin
-          if (m12Inst.dst matches tagged Valid .dst &&& dst != 0) begin
-            if (rInst.src1 matches tagged Valid .s1 &&& s1 == dst)
-              m1m2Hazard = True;
-            if (rInst.src2 matches tagged Valid .s2 &&& s2 == dst)
-              m1m2Hazard = True;
-          end
-        end
-      end
-    end
-
-    Bool isNeedStall = csrConflict || exeHazard || memHazard || m1m2Hazard;
+    Bool src1Hazard = src1Sb.found && !isValid(src1Sb.data);
+    Bool src2Hazard = src2Sb.found && !isValid(src2Sb.data);
+    Bool isNeedStall = csrConflict || src1Hazard || src2Hazard;
 
     if (!isNeedStall) begin
+      ScoreboardTag sbTag = regSb.enqTag;
       r2eFifo.enq(R2E{pc: decodePkt.pc, predPc: decodePkt.predPc,
 `ifdef CONFIG_DIFFTEST
         inst: decodePkt.inst,
@@ -351,7 +288,9 @@ module mkCore(Core);
         rVal1: rVal1,
         rVal2: rVal2, csrVal: csrVal,
         isNeedFlush: isNeedFlush,
+        sbTag: sbTag,
         rInst: rInst, excp: decodePkt.excp});
+      regSb.insert(rInst.dst);
       csrSb.enq(isCsrWrite ? targetCsr : tagged Invalid);
       d2rFifo.deq();
     end
@@ -365,7 +304,6 @@ module mkCore(Core);
     let rrfPkt = r2eFifo.first();
 
     Bool doNormalExec = True;
-    ForwardType nextExeForward = ForwardType{valid: False, stall: False, index: 0, data: 0};
     if (!rrfPkt.excp.valid && isValid(rrfPkt.rInst.muldivFunc)) begin
       let mdFunc = fromMaybe(?, rrfPkt.rInst.muldivFunc);
       Bool is_mul = (mdFunc == MulW || mdFunc == MulhW || mdFunc == MulhWu);
@@ -393,8 +331,6 @@ module mkCore(Core);
           divInFlight <= False;
         end
       end
-
-      nextExeForward = ForwardType{valid: False, stall: True, index: 0, data: 0};
     end
 
     if (doNormalExec) begin
@@ -421,6 +357,7 @@ module mkCore(Core);
       if (eInst.mispredict) begin
         pcReg[1] <= eInst.addr;
         iCache.squash();
+        tlb.squashFetchLookup();
         f1f2Fifo.clear();
         f2dFifo.clear();
         d2rFifo.clear();
@@ -446,9 +383,9 @@ module mkCore(Core);
       end
 
       r2eFifo.deq();
-      nextExeForward = ForwardType{valid: isValid(eInst.dst),
-        stall: isMemTypeInst || isTlbSerial,
-        index: fromMaybe(0, eInst.dst), data: eInst.data};
+      Maybe#(Data) exeResult = (isValid(eInst.dst) && !isMemTypeInst &&
+        !isTlbSerial) ? tagged Valid eInst.data : tagged Invalid;
+      regSb.updateExe(rrfPkt.sbTag, exeResult);
       // E2M no longer carries memPaddr/memUseCache — those are computed in MEM
       e2mFifo.enq(E2M{
         pc: rrfPkt.pc,
@@ -459,16 +396,17 @@ module mkCore(Core);
         mask: rrfPkt.rInst.mask,
         isNeedFlush: rrfPkt.isNeedFlush,
         dataTlbLookupPending: dataTlbLookupPending,
+        sbTag: rrfPkt.sbTag,
         eInst: tagged Valid eInst
       });
     end
-    exeForward <= nextExeForward;
   endrule
 
   // ============================================================
   // Stage 6a/6b: MEM1 dispatch and MEM2 response collection
   // ============================================================
-  rule doMemoryStage1;
+  function Action doMemoryStage1Body(TlbLookupResult tlbRes);
+    action
     let execPkt = e2mFifo.first();
     Mem2Op nextOp = M2OpNone;
     Addr memPaddr = 0;
@@ -512,10 +450,6 @@ module mkCore(Core);
       Bit#(WordSz) storeByteEn = tpl_1(storePkt);
       Data storeWData = tpl_2(storePkt);
       Bool memUseCache = True;
-      TlbLookupResult tlbRes = noTlbLookup;
-      if (execPkt.dataTlbLookupPending) begin
-        tlbRes <- tlb.dataLookupResp;
-      end
 
       hasIntPrev <= has_int_raw;
 
@@ -605,15 +539,16 @@ module mkCore(Core);
         nextOp = M2OpTlb;
       end
 
-      if (nextOp == M2OpNone && isValid(eInst.dst) && fromMaybe(0, eInst.dst) != 0) begin
-        memForward <= ForwardType{valid: True, stall: False,
-          index: fromMaybe(0, eInst.dst), data: eInst.data};
-      end else if (nextOp != M2OpNone && isValid(eInst.dst) &&
-          fromMaybe(0, eInst.dst) != 0) begin
-        memForward <= ForwardType{valid: True, stall: True,
-          index: fromMaybe(0, eInst.dst), data: 0};
+    end
+
+    Maybe#(Data) mem1Result = tagged Invalid;
+    if (nextInst matches tagged Valid .mem1Inst) begin
+      Bool mem1ResultReady = (nextOp == M2OpNone) || mem1Inst.iType == Sc;
+      if (mem1ResultReady && isValid(mem1Inst.dst)) begin
+        mem1Result = tagged Valid mem1Inst.data;
       end
     end
+    regSb.updateMem1(execPkt.sbTag, mem1Result);
 
     e2mFifo.deq();
     m1m2Fifo.enq(M1toM2{
@@ -625,20 +560,36 @@ module mkCore(Core);
       excp: memExcp,
       mask: execPkt.mask,
       isNeedFlush: execPkt.isNeedFlush,
+      sbTag: execPkt.sbTag,
       eInst: nextInst,
       m2Op: nextOp,
       memPaddr: memPaddr
     });
+    endaction
+  endfunction
+
+  rule doMemoryStage1NoDataTlb (e2mFifo.notEmpty &&
+      !e2mFifo.first.dataTlbLookupPending);
+    doMemoryStage1Body(noTlbLookup);
   endrule
 
-  rule doMemoryStage2;
+  rule doMemoryStage1WithDataTlb (e2mFifo.notEmpty &&
+      e2mFifo.first.dataTlbLookupPending);
+    let tlbRes <- tlb.dataLookupResp;
+    doMemoryStage1Body(tlbRes);
+  endrule
+
+  function Action doMemoryStage2Body(Maybe#(DCacheResp) dCacheResp,
+      Maybe#(TlbReadResult) tlbResp);
+    action
     let memPkt = m1m2Fifo.first();
     Maybe#(ExecInst) nextInst = memPkt.eInst;
     Maybe#(TlbReadResult) tlbResult = tagged Invalid;
     ExcpInfo memExcp = memPkt.excp;
 
-    if (memPkt.m2Op == M2OpDCache &&& memPkt.eInst matches tagged Valid .mInst) begin
-      let d <- dCache.resp();
+    if (memPkt.m2Op == M2OpDCache &&&
+        memPkt.eInst matches tagged Valid .mInst &&&
+        dCacheResp matches tagged Valid .d) begin
       ExecInst doneInst = mInst;
       Bool isLoad = (doneInst.iType == Ld || doneInst.iType == Ll);
       Bool isStore = (doneInst.iType == St);
@@ -658,13 +609,9 @@ module mkCore(Core);
         lrValidReg <= False;
       end
       nextInst = tagged Valid doneInst;
-      if (isValid(doneInst.dst) && fromMaybe(0, doneInst.dst) != 0) begin
-        memForward <= ForwardType{valid: True, stall: False,
-          index: fromMaybe(0, doneInst.dst), data: doneInst.data};
-      end
     end else if (memPkt.m2Op == M2OpTlb &&&
-        memPkt.eInst matches tagged Valid .mInst) begin
-      let res <- tlb.resp();
+        memPkt.eInst matches tagged Valid .mInst &&&
+        tlbResp matches tagged Valid .res) begin
       tlbResult = tagged Valid res;
       if (!memExcp.valid) begin
         if (mInst.iType == Tlbsrch) begin
@@ -702,6 +649,12 @@ module mkCore(Core);
     end
 `endif
 
+    Maybe#(Data) mem2Result = tagged Invalid;
+    if (nextInst matches tagged Valid .mem2Inst &&& isValid(mem2Inst.dst)) begin
+      mem2Result = tagged Valid mem2Inst.data;
+    end
+    regSb.updateMem2(memPkt.sbTag, mem2Result);
+
     m1m2Fifo.deq();
     m2wFifo.enq(M2W{
       pc: memPkt.pc,
@@ -712,12 +665,31 @@ module mkCore(Core);
       excp: memExcp,
       memPaddr: memPkt.memPaddr,
       isNeedFlush: memPkt.isNeedFlush,
+      sbTag: memPkt.sbTag,
       mInst: nextInst,
       tlbResult: tlbResult
 `ifdef CONFIG_DIFFTEST
       , diffMem: diffMemInfo
 `endif
     });
+    endaction
+  endfunction
+
+  rule doMemoryStage2NoResp (m1m2Fifo.notEmpty &&
+      m1m2Fifo.first.m2Op == M2OpNone);
+    doMemoryStage2Body(tagged Invalid, tagged Invalid);
+  endrule
+
+  rule doMemoryStage2DCache (m1m2Fifo.notEmpty &&
+      m1m2Fifo.first.m2Op == M2OpDCache);
+    let d <- dCache.resp();
+    doMemoryStage2Body(tagged Valid d, tagged Invalid);
+  endrule
+
+  rule doMemoryStage2Tlb (m1m2Fifo.notEmpty &&
+      m1m2Fifo.first.m2Op == M2OpTlb);
+    let res <- tlb.resp();
+    doMemoryStage2Body(tagged Invalid, tagged Valid res);
   endrule
 
   // ============================================================
@@ -888,6 +860,8 @@ module mkCore(Core);
     if (wbFlush) begin
       lrValidReg <= False;
       iCache.squash();
+      tlb.squashFetchLookup();
+      tlb.squashDataLookup();
       dCache.squash();
       memExcpPending <= False;
       if2WaitRefill <= False;
@@ -898,6 +872,7 @@ module mkCore(Core);
       e2mFifo.clear();
       m1m2Fifo.clear();
       m2wFifo.clear();
+      regSb.clear();
       csrSb.clear();
       mulInFlight <= False;
       divInFlight <= False;
@@ -906,6 +881,7 @@ module mkCore(Core);
         let retiredType = fromMaybe(?, memPkt.mInst).iType;
       end
       m2wFifo.deq();
+      regSb.remove();
       csrSb.deq();
     end
   endrule

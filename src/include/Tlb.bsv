@@ -130,6 +130,9 @@ interface TlbArray;
   // Memory Data 接口
   method Action dataLookupReq(Addr va, Data asid);
   method ActionValue#(TlbLookupResult) dataLookupResp();
+
+  method Action squashFetchLookup();
+  method Action squashDataLookup();
 endinterface
 
 // ============================================================
@@ -465,6 +468,20 @@ module mkTlb(TlbArray);
     let res = dataRespFifo.first;
     dataRespFifo.deq;
     return res;
+  endmethod
+
+  method Action squashFetchLookup();
+    fetchReqFifo.clear();
+    fetchRespFifo.clear();
+    fetchCnt <= 0;
+    fetchHit <= noTlbLookup;
+  endmethod
+
+  method Action squashDataLookup();
+    dataReqFifo.clear();
+    dataRespFifo.clear();
+    dataCnt <= 0;
+    dataHit <= noTlbLookup;
   endmethod
 
 endmodule

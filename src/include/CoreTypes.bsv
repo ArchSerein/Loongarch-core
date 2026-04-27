@@ -1,5 +1,6 @@
 import Types::*;
 import ProcTypes::*;
+import Scoreboard::*;
 import ICache::*;
 import Tlb::*;
 import AxiTypes::*;
@@ -106,6 +107,7 @@ typedef struct {
   Data        rVal2;
   Data        csrVal;
   Bool        isNeedFlush;
+  ScoreboardTag sbTag;
   DecodedInst rInst;
   ExcpInfo    excp;
 }   R2E deriving(Bits, Eq);
@@ -125,6 +127,7 @@ typedef struct {
   Maybe#(ByteMask)    mask;
   Bool                isNeedFlush;
   Bool                dataTlbLookupPending;
+  ScoreboardTag       sbTag;
   Maybe#(ExecInst)    eInst;
 }   E2M deriving(Bits, Eq);
 
@@ -145,6 +148,7 @@ typedef struct {
 `endif
   Addr                memPaddr;
   Bool                isNeedFlush;
+  ScoreboardTag       sbTag;
   Maybe#(ExecInst)    mInst;
   Maybe#(TlbReadResult) tlbResult;
 }   M2W deriving(Bits, Eq);
@@ -215,6 +219,7 @@ typedef struct {
   DiffArchCsrState    csrSnapshot;
 `endif
   Bool                isNeedFlush;
+  ScoreboardTag       sbTag;
   Maybe#(ExecInst)    eInst;
   Mem2Op              m2Op;
   Addr                memPaddr;

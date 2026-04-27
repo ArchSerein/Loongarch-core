@@ -11,6 +11,7 @@ import MemTypes::*;
 import MemoryService::*;
 import AxiMem::*;
 import Core::*;
+import CoreTypes::*;
 
 `include "Autoconf.bsv"
 
