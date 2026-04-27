@@ -254,3 +254,11 @@ function ExcpInfo checkMemHasExcp(Maybe#(ByteMask) mask, Addr addr, ExcpInfo exc
   end
   return excp;
 endfunction
+
+function Bool rrfIsCsrWrite(DecodedInst rInst);
+  return rInst.iType == Csrw || rInst.iType == Csrxchg || rInst.iType == Tlbsrch;
+endfunction
+
+function Maybe#(CsrIndx) rrfTargetCsr(DecodedInst rInst);
+  return (rInst.iType == Tlbsrch) ? tagged Valid `CSR_TLBIDX : rInst.csr;
+endfunction

@@ -82,6 +82,10 @@ module mkCore(Core);
   rule countIfStall (!f1f2Fifo.notFull);
     perf_pipeline_stall(0);
   endrule
+
+  rule countExStall(!e2mFifo.notFull);
+    perf_pipeline_stall(2);
+  endrule
 `endif
 
   rule doIF1;
@@ -248,22 +252,40 @@ module mkCore(Core);
   // ============================================================
   // Stage 4: RR — Register File read, CSR read, forwarding logic
   // ============================================================
-  rule doRrf;
-    let decodePkt = d2rFifo.first();
-
+  function Bool rrfHasHazard(D2R decodePkt);
     let rInst = decodePkt.dInst;
 
-    Bool isCsrWrite = (rInst.iType == Csrw || rInst.iType == Csrxchg || rInst.iType == Tlbsrch);
-
-    Maybe#(CsrIndx) targetCsr = (rInst.iType == Tlbsrch) ? tagged Valid`CSR_TLBIDX : rInst.csr;
-
-    Bool isTlbSerial = (rInst.iType == Tlbrd ||
-    rInst.iType == Tlbwr || rInst.iType == Tlbfill || rInst.iType == Invtlb);
+    Bool isCsrWrite = rrfIsCsrWrite(rInst);
+    Maybe#(CsrIndx) targetCsr = rrfTargetCsr(rInst);
 
     Bool csrConflict = isValid(targetCsr) && csrSb.search(targetCsr);
 
-    Bool isBarrier = coreIsBarrier(rInst.iType) || rInst.iType == Cacop;
+    ScoreboardSearchResult src1Sb = regSb.search1(rInst.src1);
+    ScoreboardSearchResult src2Sb = regSb.search2(rInst.src2);
 
+    Bool src1Hazard = src1Sb.found && !isValid(src1Sb.data);
+    Bool src2Hazard = src2Sb.found && !isValid(src2Sb.data);
+
+    return csrConflict || src1Hazard || src2Hazard;
+  endfunction
+
+  `ifdef CONFIG_TRACE_PERFORMANCE
+  rule countRfStall (d2rFifo.notEmpty() && rrfHasHazard(d2rFifo.first()));
+    perf_pipeline_stall(1);
+  endrule
+  `endif
+
+  rule doRrf (d2rFifo.notEmpty() && !rrfHasHazard(d2rFifo.first()));
+    let decodePkt = d2rFifo.first();
+    let rInst = decodePkt.dInst;
+
+    Bool isCsrWrite = rrfIsCsrWrite(rInst);
+    Maybe#(CsrIndx) targetCsr = rrfTargetCsr(rInst);
+
+    Bool isTlbSerial = rInst.iType == Tlbrd ||
+      rInst.iType == Tlbwr || rInst.iType == Tlbfill || rInst.iType == Invtlb;
+
+    Bool isBarrier = coreIsBarrier(rInst.iType) || rInst.iType == Cacop;
     Bool isNeedFlush = isBarrier || isTlbSerial || isCsrWrite;
 
     ScoreboardSearchResult src1Sb = regSb.search1(rInst.src1);
@@ -275,41 +297,35 @@ module mkCore(Core);
 
     if (rInst.src1 matches tagged Valid .s1 &&& s1 == 0) begin
       rVal1 = 0;
-    end else if (src1Sb.found &&&
-        src1Sb.data matches tagged Valid .fwdData1) begin
+    end else if (src1Sb.found &&& src1Sb.data matches tagged Valid .fwdData1) begin
       rVal1 = fwdData1;
     end
 
     if (rInst.src2 matches tagged Valid .s2 &&& s2 == 0) begin
       rVal2 = 0;
-    end else if (src2Sb.found &&&
-        src2Sb.data matches tagged Valid .fwdData2) begin
+    end else if (src2Sb.found &&& src2Sb.data matches tagged Valid .fwdData2) begin
       rVal2 = fwdData2;
     end
 
-    Bool src1Hazard = src1Sb.found && !isValid(src1Sb.data);
-    Bool src2Hazard = src2Sb.found && !isValid(src2Sb.data);
-    Bool isNeedStall = csrConflict || src1Hazard || src2Hazard;
+    ScoreboardTag sbTag = regSb.enqTag;
+    r2eFifo.enq(R2E{
+      pc: decodePkt.pc,
+      predPc: decodePkt.predPc,
+  `ifdef CONFIG_DIFFTEST
+      inst: decodePkt.inst,
+  `endif
+      rVal1: rVal1,
+      rVal2: rVal2,
+      csrVal: csrVal,
+      isNeedFlush: isNeedFlush,
+      sbTag: sbTag,
+      rInst: rInst,
+      excp: decodePkt.excp
+    });
 
-    if (!isNeedStall) begin
-      ScoreboardTag sbTag = regSb.enqTag;
-      r2eFifo.enq(R2E{pc: decodePkt.pc, predPc: decodePkt.predPc,
-`ifdef CONFIG_DIFFTEST
-        inst: decodePkt.inst,
-`endif
-        rVal1: rVal1,
-        rVal2: rVal2, csrVal: csrVal,
-        isNeedFlush: isNeedFlush,
-        sbTag: sbTag,
-        rInst: rInst, excp: decodePkt.excp});
-      regSb.insert(rInst.dst);
-      csrSb.enq(isCsrWrite ? targetCsr : tagged Invalid);
-      d2rFifo.deq();
-    end else begin
-`ifdef CONFIG_TRACE_PERFORMANCE
-      perf_pipeline_stall(1);
-`endif
-    end
+    regSb.insert(rInst.dst);
+    csrSb.enq(isCsrWrite ? targetCsr : tagged Invalid);
+    d2rFifo.deq();
   endrule
 
   // ============================================================
@@ -347,10 +363,6 @@ module mkCore(Core);
           divInFlight <= False;
         end
       end
-    end else begin
-`ifdef CONFIG_TRACE_PERFORMANCE
-      perf_pipeline_stall(2);
-`endif
     end
 
     if (doNormalExec) begin

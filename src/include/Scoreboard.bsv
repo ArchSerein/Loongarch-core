@@ -139,16 +139,15 @@ module mkScoreboard(Scoreboard#(size));
       found: False,
       data: tagged Invalid
     };
-    if (!clearReq) begin
-      for (Integer off = 0; off < valueOf(size); off = off + 1) begin
-        Bit#(TLog#(size)) idx = ptrOffset(deqP, off);
-        ScoreboardEntry entry = applyPendingUpdate(entries[idx], idx);
-        if (entryValid(idx) && isFound(entry.regId, r)) begin
-          ret = ScoreboardSearchResult{
-            found: True,
-            data: entryForwardData(entry)
-          };
-        end
+    // Keep search independent of clearReq so rules may use it in guards.
+    for (Integer off = 0; off < valueOf(size); off = off + 1) begin
+      Bit#(TLog#(size)) idx = ptrOffset(deqP, off);
+      ScoreboardEntry entry = applyPendingUpdate(entries[idx], idx);
+      if (entryValid(idx) && isFound(entry.regId, r)) begin
+        ret = ScoreboardSearchResult{
+          found: True,
+          data: entryForwardData(entry)
+        };
       end
     end
     return ret;
