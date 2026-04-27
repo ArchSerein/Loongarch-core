@@ -12,8 +12,10 @@ typedef `CONFIG_TLB_ENTRIES TlbNumEntries;
 typedef TLog#(TlbNumEntries) TlbIndexSz;
 typedef Bit#(TlbIndexSz)     TlbIndex;
 
-// Number of reduction stages for pipelines = log2(TLB_ENTRIES)
-typedef TLog#(TlbNumEntries) TlbSearchStages;
+typedef 8 TlbCompareEntries;
+typedef TDiv#(TlbNumEntries, TlbCompareEntries) TlbCompareChunks;
+typedef TAdd#(TLog#(TlbCompareChunks), 1) TlbCompareCntSz;
+typedef Bit#(TlbCompareCntSz) TlbCompareCnt;
 
 // ============================================================
 // Data Structures
@@ -94,20 +96,25 @@ typedef struct {
   Data    va;
 } TlbReq deriving(Bits, Eq);
 
+typedef struct {
+  Addr     va;
+  Bit#(10) asidVal;
+  Bit#(19) vppn;
+} LookupCtx deriving(Bits, Eq);
+
 typedef enum {
-  OpTypeSearch,
-  OpTypeDirect,
-  OpTypeInv
-} PipeOpType deriving(Bits, Eq);
+  ReqScanSearch,
+  ReqScanInv
+} ReqScanKind deriving(Bits, Eq);
 
 typedef struct {
-  PipeOpType                             opType;
-  TlbReadResult                          directRes;
-  Vector#(TlbNumEntries, TlbSearchEntry) searchVec;
-  Bit#(5)                                invOp;
-  Bit#(10)                               invAsid;
-  Bit#(19)                               invVppn;
-} ReqPipeData deriving(Bits, Eq);
+  ReqScanKind kind;
+  Bit#(19)    searchVppn;
+  Bit#(10)    searchAsid;
+  Bit#(5)     invOp;
+  Bit#(10)    invAsid;
+  Bit#(19)    invVppn;
+} ReqScanCtx deriving(Bits, Eq);
 
 // ============================================================
 // Interface (分为 Fetch 和 Data 两组并行接口)
@@ -158,11 +165,9 @@ function Bool tlbOddPage(Bit#(6) ps, Addr va);
   return (ps == 21) ? (va[21] == 1'b1) : (va[12] == 1'b1);
 endfunction
 
-function Vector#(TlbNumEntries, TlbSearchEntry) reduceSearchEntries(Vector#(TlbNumEntries, TlbSearchEntry) cur);
-  Vector#(TlbNumEntries, TlbSearchEntry) next = replicate(noSearchHit);
-  for (Integer i = 0; i < valueOf(TlbNumEntries) / 2; i = i + 1)
-    next[i] = cur[2*i].hit ? cur[2*i] : cur[2*i + 1];
-  return next;
+function TlbIndex tlbChunkBase(TlbCompareCnt cnt);
+  TlbIndex widened = zeroExtend(cnt);
+  return widened << 3;
 endfunction
 
 function TlbLookupResult matchLookupEntry(TlbEntry ent, Addr va, Bit#(19) vppn, Bit#(10) asidVal);
@@ -180,11 +185,32 @@ function TlbLookupResult matchLookupEntry(TlbEntry ent, Addr va, Bit#(19) vppn, 
   return result;
 endfunction
 
-function Vector#(TlbNumEntries, TlbLookupResult) reduceLookupEntries(Vector#(TlbNumEntries, TlbLookupResult) cur);
-  Vector#(TlbNumEntries, TlbLookupResult) next = replicate(noTlbLookup);
-  for (Integer i = 0; i < valueOf(TlbNumEntries) / 2; i = i + 1)
-    next[i] = cur[2*i].found ? cur[2*i] : cur[2*i + 1];
-  return next;
+function TlbLookupResult mergeLookupHit(TlbLookupResult oldHit, TlbLookupResult newHit);
+  return oldHit.found ? oldHit : newHit;
+endfunction
+
+function TlbSearchEntry matchSearchEntry(TlbEntry ent, TlbIndex idx, Bit#(19) vppn, Bit#(10) asidVal);
+  Bool asidOk = ent.g || (ent.asid == asidVal);
+  Bool hit = ent.e && asidOk && tlbVppnMatch(ent.ps, ent.vppn, vppn);
+  return hit ? TlbSearchEntry { hit: True, idx: idx, ps: ent.ps } : noSearchHit;
+endfunction
+
+function TlbSearchEntry mergeSearchHit(TlbSearchEntry oldHit, TlbSearchEntry newHit);
+  return oldHit.hit ? oldHit : newHit;
+endfunction
+
+function Bool shouldInvalidateEntry(TlbEntry ent, Bit#(5) invOp, Bit#(10) invAsid, Bit#(19) invVppn);
+  Bool doInv = False;
+  case (invOp)
+    5'h0, 5'h1: doInv = True;
+    5'h2: doInv = ent.e && ent.g;
+    5'h3: doInv = ent.e && !ent.g;
+    5'h4: doInv = ent.e && !ent.g && (ent.asid == invAsid);
+    5'h5: doInv = ent.e && !ent.g && (ent.asid == invAsid) && tlbVppnMatch(ent.ps, ent.vppn, invVppn);
+    5'h6: doInv = ent.e && (ent.g || (ent.asid == invAsid)) && tlbVppnMatch(ent.ps, ent.vppn, invVppn);
+    default: doInv = False;
+  endcase
+  return doInv;
 endfunction
 
 // ============================================================
@@ -208,157 +234,167 @@ module mkTlb(TlbArray);
   Fifo#(2, Tuple2#(Addr, Data)) dataReqFifo <- mkCFFifo;
   Fifo#(2, TlbLookupResult) dataRespFifo <- mkCFFifo;
 
-  // 各自独立的流水线寄存器
-  Vector#(TlbSearchStages, Reg#(Maybe#(ReqPipeData))) reqPipe <- replicateM(mkReg(tagged Invalid));
-  Vector#(TlbSearchStages, Reg#(Maybe#(Vector#(TlbNumEntries, TlbLookupResult)))) fetchPipe <- replicateM(mkReg(tagged Invalid));
-  Vector#(TlbSearchStages, Reg#(Maybe#(Vector#(TlbNumEntries, TlbLookupResult)))) dataPipe <- replicateM(mkReg(tagged Invalid));
+  // Three scan counters: 0 means idle; non-zero values select the next 8-entry chunk.
+  Reg#(TlbCompareCnt) fetchCnt <- mkReg(0);
+  Reg#(LookupCtx) fetchCtx <- mkRegU;
+  Reg#(TlbLookupResult) fetchHit <- mkReg(noTlbLookup);
+
+  Reg#(TlbCompareCnt) dataCnt <- mkReg(0);
+  Reg#(LookupCtx) dataCtx <- mkRegU;
+  Reg#(TlbLookupResult) dataHit <- mkReg(noTlbLookup);
+
+  Reg#(TlbCompareCnt) reqCnt <- mkReg(0);
+  Reg#(ReqScanCtx) reqScanCtx <- mkRegU;
+  Reg#(TlbSearchEntry) reqSearchHit <- mkReg(noSearchHit);
 
   // ============================================================
-  // Fetch Lookup Pipeline
+  // Fetch Lookup Scan
   // ============================================================
-  rule doFetchLookupPipeline (fetchRespFifo.notFull);
-    if (fetchPipe[valueOf(TlbSearchStages)-1] matches tagged Valid .vec) begin
-      fetchRespFifo.enq(reduceLookupEntries(vec)[0]);
-    end
+  rule doFetchLookupPipeline (fetchRespFifo.notFull && (fetchCnt != 0 || fetchReqFifo.notEmpty));
+    $display("doFetchLookupPipeline");
+    TlbCompareCnt curCnt = fetchCnt;
+    LookupCtx ctx = fetchCtx;
+    TlbLookupResult oldHit = fetchHit;
 
-    for (Integer i = 1; i < valueOf(TlbSearchStages); i = i + 1) begin
-      if (fetchPipe[i-1] matches tagged Valid .vec) begin
-        fetchPipe[i] <= tagged Valid (reduceLookupEntries(vec));
-      end else begin
-        fetchPipe[i] <= tagged Invalid;
-      end
-    end
-
-    if (fetchReqFifo.notEmpty) begin
+    if (fetchCnt == 0) begin
       let reqTuple = fetchReqFifo.first;
       fetchReqFifo.deq;
-      Addr va = tpl_1(reqTuple);
-      Data asid = tpl_2(reqTuple);
-      Bit#(10) asidVal = asid[`CSR_ASID_ASID];
-      Bit#(19) vppn = va[`CSR_TLBEHI_VPPN];
-
-      Vector#(TlbNumEntries, TlbLookupResult) stage0;
-      for (Integer i = 0; i < valueOf(TlbNumEntries); i = i + 1)
-        stage0[i] = matchLookupEntry(entries[i], va, vppn, asidVal);
-      
-      fetchPipe[0] <= tagged Valid stage0;
+      ctx = LookupCtx { va: tpl_1(reqTuple), asidVal: tpl_2(reqTuple)[`CSR_ASID_ASID], vppn: tpl_1(reqTuple)[`CSR_TLBEHI_VPPN] };
+      oldHit = noTlbLookup;
     end else begin
-      fetchPipe[0] <= tagged Invalid;
+      curCnt = fetchCnt;
+    end
+
+    TlbLookupResult chunkHit = noTlbLookup;
+    TlbIndex baseIdx = tlbChunkBase(curCnt);
+    for (Integer i = 0; i < valueOf(TlbCompareEntries); i = i + 1) begin
+      TlbIndex idx = baseIdx + fromInteger(i);
+      chunkHit = mergeLookupHit(chunkHit, matchLookupEntry(entries[idx], ctx.va, ctx.vppn, ctx.asidVal));
+    end
+
+    TlbLookupResult nextHit = mergeLookupHit(oldHit, chunkHit);
+    if (curCnt == fromInteger(valueOf(TlbCompareChunks) - 1)) begin
+      fetchRespFifo.enq(nextHit);
+      fetchCnt <= 0;
+    end else begin
+      fetchCtx <= ctx;
+      fetchHit <= nextHit;
+      fetchCnt <= curCnt + 1;
     end
   endrule
 
   // ============================================================
-  // Data Lookup Pipeline
+  // Data Lookup Scan
   // ============================================================
-  rule doDataLookupPipeline (dataRespFifo.notFull);
-    if (dataPipe[valueOf(TlbSearchStages)-1] matches tagged Valid .vec) begin
-      dataRespFifo.enq(reduceLookupEntries(vec)[0]);
-    end
+  rule doDataLookupPipeline (dataRespFifo.notFull && (dataCnt != 0 || dataReqFifo.notEmpty));
+    TlbCompareCnt curCnt = dataCnt;
+    LookupCtx ctx = dataCtx;
+    TlbLookupResult oldHit = dataHit;
 
-    for (Integer i = 1; i < valueOf(TlbSearchStages); i = i + 1) begin
-      if (dataPipe[i-1] matches tagged Valid .vec) begin
-        dataPipe[i] <= tagged Valid (reduceLookupEntries(vec));
-      end else begin
-        dataPipe[i] <= tagged Invalid;
-      end
-    end
-
-    if (dataReqFifo.notEmpty) begin
+    if (dataCnt == 0) begin
       let reqTuple = dataReqFifo.first;
       dataReqFifo.deq;
-      Addr va = tpl_1(reqTuple);
-      Data asid = tpl_2(reqTuple);
-      Bit#(10) asidVal = asid[`CSR_ASID_ASID];
-      Bit#(19) vppn = va[`CSR_TLBEHI_VPPN];
-
-      Vector#(TlbNumEntries, TlbLookupResult) stage0;
-      for (Integer i = 0; i < valueOf(TlbNumEntries); i = i + 1)
-        stage0[i] = matchLookupEntry(entries[i], va, vppn, asidVal);
-      
-      dataPipe[0] <= tagged Valid stage0;
+      ctx = LookupCtx { va: tpl_1(reqTuple), asidVal: tpl_2(reqTuple)[`CSR_ASID_ASID], vppn: tpl_1(reqTuple)[`CSR_TLBEHI_VPPN] };
+      oldHit = noTlbLookup;
     end else begin
-      dataPipe[0] <= tagged Invalid;
+      curCnt = dataCnt;
+    end
+
+    TlbLookupResult chunkHit = noTlbLookup;
+    TlbIndex baseIdx = tlbChunkBase(curCnt);
+    for (Integer i = 0; i < valueOf(TlbCompareEntries); i = i + 1) begin
+      TlbIndex idx = baseIdx + fromInteger(i);
+      chunkHit = mergeLookupHit(chunkHit, matchLookupEntry(entries[idx], ctx.va, ctx.vppn, ctx.asidVal));
+    end
+
+    TlbLookupResult nextHit = mergeLookupHit(oldHit, chunkHit);
+    if (curCnt == fromInteger(valueOf(TlbCompareChunks) - 1)) begin
+      dataRespFifo.enq(nextHit);
+      dataCnt <= 0;
+    end else begin
+      dataCtx <= ctx;
+      dataHit <= nextHit;
+      dataCnt <= curCnt + 1;
     end
   endrule
 
   // ============================================================
-  // Maintenance Pipeline (Pipelined spatial unrolling for InvTLB)
+  // Maintenance Scan
   // ============================================================
-  rule doReqPipeline (respFifo.notFull);
-    Integer totalChunks = valueOf(TlbSearchStages);
-    
-    // 中间收集器：统一收集当前周期内产生的所有写操作
-    Vector#(TlbNumEntries, Maybe#(TlbEntry)) entriesNext = replicate(tagged Invalid);
+  rule doReqPipeline (respFifo.notFull && (reqCnt != 0 || reqFifo.notEmpty));
+    TlbCompareCnt curCnt = reqCnt;
+    ReqScanCtx scanCtx = reqScanCtx;
+    TlbSearchEntry oldSearchHit = reqSearchHit;
 
-    // --- Final Stage ---
-    if (reqPipe[valueOf(TlbSearchStages)-1] matches tagged Valid .pipeData) begin
-      if (pipeData.opType == OpTypeSearch) begin
-        let winner = reduceSearchEntries(pipeData.searchVec)[0];
-        TlbReadResult res = encodeTlbReadResult(emptyEntry);
-        res.ne = !winner.hit;
-        res.ps = winner.ps;
-        if (winner.hit) res.ehi[`CSR_TLBIDX_INDEX] = zeroExtend(winner.idx);
-        respFifo.enq(res);
-      end else begin
-        respFifo.enq(pipeData.directRes);
-      end
-    end
-
-    // --- Intermediate Stages 1 to S-1 ---
-    for (Integer i = 1; i < valueOf(TlbSearchStages); i = i + 1) begin
-      if (reqPipe[i-1] matches tagged Valid .pipeData) begin
-        ReqPipeData nextData = pipeData;
-        
-        if (pipeData.opType == OpTypeSearch) begin
-          nextData.searchVec = reduceSearchEntries(pipeData.searchVec);
-        end 
-        else if (pipeData.opType == OpTypeInv) begin
-          // 计算当前流水级负责清空的表项区间
-          Integer startIdx = (i * valueOf(TlbNumEntries)) / totalChunks;
-          Integer endIdx   = ((i + 1) * valueOf(TlbNumEntries)) / totalChunks;
-          for (Integer j = startIdx; j < endIdx; j = j + 1) begin
-            TlbEntry ent = entries[j];
-            Bool doInv = False;
-            case (pipeData.invOp)
-              5'h0, 5'h1: doInv = True;
-              5'h2: doInv = ent.e && ent.g;
-              5'h3: doInv = ent.e && !ent.g;
-              5'h4: doInv = ent.e && !ent.g && (ent.asid == pipeData.invAsid);
-              5'h5: doInv = ent.e && !ent.g && (ent.asid == pipeData.invAsid) && tlbVppnMatch(ent.ps, ent.vppn, pipeData.invVppn);
-              5'h6: doInv = ent.e && (ent.g || (ent.asid == pipeData.invAsid)) && tlbVppnMatch(ent.ps, ent.vppn, pipeData.invVppn);
-            endcase
-            if (doInv) entriesNext[j] = tagged Valid emptyEntry;
-          end
+    if (reqCnt != 0) begin
+      TlbIndex baseIdx = tlbChunkBase(curCnt);
+      if (scanCtx.kind == ReqScanSearch) begin
+        TlbSearchEntry chunkHit = noSearchHit;
+        for (Integer i = 0; i < valueOf(TlbCompareEntries); i = i + 1) begin
+          TlbIndex idx = baseIdx + fromInteger(i);
+          chunkHit = mergeSearchHit(chunkHit, matchSearchEntry(entries[idx], idx, scanCtx.searchVppn, scanCtx.searchAsid));
         end
-        reqPipe[i] <= tagged Valid nextData;
-      end else begin
-        reqPipe[i] <= tagged Invalid;
-      end
-    end
 
-    // --- Stage 0 Entry ---
-    if (reqFifo.notEmpty) begin
+        TlbSearchEntry nextHit = mergeSearchHit(oldSearchHit, chunkHit);
+        if (curCnt == fromInteger(valueOf(TlbCompareChunks) - 1)) begin
+          TlbReadResult res = encodeTlbReadResult(emptyEntry);
+          res.ne = !nextHit.hit;
+          res.ps = nextHit.ps;
+          if (nextHit.hit) res.ehi[`CSR_TLBIDX_INDEX] = zeroExtend(nextHit.idx);
+          respFifo.enq(res);
+          reqCnt <= 0;
+        end else begin
+          reqSearchHit <= nextHit;
+          reqCnt <= curCnt + 1;
+        end
+      end else begin
+        for (Integer i = 0; i < valueOf(TlbCompareEntries); i = i + 1) begin
+          TlbIndex idx = baseIdx + fromInteger(i);
+          if (shouldInvalidateEntry(entries[idx], scanCtx.invOp, scanCtx.invAsid, scanCtx.invVppn)) entries[idx] <= emptyEntry;
+        end
+
+        if (curCnt == fromInteger(valueOf(TlbCompareChunks) - 1)) begin
+          respFifo.enq(encodeTlbReadResult(emptyEntry));
+          reqCnt <= 0;
+        end else begin
+          reqCnt <= curCnt + 1;
+        end
+      end
+    end else begin
       let r = reqFifo.first;
       reqFifo.deq;
       TlbReadResult dummyRes = encodeTlbReadResult(emptyEntry);
-      Vector#(TlbNumEntries, TlbSearchEntry) dummyVec = replicate(noSearchHit);
       
       if (r.op == TlbOpSearch) begin
         Bit#(19) vppn = r.ehi[`CSR_TLBEHI_VPPN];
         Bit#(10) asidVal = r.asid[`CSR_ASID_ASID];
-        Vector#(TlbNumEntries, TlbSearchEntry) stage0 = dummyVec;
-        for (Integer j = 0; j < valueOf(TlbNumEntries); j = j + 1) begin
-          TlbEntry ent = entries[j];
-          Bool asidOk = ent.g || (ent.asid == asidVal);
-          Bool hit = ent.e && asidOk && tlbVppnMatch(ent.ps, ent.vppn, vppn);
-          stage0[j] = hit ? TlbSearchEntry { hit: True, idx: fromInteger(j), ps: ent.ps } : noSearchHit;
+
+        TlbSearchEntry chunkHit = noSearchHit;
+        TlbIndex baseIdx = tlbChunkBase(0);
+        for (Integer i = 0; i < valueOf(TlbCompareEntries); i = i + 1) begin
+          TlbIndex idx = baseIdx + fromInteger(i);
+          chunkHit = mergeSearchHit(chunkHit, matchSearchEntry(entries[idx], idx, vppn, asidVal));
         end
-        reqPipe[0] <= tagged Valid ReqPipeData { opType: OpTypeSearch, directRes: dummyRes, searchVec: stage0, invOp: 0, invAsid: 0, invVppn: 0 };
+
+        if (fromInteger(valueOf(TlbCompareChunks) - 1) == 0) begin
+          TlbReadResult res = dummyRes;
+          res.ne = !chunkHit.hit;
+          res.ps = chunkHit.ps;
+          if (chunkHit.hit) res.ehi[`CSR_TLBIDX_INDEX] = zeroExtend(chunkHit.idx);
+          respFifo.enq(res);
+        end else begin
+          reqScanCtx <= ReqScanCtx {
+            kind: ReqScanSearch, searchVppn: vppn, searchAsid: asidVal,
+            invOp: 0, invAsid: 0, invVppn: 0
+          };
+          reqSearchHit <= chunkHit;
+          reqCnt <= 1;
+        end
       end 
       else if (r.op == TlbOpRead) begin
         TlbIndex idx = truncate(r.tlbidx[`CSR_TLBIDX_INDEX]);
         let res = encodeTlbReadResult(entries[idx]);
-        reqPipe[0] <= tagged Valid ReqPipeData { opType: OpTypeDirect, directRes: res, searchVec: dummyVec, invOp: 0, invAsid: 0, invVppn: 0 };
+        respFifo.enq(res);
       end 
       else if (r.op == TlbOpWrite || r.op == TlbOpFill) begin
         TlbIndex idx = (r.op == TlbOpFill) ? replaceCnt : truncate(r.tlbidx[`CSR_TLBIDX_INDEX]);
@@ -366,43 +402,32 @@ module mkTlb(TlbArray);
         ent.ps = r.tlbidx[`CSR_TLBIDX_PS];
         ent.e = (r.tlbidx[`CSR_TLBIDX_NE] == 1'b0);
         
-        entriesNext[idx] = tagged Valid ent;
+        entries[idx] <= ent;
         if (r.op == TlbOpFill) replaceCnt <= replaceCnt + 1;
         
         TlbReadResult res = dummyRes;
         res.ehi[`CSR_TLBIDX_INDEX] = zeroExtend(idx);
-        reqPipe[0] <= tagged Valid ReqPipeData { opType: OpTypeDirect, directRes: res, searchVec: dummyVec, invOp: 0, invAsid: 0, invVppn: 0 };
+        respFifo.enq(res);
       end 
       else if (r.op == TlbOpInv) begin
         Bit#(10) invAsid = r.asid[`CSR_ASID_ASID];
         Bit#(19) invVppn = r.va[31:13];
         
-        Integer startIdx = 0;
-        Integer endIdx   = (1 * valueOf(TlbNumEntries)) / totalChunks;
-        for (Integer j = startIdx; j < endIdx; j = j + 1) begin
-          TlbEntry ent = entries[j];
-          Bool doInv = False;
-          case (r.invOp)
-            5'h0, 5'h1: doInv = True;
-            5'h2: doInv = ent.e && ent.g;
-            5'h3: doInv = ent.e && !ent.g;
-            5'h4: doInv = ent.e && !ent.g && (ent.asid == invAsid);
-            5'h5: doInv = ent.e && !ent.g && (ent.asid == invAsid) && tlbVppnMatch(ent.ps, ent.vppn, invVppn);
-            5'h6: doInv = ent.e && (ent.g || (ent.asid == invAsid)) && tlbVppnMatch(ent.ps, ent.vppn, invVppn);
-          endcase
-          if (doInv) entriesNext[j] = tagged Valid emptyEntry;
+        TlbIndex baseIdx = tlbChunkBase(0);
+        for (Integer i = 0; i < valueOf(TlbCompareEntries); i = i + 1) begin
+          TlbIndex idx = baseIdx + fromInteger(i);
+          if (shouldInvalidateEntry(entries[idx], r.invOp, invAsid, invVppn)) entries[idx] <= emptyEntry;
         end
-        
-        reqPipe[0] <= tagged Valid ReqPipeData { opType: OpTypeInv, directRes: dummyRes, searchVec: dummyVec, invOp: r.invOp, invAsid: invAsid, invVppn: invVppn };
-      end
-    end else begin
-      reqPipe[0] <= tagged Invalid;
-    end
 
-    // --- 应用到物理寄存器 ---
-    for (Integer i = 0; i < valueOf(TlbNumEntries); i = i + 1) begin
-      if (entriesNext[i] matches tagged Valid .newEnt) begin
-        entries[i] <= newEnt;
+        if (fromInteger(valueOf(TlbCompareChunks) - 1) == 0) begin
+          respFifo.enq(dummyRes);
+        end else begin
+          reqScanCtx <= ReqScanCtx {
+            kind: ReqScanInv, searchVppn: 0, searchAsid: 0,
+            invOp: r.invOp, invAsid: invAsid, invVppn: invVppn
+          };
+          reqCnt <= 1;
+        end
       end
     end
   endrule
