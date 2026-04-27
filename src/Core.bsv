@@ -32,55 +32,6 @@ import Difftest::*;
 import Perf::*;
 `endif
 
-interface Core;
-`ifdef CONFIG_BSIM
-  method ActionValue#(CpuToHostData) cpuToHost;
-  method Bool cpuToHostValid;
-  method Action hostToCpu(Addr startpc);
-`endif
-`ifdef CONFIG_DIFFTEST
-`ifdef CONFIG_BSIM
-  method ActionValue#(DiffTrace) diffTrace;
-  method Bool diffTraceValid;
-`endif
-`ifdef CONFIG_VSIM
-  (* always_ready *)
-  method Bool diffStepValid;
-  (* always_ready *)
-  method Bit#(142) liveDiffCommitBundle;
-  (* always_ready *)
-  method Bit#(1024) liveDiffRegsBundle;
-  (* always_ready *)
-  method Bit#(832) liveDiffCsrBundle;
-  (* always_ready *)
-  method Bit#(130) liveDiffExcpBundle;
-  (* always_ready *)
-  method Bit#(200) liveDiffStoreBundle;
-  (* always_ready *)
-  method Bit#(136) liveDiffLoadBundle;
-`endif
-`endif
-  interface AxiMemMaster axiMem;
-`ifdef CONFIG_VSIM
-  (* always_ready, always_enabled *)
-  method Action debugInput(Bool breakPoint, Bool inforFlag, RIndx regNum);
-  (* always_ready *)
-  method Bool wsValid;
-  (* always_ready *)
-  method Data rfRdata;
-  (* always_ready *)
-  method Addr debug0WbPc;
-  (* always_ready *)
-  method Bit#(4) debug0WbRfWen;
-  (* always_ready *)
-  method RIndx debug0WbRfWnum;
-  (* always_ready *)
-  method Data debug0WbRfWdata;
-  (* always_ready *)
-  method Instruction debug0WbInst;
-`endif
-endinterface
-
 (* synthesize *)
 module mkCore(Core);
   Ehr#(3, Addr)         pcReg <- mkEhr(startpc);
