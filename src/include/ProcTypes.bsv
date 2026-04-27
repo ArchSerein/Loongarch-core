@@ -138,4 +138,5 @@ typedef struct {
   Addr             addr;
   Bool             mispredict;
   Bool             brTaken;
+  Addr             targetAddr;
 } ExecInst deriving(Bits, Eq);

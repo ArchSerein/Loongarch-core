@@ -381,14 +381,17 @@ module mkCore(Core);
       end
 
       if (eInst.mispredict) begin
-        pcReg[1] <= eInst.addr;
+        pcReg[1] <= eInst.targetAddr;
         iCache.squash();
         tlb.squashFetchLookup();
         f1f2Fifo.clear();
         f2dFifo.clear();
         d2rFifo.clear();
+        r2eFifo.clear();
+        regSb.redirect(rrfPkt.sbTag);
+        csrSb.redirect(rrfPkt.sbTag);
         if2WaitRefill <= False;
-        btb.update(rrfPkt.pc, eInst.addr);
+        btb.update(rrfPkt.pc, eInst.targetAddr);
       end
       bht.update(rrfPkt.pc, eInst.brTaken);
 

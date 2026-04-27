@@ -102,14 +102,14 @@ function ExecInst exec(DecodedInst dInst, Data rVal1, Data rVal2, Addr pc, Addr 
   if (dInst.iType != Csrw && dInst.iType != Csrxchg) begin
     eInst.addr = (case(dInst.iType)
       Invtlb: rVal2;
-      Ld, St, Ll, Sc, Cacop, Dbar, Ibar: execRes;
-      default: brAddr;
+      default: execRes;
     endcase);
   end
 
   // CSR write-like ops repurpose addr; never mispredict for them
   eInst.mispredict = (dInst.iType == Csrw || dInst.iType == Csrxchg) ? False : (brAddr != ppc);
   eInst.brTaken = brTaken;
+  eInst.targetAddr = brAddr;
 
   return eInst;
 endfunction

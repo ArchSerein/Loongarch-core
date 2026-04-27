@@ -12,6 +12,7 @@ interface SFifo#(numeric type n, type dt, type st);
     method Bool notEmpty;
     method Action deq;
     method dt first;
+    method Action redirect(Bit#(TLog#(n)) tag);
     method Action clear;
 endinterface
 
@@ -72,6 +73,12 @@ module mkPipelineSFifo( function Bool isFound(dt x, st y), SFifo#(n, dt, st) ifc
 
     method dt first if( !empty[0] );
         return data[deqP[0]];
+    endmethod
+
+    method Action redirect(Bit#(TLog#(n)) tag);
+        enqP[1] <= (tag == max_index) ? 0 : tag + 1;
+        empty[2] <= False;
+        full[2] <= False;
     endmethod
 
     method Action clear;
@@ -140,6 +147,12 @@ module mkBypassSFifo( function Bool isFound(dt x, st y), SFifo#(n, dt, st) ifc )
         return data[deqP[0]][1];
     endmethod
 
+    method Action redirect(Bit#(TLog#(n)) tag);
+        enqP[1] <= (tag == max_index) ? 0 : tag + 1;
+        empty[2] <= False;
+        full[2] <= False;
+    endmethod
+
     method Action clear;
         enqP[1] <= 0;
         deqP[1] <= 0;
@@ -163,6 +176,7 @@ module mkCFSFifo( function Bool isFound(dt x, st y), SFifo#(n, dt, st) ifc ) pro
 	Ehr#(3, Maybe#(dt)) enqEn <- mkEhr(Invalid);
 	Ehr#(3, Bool) deqEn <- mkEhr(False);
 	Ehr#(2, Bool) clearEn <- mkEhr(False);
+	Ehr#(2, Maybe#(Bit#(TLog#(n)))) redirectEn <- mkEhr(Invalid);
 
 	function Bit#(TLog#(n)) nextPtr(Bit#(TLog#(n)) curPtr);
 		return curPtr == max_index ? 0 : curPtr + 1;
@@ -181,12 +195,15 @@ module mkCFSFifo( function Bool isFound(dt x, st y), SFifo#(n, dt, st) ifc ) pro
 			let enqP_nxt = enqP;
 			let deqP_nxt = deqP;
 			// change ptr
-			if(enqEn[2] matches tagged Valid .x) begin
+			if(enqEn[2] matches tagged Valid .x &&& !isValid(redirectEn[1])) begin
 				data[enqP] <= x;
 				enqP_nxt = nextPtr(enqP);
 			end
 			if(deqEn[2]) begin
 				deqP_nxt = nextPtr(deqP);
+			end
+			if(redirectEn[1] matches tagged Valid .tag) begin
+				enqP_nxt = nextPtr(tag);
 			end
 			enqP <= enqP_nxt;
 			deqP <= deqP_nxt;
@@ -194,7 +211,11 @@ module mkCFSFifo( function Bool isFound(dt x, st y), SFifo#(n, dt, st) ifc ) pro
 			Bool isEnq = isValid(enqEn[2]);
 			Bool isDeq = deqEn[2];
 			Bool nextPtrEq = deqP_nxt == enqP_nxt;
-			if(isEnq && !isDeq) begin
+			if(redirectEn[1] matches tagged Valid .tag) begin
+				empty <= False;
+				full <= False;
+			end
+			else if(isEnq && !isDeq) begin
 				empty <= False;
 				full <= nextPtrEq;
 			end
@@ -205,6 +226,7 @@ module mkCFSFifo( function Bool isFound(dt x, st y), SFifo#(n, dt, st) ifc ) pro
 		end
 		// clear enables
 		clearEn[1] <= False;
+		redirectEn[1] <= Invalid;
 		enqEn[2] <= Invalid;
 		deqEn[2] <= False;
 	endrule
@@ -243,11 +265,16 @@ module mkCFSFifo( function Bool isFound(dt x, st y), SFifo#(n, dt, st) ifc ) pro
         return data[deqP];
     endmethod
 
+    method Action redirect(Bit#(TLog#(n)) tag);
+		redirectEn[0] <= Valid (tag);
+		enqEn[1] <= Invalid;
+    endmethod
+
     method Action clear;
 		clearEn[0] <= True;
+		redirectEn[0] <= Invalid;
 		enqEn[1] <= Invalid;
 		deqEn[1] <= False;
     endmethod
 endmodule
-
 

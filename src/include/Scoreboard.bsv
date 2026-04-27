@@ -32,6 +32,7 @@ interface Scoreboard#(numeric type size);
   method Action updateExe(Bit#(TLog#(size)) tag, Maybe#(Data) data);
   method Action updateMem1(Bit#(TLog#(size)) tag, Maybe#(Data) data);
   method Action updateMem2(Bit#(TLog#(size)) tag, Maybe#(Data) data);
+  method Action redirect(Bit#(TLog#(size)) tag);
   method Action clear;
 endinterface
 
@@ -77,6 +78,7 @@ module mkScoreboard(Scoreboard#(size));
   Wire#(Maybe#(ScoreboardUpdate#(size))) exeUpdate <- mkDWire(tagged Invalid);
   Wire#(Maybe#(ScoreboardUpdate#(size))) mem1Update <- mkDWire(tagged Invalid);
   Wire#(Maybe#(ScoreboardUpdate#(size))) mem2Update <- mkDWire(tagged Invalid);
+  Wire#(Maybe#(Bit#(TLog#(size)))) redirectReq <- mkDWire(tagged Invalid);
 
   function Bit#(TLog#(size)) nextPtr(Bit#(TLog#(size)) curPtr);
     return curPtr == maxIndex ? 0 : curPtr + 1;
@@ -164,7 +166,7 @@ module mkScoreboard(Scoreboard#(size));
       for (Integer i = 0; i < valueOf(size); i = i + 1) begin
         Bit#(TLog#(size)) idx = fromInteger(i);
         ScoreboardEntry nextEntry = applyPendingUpdate(entries[i], idx);
-        if (enqReq matches tagged Valid .entry &&& idx == enqP) begin
+        if (enqReq matches tagged Valid .entry &&& idx == enqP &&& !isValid(redirectReq)) begin
           nextEntry = entry;
         end
         entries[i] <= nextEntry;
@@ -172,11 +174,13 @@ module mkScoreboard(Scoreboard#(size));
 
       let enqPNext = enqP;
       let deqPNext = deqP;
-      if (enqReq matches tagged Valid .entry) begin
-        enqPNext = nextPtr(enqP);
-      end
       if (deqReq) begin
         deqPNext = nextPtr(deqP);
+      end
+      if (redirectReq matches tagged Valid .tag) begin
+        enqPNext = nextPtr(tag);
+      end else if (enqReq matches tagged Valid .entry) begin
+        enqPNext = nextPtr(enqP);
       end
 
       enqP <= enqPNext;
@@ -185,7 +189,10 @@ module mkScoreboard(Scoreboard#(size));
       Bool isEnq = isValid(enqReq);
       Bool isDeq = deqReq;
       Bool nextPtrEq = deqPNext == enqPNext;
-      if (isEnq && !isDeq) begin
+      if (redirectReq matches tagged Valid .tag) begin
+        empty <= False;
+        full <= False;
+      end else if (isEnq && !isDeq) begin
         empty <= False;
         full <= nextPtrEq;
       end else if (!isEnq && isDeq) begin
@@ -229,6 +236,10 @@ module mkScoreboard(Scoreboard#(size));
 
   method Action updateMem2(Bit#(TLog#(size)) tag, Maybe#(Data) data);
     mem2Update <= tagged Valid ScoreboardUpdate{tag: tag, data: data};
+  endmethod
+
+  method Action redirect(Bit#(TLog#(size)) tag);
+    redirectReq <= tagged Valid tag;
   endmethod
 
   method Action clear;

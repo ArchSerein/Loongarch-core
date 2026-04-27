@@ -254,7 +254,6 @@ module mkTlb(TlbArray);
   // Fetch Lookup Scan
   // ============================================================
   rule doFetchLookupPipeline (fetchRespFifo.notFull && (fetchCnt != 0 || fetchReqFifo.notEmpty));
-    $display("doFetchLookupPipeline");
     TlbCompareCnt curCnt = fetchCnt;
     LookupCtx ctx = fetchCtx;
     TlbLookupResult oldHit = fetchHit;
