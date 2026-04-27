@@ -876,7 +876,7 @@ module mkCore(Core);
         let diffExcpState = DiffExcpEvent{
           excpValid: wb_has_excp,
           eret: (mInst.iType == Ertn),
-          interrupt: mkInterruptNo(csrf.estat),
+          interrupt: mkInterruptNo(diffCsrState.estat),
           exception: has_int ? 0 : zeroExtend(wbExcp.ecode),
           exceptionPC: memPkt.pc,
           exceptionInst: memPkt.inst

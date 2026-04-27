@@ -67,6 +67,24 @@ function Data effectiveTlbIdxForWrite(Data tlbidx, Data estat);
   return nextTlbidx;
 endfunction
 
+function Data csrEstatWithTimerInt(Data estat, Bool timerIntPending);
+  Data nextEstat = estat;
+  nextEstat[`CSR_ESTAT_IS_2] = pack(timerIntPending);
+  return nextEstat;
+endfunction
+
+function Data setTimerIntPending(Data estat);
+  Data nextEstat = estat;
+  nextEstat[`CSR_ESTAT_IS_2] = 1'b1;
+  return nextEstat;
+endfunction
+
+function Data clearTimerIntPending(Data estat);
+  Data nextEstat = estat;
+  nextEstat[`CSR_ESTAT_IS_2] = 1'b0;
+  return nextEstat;
+endfunction
+
 function Data updateTimerView(Data tcfg, Data tval, Bool timerInt, Bool wrote_tcfg, Bool cleared_timer_int);
   Data next_tval = tval;
   Bool next_timerInt = timerInt;
@@ -184,8 +202,15 @@ function DiffArchCsrState diffSnapshotAfterWriteFromState(
         next_tcfg = val;
         next_tval = {val[`CSR_TCFG_INITV], 2'b0};
         wrote_tcfg = True;
+        if (val[`CSR_TCFG_EN] == 1'b1 && val[`CSR_TCFG_INITV] == 0) begin
+          next_estat_raw = setTimerIntPending(next_estat_raw);
+        end
       end
       `CSR_TICLR: begin
+        if (val[`CSR_TICLR_CLR] == 1'b1) begin
+          next_estat_raw = clearTimerIntPending(next_estat_raw);
+          cleared_timer_int = True;
+        end
       end
       `CSR_LLBCTL: begin
         if (val[1] == 1) next_llbit = False;
@@ -202,6 +227,7 @@ function DiffArchCsrState diffSnapshotAfterWriteFromState(
     if (next_tval != 0) begin
       let tval_next = next_tval - 1;
       if (tval_next == 0) begin
+        next_estat_raw = setTimerIntPending(next_estat_raw);
         if (next_tcfg[`CSR_TCFG_PERIOD] == 1)
           next_tval = {next_tcfg[`CSR_TCFG_INITV], 2'b0};
         else
@@ -315,6 +341,7 @@ function DiffArchCsrState diffSnapshotAfterTlbrdFromState(
   Data next_asid = curr.asid;
   Data next_tval = curr.tval;
   Data next_tcfg = curr.tcfg;
+  Data next_estat = curr.estat;
 
   if (ne) begin
     next_tlbidx[31] = 1'b1;
@@ -331,6 +358,7 @@ function DiffArchCsrState diffSnapshotAfterTlbrdFromState(
     if (next_tval != 0) begin
       let tval_next = next_tval - 1;
       if (tval_next == 0) begin
+        next_estat = setTimerIntPending(next_estat);
         if (next_tcfg[`CSR_TCFG_PERIOD] == 1)
           next_tval = {next_tcfg[`CSR_TCFG_INITV], 2'b0};
         else
@@ -367,7 +395,7 @@ function DiffArchCsrState diffSnapshotAfterTlbrdFromState(
     tlbrentry: curr.tlbrentry,
     dmw0: curr.dmw0,
     dmw1: curr.dmw1,
-    estat: curr.estat
+    estat: next_estat
   };
 endfunction
 
@@ -407,7 +435,11 @@ module mkCsrFile(CsrFile);
   Reg#(Data)    csr_tid <- mkReg(0);
   Reg#(Data)    csr_tcfg <- mkReg(0);
   Reg#(Data)    csr_tval <- mkRegU;
-  Reg#(Bool)    wrote_tcfg <- mkReg(False);
+  Reg#(Bool)    timerIntPending <- mkReg(False);
+  Reg#(Bool)    tcfgWriteEpoch <- mkReg(False);
+  Reg#(Bool)    tcfgWriteSeen <- mkReg(False);
+  Reg#(Bool)    timerIntClearEpoch <- mkReg(False);
+  Reg#(Bool)    timerIntClearSeen <- mkReg(False);
 
   Reg#(Bool) llbit <- mkReg(False);
   Reg#(Bool) llbctlKlo <- mkReg(False);
@@ -419,16 +451,33 @@ module mkCsrFile(CsrFile);
   rule count;
     cycles <= cycles + 1;
     Data next_tval = csr_tval;
-    if (wrote_tcfg) begin
+    Bool tcfgWritePending = tcfgWriteEpoch != tcfgWriteSeen;
+    Bool timerIntClearPending = timerIntClearEpoch != timerIntClearSeen;
+    Bool nextTimerIntPending = timerIntClearPending ? False : timerIntPending;
+
+    if (tcfgWritePending) begin
       next_tval = { csr_tcfg[`CSR_TCFG_INITV], 2'b0 };
+      if (csr_tcfg[`CSR_TCFG_EN] == 1'b1 && csr_tcfg[`CSR_TCFG_INITV] == 0) begin
+        nextTimerIntPending = True;
+      end
+      tcfgWriteSeen <= tcfgWriteEpoch;
     end else if (csr_tcfg[`CSR_TCFG_EN] == 1) begin
       if (csr_tval == 0) begin
         next_tval = csr_tcfg[`CSR_TCFG_PERIOD] == 1'b1 ? { csr_tcfg[`CSR_TCFG_INITV], 2'b0 } : 0;
       end else begin
-        next_tval = csr_tval - 1;
+        let tval_next = csr_tval - 1;
+        next_tval = tval_next;
+        if (tval_next == 0) begin
+          nextTimerIntPending = True;
+          next_tval = csr_tcfg[`CSR_TCFG_PERIOD] == 1'b1 ? { csr_tcfg[`CSR_TCFG_INITV], 2'b0 } : 0;
+        end
       end
     end
+    if (timerIntClearPending) begin
+      timerIntClearSeen <= timerIntClearEpoch;
+    end
     csr_tval <= next_tval;
+    timerIntPending <= nextTimerIntPending;
   endrule
 
   method Data crmd;
@@ -444,7 +493,7 @@ module mkCsrFile(CsrFile);
   endmethod
 
   method Data estat;
-    return csr_estat;
+    return csrEstatWithTimerInt(csr_estat, timerIntPending);
   endmethod
 
   method Data tcfg;
@@ -474,7 +523,7 @@ module mkCsrFile(CsrFile);
         `CSR_PRMD: res = csr_prmd;
         `CSR_EUEN: res = csr_euen; 
         `CSR_ECFG: res = csr_ecfg;
-        `CSR_ESTAT: res = csr_estat;
+        `CSR_ESTAT: res = csrEstatWithTimerInt(csr_estat, timerIntPending);
         `CSR_ERA: res = csr_era;
         `CSR_BADV: res = csr_badv; 
         `CSR_EENTRY: res = csr_eentry;
@@ -511,27 +560,30 @@ module mkCsrFile(CsrFile);
 
 `ifdef CONFIG_DIFFTEST
   method DiffArchCsrState diffSnapshot;
+    let estatWithTimer = csrEstatWithTimerInt(csr_estat, timerIntPending);
     return diffSnapshotFromFields(csr_crmd, csr_prmd, csr_euen, csr_ecfg, csr_era, csr_badv,
       csr_eentry, csr_tlbidx, csr_tlbehi, csr_tlbelo0, csr_tlbelo1, csr_asid, csr_pgdl,
       csr_pgdh, csr_save0, csr_save1, csr_save2, csr_save3, csr_tid, csr_tcfg, csr_tval,
-      llbctlKlo, llbit, csr_tlbrentry, csr_dmw0, csr_dmw1, csr_estat);
+      llbctlKlo, llbit, csr_tlbrentry, csr_dmw0, csr_dmw1, estatWithTimer);
   endmethod
 
   method DiffArchCsrState diffSnapshotAfterWrite(Maybe#(CsrIndx) csrIdx, Data val, Bool raiseExcp,
       Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv, Bool isErtn);
+    let estatWithTimer = csrEstatWithTimerInt(csr_estat, timerIntPending);
     let curr = diffSnapshotFromFields(csr_crmd, csr_prmd, csr_euen, csr_ecfg, csr_era, csr_badv,
       csr_eentry, csr_tlbidx, csr_tlbehi, csr_tlbelo0, csr_tlbelo1, csr_asid, csr_pgdl,
       csr_pgdh, csr_save0, csr_save1, csr_save2, csr_save3, csr_tid, csr_tcfg, csr_tval,
-      llbctlKlo, llbit, csr_tlbrentry, csr_dmw0, csr_dmw1, csr_estat);
+      llbctlKlo, llbit, csr_tlbrentry, csr_dmw0, csr_dmw1, estatWithTimer);
     return diffSnapshotAfterWriteFromState(curr, csrIdx, val, raiseExcp, ecode, esubcode, pc,
       badv, isErtn);
   endmethod
 
   method DiffArchCsrState diffSnapshotAfterTlbrd(Bool ne, Bit#(6) ps, Data ehi, Data elo0, Data elo1, Data asidVal);
+    let estatWithTimer = csrEstatWithTimerInt(csr_estat, timerIntPending);
     let curr = diffSnapshotFromFields(csr_crmd, csr_prmd, csr_euen, csr_ecfg, csr_era, csr_badv,
       csr_eentry, csr_tlbidx, csr_tlbehi, csr_tlbelo0, csr_tlbelo1, csr_asid, csr_pgdl,
       csr_pgdh, csr_save0, csr_save1, csr_save2, csr_save3, csr_tid, csr_tcfg, csr_tval,
-      llbctlKlo, llbit, csr_tlbrentry, csr_dmw0, csr_dmw1, csr_estat);
+      llbctlKlo, llbit, csr_tlbrentry, csr_dmw0, csr_dmw1, estatWithTimer);
     return diffSnapshotAfterTlbrdFromState(curr, ne, ps, ehi, elo0, elo1, asidVal);
   endmethod
 `endif
@@ -589,11 +641,13 @@ module mkCsrFile(CsrFile);
 
         `CSR_TCFG: begin
           csr_tcfg <= val;
-          wrote_tcfg <= True;
+          tcfgWriteEpoch <= !tcfgWriteEpoch;
         end
 
         `CSR_TICLR: begin
-          csr_estat[`CSR_ESTAT_IS_3] <= 1'b0;
+          if (val[`CSR_TICLR_CLR] == 1'b1) begin
+            timerIntClearEpoch <= !timerIntClearEpoch;
+          end
         end
 
         `CSR_LLBCTL: begin
