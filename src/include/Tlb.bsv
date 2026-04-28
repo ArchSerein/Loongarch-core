@@ -131,6 +131,7 @@ interface TlbArray;
   method Action dataLookupReq(Addr va, Data asid);
   method ActionValue#(TlbLookupResult) dataLookupResp();
 
+  method Action squashReq();
   method Action squashFetchLookup();
   method Action squashDataLookup();
 endinterface
@@ -253,20 +254,15 @@ module mkTlb(TlbArray);
   // ============================================================
   // Fetch Lookup Scan
   // ============================================================
-  rule doFetchLookupPipeline (fetchRespFifo.notFull && (fetchCnt != 0 || fetchReqFifo.notEmpty));
-    TlbCompareCnt curCnt = fetchCnt;
-    LookupCtx ctx = fetchCtx;
-    TlbLookupResult oldHit = fetchHit;
-
-    if (fetchCnt == 0) begin
-      let reqTuple = fetchReqFifo.first;
-      fetchReqFifo.deq;
-      ctx = LookupCtx { va: tpl_1(reqTuple), asidVal: tpl_2(reqTuple)[`CSR_ASID_ASID], vppn: tpl_1(reqTuple)[`CSR_TLBEHI_VPPN] };
-      oldHit = noTlbLookup;
-    end else begin
-      curCnt = fetchCnt;
-    end
-
+  rule doFetchLookupStart (fetchRespFifo.notFull && fetchCnt == 0 && fetchReqFifo.notEmpty);
+    let reqTuple = fetchReqFifo.first;
+    fetchReqFifo.deq;
+    TlbCompareCnt curCnt = 0;
+    LookupCtx ctx = LookupCtx {
+      va: tpl_1(reqTuple),
+      asidVal: tpl_2(reqTuple)[`CSR_ASID_ASID],
+      vppn: tpl_1(reqTuple)[`CSR_TLBEHI_VPPN]
+    };
     TlbLookupResult chunkHit = noTlbLookup;
     TlbIndex baseIdx = tlbChunkBase(curCnt);
     for (Integer i = 0; i < valueOf(TlbCompareEntries); i = i + 1) begin
@@ -274,7 +270,7 @@ module mkTlb(TlbArray);
       chunkHit = mergeLookupHit(chunkHit, matchLookupEntry(entries[idx], ctx.va, ctx.vppn, ctx.asidVal));
     end
 
-    TlbLookupResult nextHit = mergeLookupHit(oldHit, chunkHit);
+    TlbLookupResult nextHit = chunkHit;
     if (curCnt == fromInteger(valueOf(TlbCompareChunks) - 1)) begin
       fetchRespFifo.enq(nextHit);
       fetchCnt <= 0;
@@ -285,23 +281,9 @@ module mkTlb(TlbArray);
     end
   endrule
 
-  // ============================================================
-  // Data Lookup Scan
-  // ============================================================
-  rule doDataLookupPipeline (dataRespFifo.notFull && (dataCnt != 0 || dataReqFifo.notEmpty));
-    TlbCompareCnt curCnt = dataCnt;
-    LookupCtx ctx = dataCtx;
-    TlbLookupResult oldHit = dataHit;
-
-    if (dataCnt == 0) begin
-      let reqTuple = dataReqFifo.first;
-      dataReqFifo.deq;
-      ctx = LookupCtx { va: tpl_1(reqTuple), asidVal: tpl_2(reqTuple)[`CSR_ASID_ASID], vppn: tpl_1(reqTuple)[`CSR_TLBEHI_VPPN] };
-      oldHit = noTlbLookup;
-    end else begin
-      curCnt = dataCnt;
-    end
-
+  rule doFetchLookupContinue (fetchRespFifo.notFull && fetchCnt != 0);
+    TlbCompareCnt curCnt = fetchCnt;
+    LookupCtx ctx = fetchCtx;
     TlbLookupResult chunkHit = noTlbLookup;
     TlbIndex baseIdx = tlbChunkBase(curCnt);
     for (Integer i = 0; i < valueOf(TlbCompareEntries); i = i + 1) begin
@@ -309,12 +291,61 @@ module mkTlb(TlbArray);
       chunkHit = mergeLookupHit(chunkHit, matchLookupEntry(entries[idx], ctx.va, ctx.vppn, ctx.asidVal));
     end
 
-    TlbLookupResult nextHit = mergeLookupHit(oldHit, chunkHit);
+    TlbLookupResult nextHit = mergeLookupHit(fetchHit, chunkHit);
+    if (curCnt == fromInteger(valueOf(TlbCompareChunks) - 1)) begin
+      fetchRespFifo.enq(nextHit);
+      fetchCnt <= 0;
+    end else begin
+      fetchHit <= nextHit;
+      fetchCnt <= curCnt + 1;
+    end
+  endrule
+
+  // ============================================================
+  // Data Lookup Scan
+  // ============================================================
+  rule doDataLookupStart (dataRespFifo.notFull && dataCnt == 0 && dataReqFifo.notEmpty);
+    let reqTuple = dataReqFifo.first;
+    dataReqFifo.deq;
+    TlbCompareCnt curCnt = 0;
+    LookupCtx ctx = LookupCtx {
+      va: tpl_1(reqTuple),
+      asidVal: tpl_2(reqTuple)[`CSR_ASID_ASID],
+      vppn: tpl_1(reqTuple)[`CSR_TLBEHI_VPPN]
+    };
+    TlbLookupResult chunkHit = noTlbLookup;
+    TlbIndex baseIdx = tlbChunkBase(curCnt);
+    for (Integer i = 0; i < valueOf(TlbCompareEntries); i = i + 1) begin
+      TlbIndex idx = baseIdx + fromInteger(i);
+      chunkHit = mergeLookupHit(chunkHit, matchLookupEntry(entries[idx], ctx.va, ctx.vppn, ctx.asidVal));
+    end
+
+    TlbLookupResult nextHit = chunkHit;
     if (curCnt == fromInteger(valueOf(TlbCompareChunks) - 1)) begin
       dataRespFifo.enq(nextHit);
       dataCnt <= 0;
     end else begin
       dataCtx <= ctx;
+      dataHit <= nextHit;
+      dataCnt <= curCnt + 1;
+    end
+  endrule
+
+  rule doDataLookupContinue (dataRespFifo.notFull && dataCnt != 0);
+    TlbCompareCnt curCnt = dataCnt;
+    LookupCtx ctx = dataCtx;
+    TlbLookupResult chunkHit = noTlbLookup;
+    TlbIndex baseIdx = tlbChunkBase(curCnt);
+    for (Integer i = 0; i < valueOf(TlbCompareEntries); i = i + 1) begin
+      TlbIndex idx = baseIdx + fromInteger(i);
+      chunkHit = mergeLookupHit(chunkHit, matchLookupEntry(entries[idx], ctx.va, ctx.vppn, ctx.asidVal));
+    end
+
+    TlbLookupResult nextHit = mergeLookupHit(dataHit, chunkHit);
+    if (curCnt == fromInteger(valueOf(TlbCompareChunks) - 1)) begin
+      dataRespFifo.enq(nextHit);
+      dataCnt <= 0;
+    end else begin
       dataHit <= nextHit;
       dataCnt <= curCnt + 1;
     end
@@ -468,6 +499,13 @@ module mkTlb(TlbArray);
     let res = dataRespFifo.first;
     dataRespFifo.deq;
     return res;
+  endmethod
+
+  method Action squashReq();
+    reqFifo.clear();
+    respFifo.clear();
+    reqCnt <= 0;
+    reqSearchHit <= noSearchHit;
   endmethod
 
   method Action squashFetchLookup();

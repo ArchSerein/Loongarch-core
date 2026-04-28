@@ -88,15 +88,12 @@ module mkCore(Core);
   endrule
 `endif
 
-  rule doIF1;
-    Addr pc = pcReg[0];
+  function Action doIF1Body(Addr pc, Data crmd, Data asid, MmuTranslateType transType);
+    action
     Addr btbPc = btb.predPc(pc);
     Bool bhtPred = bht.predict(pc);
     Addr predPc = bhtPred ? btbPc : pc + 4;
-    Data crmd = csrf.crmd;
-    Data asid = csrf.asid;
 
-    tlb.fetchLookupReq(pc, asid);
     f1f2Fifo.enq(F1toF2{
       pc: pc,
       predPc: predPc,
@@ -104,10 +101,22 @@ module mkCore(Core);
       asid: asid,
       dmw0: csrf.dmw0,
       dmw1: csrf.dmw1,
-      transType: getMmuTranslateType(crmd),
+      transType: transType,
       probeRes: iCache.probe(pc)
     });
     pcReg[0] <= predPc;
+    endaction
+  endfunction
+
+  rule doIF1NoFetchTlb (getMmuTranslateType(csrf.crmd) != Translate);
+    doIF1Body(pcReg[0], csrf.crmd, csrf.asid, getMmuTranslateType(csrf.crmd));
+  endrule
+
+  rule doIF1WithFetchTlb (getMmuTranslateType(csrf.crmd) == Translate);
+    Addr pc = pcReg[0];
+    Data asid = csrf.asid;
+    tlb.fetchLookupReq(pc, asid);
+    doIF1Body(pc, csrf.crmd, asid, Translate);
   endrule
 
   // ============================================================
@@ -132,10 +141,10 @@ module mkCore(Core);
     end
   endrule
 
-  rule doIF2 (!if2WaitRefill);
+  function Action doIF2Body(TlbLookupResult tlbRes);
+    action
     let req = f1f2Fifo.first();
     ICacheProbeResp probeRes = req.probeRes;
-    TlbLookupResult tlbRes <- tlb.fetchLookupResp;
     MmuResult fTrans = MmuResult{
       pa: req.pc,
       mat: getFetchMatType(req.crmd),
@@ -211,6 +220,18 @@ module mkCore(Core);
         if2WaitRefill <= True;
       end
     end
+    endaction
+  endfunction
+
+  rule doIF2NoFetchTlb (!if2WaitRefill &&
+      f1f2Fifo.first.transType != Translate);
+    doIF2Body(noTlbLookup);
+  endrule
+
+  rule doIF2WithFetchTlb (!if2WaitRefill &&
+      f1f2Fifo.first.transType == Translate);
+    let tlbRes <- tlb.fetchLookupResp;
+    doIF2Body(tlbRes);
   endrule
 
   // ============================================================
@@ -907,6 +928,7 @@ module mkCore(Core);
     if (wbFlush) begin
       lrValidReg <= False;
       iCache.squash();
+      tlb.squashReq();
       tlb.squashFetchLookup();
       tlb.squashDataLookup();
       dCache.squash();
