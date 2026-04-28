@@ -982,6 +982,7 @@ module mkCore(Core);
   method Bit#(130) liveDiffExcpBundle = difftest.liveDiffExcpBundle;
   method Bit#(200) liveDiffStoreBundle = difftest.liveDiffStoreBundle;
   method Bit#(136) liveDiffLoadBundle = difftest.liveDiffLoadBundle;
+  `endif
 `endif
 
   interface axiMem = axiMux;

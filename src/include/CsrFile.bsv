@@ -107,6 +107,7 @@ function Data updateTimerView(Data tcfg, Data tval, Bool timerInt, Bool wrote_tc
   return (next_timerInt ? 32'h80000000 : 32'h0) | next_tval;
 endfunction
 
+`ifdef CONFIG_DIFFTEST
 function DiffArchCsrState diffSnapshotAfterWriteFromState(
     DiffArchCsrState curr,
     Maybe#(CsrIndx) csrIdx,
@@ -398,6 +399,7 @@ function DiffArchCsrState diffSnapshotAfterTlbrdFromState(
     estat: next_estat
   };
 endfunction
+`endif
 
 (* synthesize *)
 module mkCsrFile(CsrFile);
