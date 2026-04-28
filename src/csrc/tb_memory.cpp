@@ -31,6 +31,13 @@ bool Memory::isPmemAddress(std::uint32_t addr) {
            seg == 0xa0;
 }
 
+bool Memory::isSparsePmemAddress(std::uint32_t addr) {
+    std::uint32_t window = addr & 0xe0000000u;
+    return window == 0x80000000u ||
+           window == 0xc0000000u ||
+           window == 0xe0000000u;
+}
+
 std::size_t Memory::pmemOffset(std::uint32_t addr) {
     std::uint32_t seg = addr >> 24;
     return (seg == 0x80 || seg == 0xa0) ? (addr & 0x1ffffffful) : addr;
@@ -47,10 +54,26 @@ bool Memory::isDeviceAddress(std::uint32_t addr) const {
            isLs1cMmioAddress(addr);
 }
 
+bool Memory::isBackedAddress(std::uint32_t addr) const {
+    return isDeviceAddress(addr) ||
+           (addr >> 24) == 0x1c ||
+           isPmemAddress(addr) ||
+           isSparsePmemAddress(addr);
+}
+
 void Memory::openUartLog() {
     if (uart_simu_ == nullptr) {
         uart_simu_ = std::fopen("/root/Loongarch-core/src/build/uart_log.txt", "wb");
     }
+}
+
+std::uint8_t Memory::sparsePmemReadByte(std::uint32_t addr) const {
+    auto it = sparse_pmem_.find(addr);
+    return it == sparse_pmem_.end() ? 0 : it->second;
+}
+
+void Memory::sparsePmemWriteByte(std::uint32_t addr, std::uint8_t value) {
+    sparse_pmem_[addr] = value;
 }
 
 std::uint8_t Memory::uart16550ReadByte(std::uint32_t addr) const {
@@ -137,6 +160,15 @@ std::uint32_t Memory::memory_dispatch_read(std::size_t addr) const {
         printf("read: addr->0x%08lx data->0x%08x\n", word_addr, data);
         #endif
         return data;
+    } else if (isSparsePmemAddress(word_addr)) {
+        data = BYTES2WORD(  sparsePmemReadByte(word_addr+0),
+                            sparsePmemReadByte(word_addr+1),
+                            sparsePmemReadByte(word_addr+2),
+                            sparsePmemReadByte(word_addr+3));
+        #ifdef CONFIG_MTRACE
+        printf("read: addr->0x%08lx data->0x%08x\n", word_addr, data);
+        #endif
+        return data;
     } else {
         if (pa + 3 >= Memory::words_.size()) {
             std::fprintf(stderr, "memory_dispatch_read: out of range addr=0x%08x pa=0x%08x\n",
@@ -201,6 +233,12 @@ void Memory::memory_dispatch_write(std::size_t addr, std::uint32_t data, std::ui
         if (((pmem_addr & 0x00fffff0ul) == 0x000d0010ul) || ((word_addr & 0xfffffff0ul) == 0xa0000000ul)) {
             std::fprintf(stderr, "[TMMIO] WRITE addr=0x%08x data=0x%08x src=pmem paddr=0x%08lx mask=0x%02x\n", word_addr, data, pmem_addr, mask);
         }
+    } else if (isSparsePmemAddress(word_addr)) {
+        #ifdef CONFIG_MTRACE
+        printf("write: addr->0x%08lx data 0x%08x\n", word_addr, data);
+        #endif
+        for (std::uint32_t i = 0; i < 4; i++)
+            if ((mask >> i) & 1) sparsePmemWriteByte(word_addr+i, vec[i]);
     } else {
         if (host_addr + 3 >= Memory::words_.size()) {
             std::fprintf(stderr, "memory_dispatch_write: out of range addr=0x%08x pa=0x%08x\n",

@@ -5,6 +5,7 @@
 #include <vector>
 #include <cstdint>
 #include <array>
+#include <unordered_map>
 #include "mmio.hpp"
 
 class Memory {
@@ -60,10 +61,12 @@ public:
     }
 
     bool isDeviceAddress(std::uint32_t addr) const;
+    bool isBackedAddress(std::uint32_t addr) const;
 
 private:
     std::vector<std::uint8_t> words_;
     std::vector<std::uint8_t> pmem_;
+    std::unordered_map<std::uint32_t, std::uint8_t> sparse_pmem_;
     std::FILE* uart_simu_ = nullptr;
     MMIOMap& mmio;
     std::array<std::uint8_t, 8> uart16550_{};
@@ -76,9 +79,12 @@ private:
     static bool isLiointcAddress(std::uint32_t addr);
     static bool isLs1cMmioAddress(std::uint32_t addr);
     static bool isPmemAddress(std::uint32_t addr);
+    static bool isSparsePmemAddress(std::uint32_t addr);
     static std::size_t pmemOffset(std::uint32_t addr);
     static std::uint32_t alignWord(std::uint32_t addr);
     void openUartLog();
+    std::uint8_t sparsePmemReadByte(std::uint32_t addr) const;
+    void sparsePmemWriteByte(std::uint32_t addr, std::uint8_t value);
     std::uint8_t uart16550ReadByte(std::uint32_t addr) const;
     void uart16550WriteByte(std::uint32_t addr, std::uint8_t value);
     std::uint8_t liointcReadByte(std::uint32_t addr) const;

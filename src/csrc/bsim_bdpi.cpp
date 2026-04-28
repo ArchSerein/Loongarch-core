@@ -315,11 +315,7 @@ private:
 #endif
 
   void check_memory_bound(std::uint32_t addr, bool is_write) {
-    if (mem.isDeviceAddress(addr)) {
-      return;
-    } else if ((addr >> 24) == 0x1c) {
-      return;
-    } else if ((addr >> 24) == 0x00 || (addr >> 24) == 0x80 || (addr >> 24) == 0xa0) {
+    if (mem.isBackedAddress(addr)) {
       return;
     }
 
