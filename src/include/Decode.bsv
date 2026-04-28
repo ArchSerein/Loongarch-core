@@ -75,8 +75,8 @@ function DecodedInst decode(Instruction inst);
     32'b001010_1001_????????????_?????_?????: begin dInst.iType = Ld; dInst.aluFunc = tagged Valid AddW; dInst.dst = tagged Valid rd; dInst.src1 = tagged Valid rj; dInst.imm = tagged Valid si12; dInst.mask = tagged Valid 5'b00011; end // LD.HU
 
     // --- Atomic / LLSC ---
-    32'b001000_00_??????????????_?????_?????: begin dInst.iType = Ll; dInst.aluFunc = tagged Valid AddW; dInst.dst = tagged Valid rd; dInst.src1 = tagged Valid rj; dInst.imm = tagged Valid si14_2; end // LL.W
-    32'b001000_01_??????????????_?????_?????: begin dInst.iType = Sc; dInst.aluFunc = tagged Valid AddW; dInst.dst = tagged Valid rd; dInst.src1 = tagged Valid rj; dInst.src2 = tagged Valid rd; dInst.imm = tagged Valid si14_2; end // SC.W
+    32'b001000_00_??????????????_?????_?????: begin dInst.iType = Ll; dInst.aluFunc = tagged Valid AddW; dInst.dst = tagged Valid rd; dInst.src1 = tagged Valid rj; dInst.imm = tagged Valid si14_2; dInst.mask = tagged Valid 5'b11111; end // LL.W
+    32'b001000_01_??????????????_?????_?????: begin dInst.iType = Sc; dInst.aluFunc = tagged Valid AddW; dInst.dst = tagged Valid rd; dInst.src1 = tagged Valid rj; dInst.src2 = tagged Valid rd; dInst.imm = tagged Valid si14_2; dInst.mask = tagged Valid 5'b11111; end // SC.W
 
     // --- CSR Instructions ---
     32'b000001_00_??????????????_00000_?????: begin dInst.iType = Csrr; dInst.dst = tagged Valid rd; dInst.csr = tagged Valid csrNum; end // CSRRD

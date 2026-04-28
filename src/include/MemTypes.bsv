@@ -4,7 +4,7 @@ import Memory::*;
 
 typedef Data MemResp;
 
-typedef enum{Ld, St, Lr, Sc, Barrier, Cacop} MemOp deriving(Eq, Bits);
+typedef enum{Ld, St, Ll, Sc, Barrier, Cacop} MemOp deriving(Eq, Bits);
 typedef struct{
     MemOp op;
     Addr  addr;   // virtual address for cache index/word select

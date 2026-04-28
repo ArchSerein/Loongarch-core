@@ -260,5 +260,10 @@ function Bool rrfIsCsrWrite(DecodedInst rInst);
 endfunction
 
 function Maybe#(CsrIndx) rrfTargetCsr(DecodedInst rInst);
-  return (rInst.iType == Tlbsrch) ? tagged Valid `CSR_TLBIDX : rInst.csr;
+  Maybe#(CsrIndx) ret = (rInst.iType == Tlbsrch) ?
+    tagged Valid `CSR_TLBIDX : rInst.csr;
+  if (rInst.iType == Ll || rInst.iType == Sc) begin
+    ret = tagged Valid `CSR_LLBCTL;
+  end
+  return ret;
 endfunction

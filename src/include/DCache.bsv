@@ -57,7 +57,7 @@ endfunction
 interface DCache;
   method Action req(MemReq r);
   method ActionValue#(DCacheResp) resp;
-  method Action squash;
+  method Action squash(Bool clearLl);
   interface AxiMemMaster axiMem;
 endinterface
 
@@ -167,8 +167,8 @@ module mkDCache(DCache);
   Reg#(Bit#(8))      beatIdx <- mkRegU;
   Reg#(DCacheLine)   fillLine <- mkRegU;
 
-  Reg#(Bool) lrValid <- mkReg(False);
-  Reg#(Addr) lrAddr <- mkRegU;
+  Reg#(Bool) llValid <- mkReg(False);
+  Reg#(Addr) llAddr <- mkRegU;
   Reg#(Bool) squashPending <- mkReg(False);
   Reg#(Bool) fenceFlushWait <- mkReg(False);
   Reg#(Bool) cacheMaintWait <- mkReg(False);
@@ -256,8 +256,8 @@ module mkDCache(DCache);
       end else if (opType == 2'b00) begin
         validStore[idx][way] <= False;
         dirtyStore[idx][way] <= False;
-        if (lrValid && getDBlockBase(lrAddr) == getDBlockBase(r.paddr)) begin
-          lrValid <= False;
+        if (llValid && getDBlockBase(llAddr) == getDBlockBase(r.paddr)) begin
+          llValid <= False;
         end
         respQ.enq(DCacheResp{data: 0});
       end else begin
@@ -297,8 +297,8 @@ module mkDCache(DCache);
         end else begin
           validStore[idx][targetWay] <= False;
           dirtyStore[idx][targetWay] <= False;
-          if (lrValid && getDBlockBase(lrAddr) == targetBlockAddr) begin
-            lrValid <= False;
+          if (llValid && getDBlockBase(llAddr) == targetBlockAddr) begin
+            llValid <= False;
           end
           respQ.enq(DCacheResp{data: 0});
         end
@@ -323,11 +323,16 @@ module mkDCache(DCache);
       end
 
       if (!r.useCache) begin
-        missReq <= r;
+        if (r.op == Sc && !(llValid && llAddr == r.paddr)) begin
+          respQ.enq(DCacheResp{data: scFail});
+          llValid <= False;
+        end else begin
+          missReq <= r;
 `ifdef CONFIG_TRACE_PERFORMANCE
-        perf_dcache_miss();
+          perf_dcache_miss();
 `endif
-        state <= SendUncacheReq;
+          state <= SendUncacheReq;
+        end
       end else if (hit) begin
         replacer.access(idx, hitWay);
 
@@ -335,23 +340,23 @@ module mkDCache(DCache);
           Ld: begin
             respQ.enq(DCacheResp{data: hitData});
           end
-          Lr: begin
+          Ll: begin
             respQ.enq(DCacheResp{data: hitData});
-            lrValid <= True;
-            lrAddr <= r.paddr;
+            llValid <= True;
+            llAddr <= r.paddr;
           end
           Sc: begin
-            if (lrValid && lrAddr == r.paddr)
+            if (llValid && llAddr == r.paddr)
               respQ.enq(DCacheResp{data: scSucc});
             else
               respQ.enq(DCacheResp{data: scFail});
-            lrValid <= False;
+            llValid <= False;
           end
           default: begin end
         endcase
 
         Bool doWrite = (r.op == St) ||
-          (r.op == Sc && lrValid && lrAddr == r.paddr);
+          (r.op == Sc && llValid && llAddr == r.paddr);
         if (doWrite) begin
           Data mergedWord = applyByteMask(hitLine[wsel], r.data, r.byteEn);
           DCacheLine newLine = update(hitLine, wsel, mergedWord);
@@ -366,12 +371,12 @@ module mkDCache(DCache);
           end
         end
 
-        if (r.op == St && lrValid && lrAddr == r.paddr)
-          lrValid <= False;
+        if (r.op == St && llValid && llAddr == r.paddr)
+          llValid <= False;
       end else begin
         if (r.op == Sc) begin
           respQ.enq(DCacheResp{data: scFail});
-          lrValid <= False;
+          llValid <= False;
         end else begin
           missReq <= r;
 `ifdef CONFIG_TRACE_PERFORMANCE
@@ -426,8 +431,8 @@ module mkDCache(DCache);
     if (cacheMaintWait) begin
       validStore[cacheMaintIdx][cacheMaintWay] <= False;
       dirtyStore[cacheMaintIdx][cacheMaintWay] <= False;
-      if (lrValid && getDBlockBase(lrAddr) == cacheMaintBlockAddr) begin
-        lrValid <= False;
+      if (llValid && getDBlockBase(llAddr) == cacheMaintBlockAddr) begin
+        llValid <= False;
       end
       cacheMaintWait <= False;
       if (!squashPending) begin
@@ -489,14 +494,14 @@ module mkDCache(DCache);
             respQ.enq(DCacheResp{data: 0});
           end
         end
-        Lr: begin
+        Ll: begin
           if (!squashPending) begin
             respQ.enq(DCacheResp{data: nextLine[wsel]});
+            llValid <= True;
+            llAddr <= r.paddr;
           end
           dataStore[idx][way] <= nextLine;
           dirtyStore[idx][way] <= False;
-          lrValid <= True;
-          lrAddr <= r.paddr;
         end
         default: begin
           dataStore[idx][way] <= nextLine;
@@ -512,14 +517,14 @@ module mkDCache(DCache);
 
   rule doSendUncacheReq (state == SendUncacheReq);
     let r = missReq;
-    if (r.op == Ld) begin
+    if (r.op == Ld || r.op == Ll) begin
       arQ.enq(AxiReadAddr{
         addr: r.paddr,
         len: 'b0,
         size: 3'd2,
         burst: AxiBurstFixed
       });
-    end else if (r.op == St) begin
+    end else if (r.op == St || r.op == Sc) begin
       awQ.enq(AxiWriteAddr{
         addr: r.paddr,
         len: 'b0,
@@ -535,7 +540,8 @@ module mkDCache(DCache);
     state <= WaitUncacheResp;
   endrule
 
-  rule doWaitUncacheLoadResp (state == WaitUncacheResp && missReq.op == Ld &&
+  rule doWaitUncacheLoadResp (state == WaitUncacheResp &&
+      (missReq.op == Ld || missReq.op == Ll) &&
       rQ.notEmpty);
     let r = missReq;
     let beat = rQ.first;
@@ -544,19 +550,28 @@ module mkDCache(DCache);
                   beat.resp == AxiRespExOkay, "read resp has fault");
     if (!squashPending) begin
       respQ.enq(DCacheResp{data: beat.data});
+      if (r.op == Ll) begin
+        llValid <= True;
+        llAddr <= r.paddr;
+      end
     end
     squashPending <= False;
     state <= Ready;
   endrule
 
-  rule doWaitUncacheStoreResp (state == WaitUncacheResp && missReq.op == St &&
+  rule doWaitUncacheStoreResp (state == WaitUncacheResp &&
+      (missReq.op == St || missReq.op == Sc) &&
       bQ.notEmpty);
+    let r = missReq;
     let beat = bQ.first;
     bQ.deq;
     dynamicAssert(beat.resp == AxiRespOkay ||
                   beat.resp == AxiRespExOkay, "write resp has fault");
     if (!squashPending) begin
-      respQ.enq(DCacheResp{data: 0});
+      respQ.enq(DCacheResp{data: r.op == Sc ? scSucc : 0});
+    end
+    if (r.op == Sc || (r.op == St && llValid && llAddr == r.paddr)) begin
+      llValid <= False;
     end
     if (fenceFlushWait) begin
       fenceFlushWait <= False;
@@ -575,9 +590,12 @@ module mkDCache(DCache);
     return d;
   endmethod
 
-  method Action squash;
+  method Action squash(Bool clearLl);
     reqQ.clear();
     respQ.clear();
+    if (clearLl) begin
+      llValid <= False;
+    end
     if (state != Ready) begin
       squashPending <= True;
     end

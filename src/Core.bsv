@@ -72,8 +72,6 @@ module mkCore(Core);
   Fifo#(2, CpuToHostData) toHostFifo <- mkCFFifo;
 `endif
   Reg#(Bool) memExcpPending <- mkReg(False);
-  Reg#(Bool)           lrValidReg <- mkReg(False);
-  Reg#(Addr)            lrAddrReg <- mkRegU;
 
   // ============================================================
   // Stage 1: IF1 — PC selection, start I-Cache probe, start I-TLB lookup
@@ -301,6 +299,7 @@ module mkCore(Core);
     let rInst = decodePkt.dInst;
 
     Bool isCsrWrite = rrfIsCsrWrite(rInst);
+    Bool updatesLlbctl = (rInst.iType == Ll || rInst.iType == Sc);
     Maybe#(CsrIndx) targetCsr = rrfTargetCsr(rInst);
 
     Bool isTlbSerial = rInst.iType == Tlbrd ||
@@ -345,7 +344,7 @@ module mkCore(Core);
     });
 
     regSb.insert(rInst.dst);
-    csrSb.enq(isCsrWrite ? targetCsr : tagged Invalid);
+    csrSb.enq((isCsrWrite || updatesLlbctl) ? targetCsr : tagged Invalid);
     d2rFifo.deq();
   endrule
 
@@ -555,23 +554,19 @@ module mkCore(Core);
         end
       end
 
-      if (canIssueMem && isSc) begin
-        memInst.data = (lrValidReg && lrAddrReg == memPaddr) ? scSucc : scFail;
-        nextInst = tagged Valid memInst;
-      end
-
-      Bool scStore = isSc && memInst.data == scSucc;
       Bool needsDCache = canIssueMem &&
-        (isLoad || isStore || scStore || isBarrier || cacopNeedsDCache);
+        (isLoad || isStore || isSc || isBarrier || cacopNeedsDCache);
 
       if (needsDCache) begin
         Bit#(WordSz) byteEn = 4'b0000;
         Data wData = 0;
         MemOp memOp = Ld;
-        if (isStore || scStore) begin
+        if (isLoad) begin
+          memOp = (eInst.iType == Ll) ? Ll : Ld;
+        end else if (isStore || isSc) begin
           byteEn = storeByteEn;
           wData = storeWData;
-          memOp = St;
+          memOp = isSc ? Sc : St;
         end else if (isBarrier) begin
           memOp = Barrier;
         end else if (cacopNeedsDCache) begin
@@ -611,7 +606,7 @@ module mkCore(Core);
 
     Maybe#(Data) mem1Result = tagged Invalid;
     if (nextInst matches tagged Valid .mem1Inst) begin
-      Bool mem1ResultReady = (nextOp == M2OpNone) || mem1Inst.iType == Sc;
+      Bool mem1ResultReady = (nextOp == M2OpNone);
       if (mem1ResultReady && isValid(mem1Inst.dst)) begin
         mem1Result = tagged Valid mem1Inst.data;
       end
@@ -669,12 +664,10 @@ module mkCore(Core);
             m[3:0], m[4] == 1'b1);
         end else begin
           doneInst.data = d.data;
-          lrValidReg <= True;
-          lrAddrReg <= memPkt.memPaddr;
         end
       end
-      if (!memExcp.valid && (isStore || isSc)) begin
-        lrValidReg <= False;
+      if (isSc) begin
+        doneInst.data = d.data;
       end
       nextInst = tagged Valid doneInst;
     end else if (memPkt.m2Op == M2OpTlb &&&
@@ -698,12 +691,14 @@ module mkCore(Core);
 
 `ifdef CONFIG_DIFFTEST
     Maybe#(DiffMemOp) diffMemInfo = tagged Invalid;
-    if (memPkt.m2Op == M2OpDCache &&& nextInst matches tagged Valid .dInst) begin
+    if (memPkt.m2Op == M2OpDCache &&&
+        memPkt.eInst matches tagged Valid .origInst &&&
+        nextInst matches tagged Valid .dInst) begin
       Bool isLoad = (dInst.iType == Ld || dInst.iType == Ll);
       Bool isStore = (dInst.iType == St);
       Bool isSc = (dInst.iType == Sc);
       ByteMask m = fromMaybe(5'b00000, memPkt.mask);
-      let storePkt = selectStoreData(dInst.data, dInst.addr[1:0], m[3:0]);
+      let storePkt = selectStoreData(origInst.data, origInst.addr[1:0], m[3:0]);
       if (!memExcp.valid && (isLoad || isStore || isSc)) begin
         diffMemInfo = tagged Valid DiffMemOp{
           isLoad: isLoad,
@@ -767,6 +762,7 @@ module mkCore(Core);
     let memPkt = m2wFifo.first();
     Bool wbRetire = False;
     Bool wbFlush = False;
+    Bool clearDCacheLlOnFlush = False;
 
     if (isValid(memPkt.mInst)) begin
       let mInst = fromMaybe(?, memPkt.mInst);
@@ -812,7 +808,11 @@ module mkCore(Core);
             wen = (fromMaybe(0, mInst.dst) != 0);
           end
           if (mInst.iType == Ertn) begin
+            Bool clearLl = !csrf.llbctlKloValue;
             Addr era <- csrf.returnFromException;
+            if (clearLl) begin
+              clearDCacheLlOnFlush = True;
+            end
             ertnTarget = era;
             pcReg[2] <= era;
             wbFlush = True;
@@ -824,7 +824,15 @@ module mkCore(Core);
             iCache.invalidate;
           end else if (isCacop && fromMaybe(0, mInst.cacheOp)[2:0] == 3'b000) begin
             iCache.cacop(fromMaybe(0, mInst.cacheOp), mInst.addr, mInst.data);
+          end else if (mInst.iType == Ll) begin
+            csrf.setLlbit(True);
+          end else if (mInst.iType == Sc) begin
+            csrf.setLlbit(False);
           end else begin
+            if (wbIsCsrWrite &&& mInst.csr matches tagged Valid .csrIdx &&&
+                csrIdx == `CSR_LLBCTL && mInst.addr[1] == 1'b1) begin
+              clearDCacheLlOnFlush = True;
+            end
             csrf.wr(wbIsCsrWrite ? mInst.csr : Invalid, wbIsCsrWrite ? mInst.addr : mInst.data);
           end
 
@@ -881,6 +889,11 @@ module mkCore(Core);
               tlbRead.elo1, tlbRead.asid);
           end
         end
+        if (!wb_has_excp && (mInst.iType == Ll || mInst.iType == Sc)) begin
+          Data diffLlbctl = diffCsrState.llbctl;
+          diffLlbctl[0] = pack(mInst.iType == Ll);
+          diffCsrState.llbctl = diffLlbctl;
+        end
 
         let diffCommitState = DiffCommit{
           valid: !wb_has_excp,
@@ -926,12 +939,11 @@ module mkCore(Core);
     end
 
     if (wbFlush) begin
-      lrValidReg <= False;
       iCache.squash();
       tlb.squashReq();
       tlb.squashFetchLookup();
       tlb.squashDataLookup();
-      dCache.squash();
+      dCache.squash(clearDCacheLlOnFlush);
       memExcpPending <= False;
       if2WaitRefill <= False;
       f1f2Fifo.clear();

@@ -24,6 +24,8 @@ interface CsrFile;
   method Data rd(CsrIndx idx);
   method Bit#(64) stableCounterValue;
   method Action wr(Maybe#(CsrIndx) idx, Data val);
+  method Bool llbctlKloValue;
+  method Action setLlbit(Bool val);
   method Data tlbehi;
   method Bit#(5) tlbReadIndex;
   method Data tlbWriteIdx;
@@ -558,6 +560,14 @@ module mkCsrFile(CsrFile);
 
   method Bit#(64) stableCounterValue;
     return cycles;
+  endmethod
+
+  method Bool llbctlKloValue;
+    return llbctlKlo;
+  endmethod
+
+  method Action setLlbit(Bool val);
+    llbit <= val;
   endmethod
 
 `ifdef CONFIG_DIFFTEST
