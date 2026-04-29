@@ -201,6 +201,7 @@ typedef struct {
 typedef enum {
   M2OpNone,
   M2OpDCache,
+  M2OpICache,
   M2OpTlb
 } Mem2Op deriving(Bits, Eq);
 

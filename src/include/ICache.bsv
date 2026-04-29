@@ -39,14 +39,6 @@ function ICacheProbeResp noICacheProbe;
   return replicate(ICacheProbeWay{valid: False, tag: 0, inst: 0});
 endfunction
 
-typedef enum { ICacheMaintInvalidate, ICacheMaintCacop } ICacheMaintKind deriving (Bits, Eq);
-typedef struct {
-  ICacheMaintKind kind;
-  Bit#(5)         op;
-  Addr            va;
-  Data            ctag;
-} ICacheMaintReq deriving (Bits, Eq);
-
 typedef struct {
   Addr        addr;
   Instruction inst;
@@ -81,6 +73,7 @@ interface ICache;
   method Action squash;
   method Action invalidate;
   method Action cacop(Bit#(5) op, Addr va, Data ctag);
+  method ActionValue#(Bool) cacopResp;
   interface AxiMemMaster axiMem;
 endinterface
 
@@ -193,7 +186,7 @@ module mkICache(ICache);
 
   Fifo#(2, ICacheRefillReq)  refillReqQ  <- mkCFFifo;
   Fifo#(2, ICacheRefillResp) refillRespQ <- mkCFFifo;
-  Fifo#(2, ICacheMaintReq)   maintQ      <- mkCFFifo;
+  Fifo#(2, Bool)             cacopRespQ  <- mkCFFifo;
 
   Fifo#(2, AxiReadAddr) arQ <- mkCFFifo;
   Fifo#(4, AxiReadData) rQ  <- mkCFFifo;
@@ -208,7 +201,7 @@ module mkICache(ICache);
 `endif
 `endif
 
-  rule doAcceptRefillReq (state == Ready && refillReqQ.notEmpty && !maintQ.notEmpty);
+  rule doAcceptRefillReq (state == Ready && refillReqQ.notEmpty);
     let req = refillReqQ.first;
     refillReqQ.deq;
     missReq <= req;
@@ -265,47 +258,6 @@ module mkICache(ICache);
     end
   endrule
 
-  rule doMaint (state == Ready && maintQ.notEmpty);
-    let req = maintQ.first;
-    maintQ.deq;
-
-    case (req.kind)
-      ICacheMaintInvalidate: begin
-        for (Integer s = 0; s < valueOf(ICacheSets); s = s + 1) begin
-          for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
-            validStore[s][w] <= False;
-          end
-        end
-      end
-
-      ICacheMaintCacop: begin
-        ICacheOpType opType = req.op[4:3];
-        let idx = getIIndex(req.va);
-        let way = getICacopWaySel(req.va);
-
-        if (opType == 2'b00) begin
-          validStore[idx][way] <= False;
-        end
-        else if (opType == 2'b01) begin
-          validStore[idx][way] <= False;
-        end
-        else if (opType == 2'b10) begin
-          Bool hit = False;
-          ICacheWayIdx hitWay = 0;
-          for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
-            if (validStore[idx][w] && tagStore[idx][w] == getITag(req.va)) begin
-              hit = True;
-              hitWay = fromInteger(w);
-            end
-          end
-          if (hit) begin
-            validStore[idx][hitWay] <= False;
-          end
-        end
-      end
-    endcase
-  endrule
-
   method ICacheProbeResp probe(Addr va);
     let idx = getIIndex(va);
     let wsel = getIWordSel(va);
@@ -340,7 +292,7 @@ module mkICache(ICache);
 
   method Action flush;
     refillReqQ.clear();
-    maintQ.clear();
+    cacopRespQ.clear();
     refillMayWrite <= False;
     if (state != Ready) begin
       squashPending <= True;
@@ -355,7 +307,7 @@ module mkICache(ICache);
 
   method Action squash;
     refillReqQ.clear();
-    maintQ.clear();
+    cacopRespQ.clear();
     refillMayWrite <= False;
     if (state != Ready) begin
       squashPending <= True;
@@ -363,24 +315,48 @@ module mkICache(ICache);
     epoch <= !epoch;
   endmethod
 
-  method Action invalidate if (maintQ.notFull);
-    maintQ.enq(ICacheMaintReq{
-      kind: ICacheMaintInvalidate,
-      op: 0,
-      va: 0,
-      ctag: 0
-    });
+  method Action invalidate if (state == Ready && !refillReqQ.notEmpty);
+    for (Integer s = 0; s < valueOf(ICacheSets); s = s + 1) begin
+      for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
+        validStore[s][w] <= False;
+      end
+    end
   endmethod
 
-  method Action cacop(Bit#(5) op, Addr va, Data ctag) if (maintQ.notFull);
+  method Action cacop(Bit#(5) op, Addr va, Data ctag)
+      if (state == Ready && !refillReqQ.notEmpty && cacopRespQ.notFull);
     if (op[2:0] == 3'b000) begin
-      maintQ.enq(ICacheMaintReq{
-        kind: ICacheMaintCacop,
-        op: op,
-        va: va,
-        ctag: ctag
-      });
+      ICacheOpType opType = op[4:3];
+      let idx = getIIndex(va);
+      let way = getICacopWaySel(va);
+
+      if (opType == 2'b00) begin
+        validStore[idx][way] <= False;
+      end
+      else if (opType == 2'b01) begin
+        validStore[idx][way] <= False;
+      end
+      else if (opType == 2'b10) begin
+        Bool hit = False;
+        ICacheWayIdx hitWay = 0;
+        for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
+          if (validStore[idx][w] && tagStore[idx][w] == getITag(va)) begin
+            hit = True;
+            hitWay = fromInteger(w);
+          end
+        end
+        if (hit) begin
+          validStore[idx][hitWay] <= False;
+        end
+      end
     end
+    cacopRespQ.enq(True);
+  endmethod
+
+  method ActionValue#(Bool) cacopResp if (cacopRespQ.notEmpty);
+    let d = cacopRespQ.first;
+    cacopRespQ.deq;
+    return d;
   endmethod
 
   interface AxiMemMaster axiMem;

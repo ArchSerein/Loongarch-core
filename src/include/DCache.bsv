@@ -56,6 +56,7 @@ endfunction
 
 interface DCache;
   method Action req(MemReq r);
+  method Action cacop(MemReq r);
   method ActionValue#(DCacheResp) resp;
   method Action squash(Bool clearLl);
   interface AxiMemMaster axiMem;
@@ -201,42 +202,8 @@ module mkDCache(DCache);
   endrule
   `endif
 
-  rule doLookup (state == Ready);
-    let r = reqQ.first;
-    reqQ.deq;
-
-    if (r.op == Barrier) begin
-      let tag = getDTag(r.paddr);
-      let idx = getDIndex(r.addr);
-      let wsel = getDWordSel(r.addr);
-      Bool hit = False;
-      Data hitData = 0;
-      DCacheWayIdx hitWay = 0;
-      for (Integer w = 0; w < valueOf(DCacheWays); w = w + 1) begin
-        if (validStore[idx][w] && tagStore[idx][w] == tag) begin
-          hit = True;
-          hitData = dataStore[idx][w][wsel];
-          hitWay = fromInteger(w);
-        end
-      end
-      if (hit && dirtyStore[idx][hitWay]) begin
-        missReq <= MemReq{
-          op: St,
-          addr: r.addr,
-          paddr: r.paddr,
-          useCache: False,
-          data: hitData,
-          byteEn: 4'b1111,
-          cacheOp: 5'b0
-        };
-        fenceFlushWait <= True;
-        state <= SendUncacheReq;
-      end else begin
-        // Barrier completes immediately if no dirty line needs writeback.
-        respQ.enq(DCacheResp{data: 0});
-        fenceFlushWait <= False;
-      end
-    end else if (r.op == Cacop) begin
+  function Action doCacopReq(MemReq r);
+    action
       DCacheOpType opType = r.cacheOp[4:3];
       let idx = getDIndex(r.addr);
       let tag = getDTag(r.paddr);
@@ -303,6 +270,46 @@ module mkDCache(DCache);
           respQ.enq(DCacheResp{data: 0});
         end
       end
+    endaction
+  endfunction
+
+  rule doLookup (state == Ready);
+    let r = reqQ.first;
+    reqQ.deq;
+
+    if (r.op == Barrier) begin
+      let tag = getDTag(r.paddr);
+      let idx = getDIndex(r.addr);
+      let wsel = getDWordSel(r.addr);
+      Bool hit = False;
+      Data hitData = 0;
+      DCacheWayIdx hitWay = 0;
+      for (Integer w = 0; w < valueOf(DCacheWays); w = w + 1) begin
+        if (validStore[idx][w] && tagStore[idx][w] == tag) begin
+          hit = True;
+          hitData = dataStore[idx][w][wsel];
+          hitWay = fromInteger(w);
+        end
+      end
+      if (hit && dirtyStore[idx][hitWay]) begin
+        missReq <= MemReq{
+          op: St,
+          addr: r.addr,
+          paddr: r.paddr,
+          useCache: False,
+          data: hitData,
+          byteEn: 4'b1111,
+          cacheOp: 5'b0
+        };
+        fenceFlushWait <= True;
+        state <= SendUncacheReq;
+      end else begin
+        // Barrier completes immediately if no dirty line needs writeback.
+        respQ.enq(DCacheResp{data: 0});
+        fenceFlushWait <= False;
+      end
+    end else if (r.op == Cacop) begin
+      doCacopReq(r);
     end else begin
       let tag = getDTag(r.paddr);
       let idx = getDIndex(r.addr);
@@ -582,6 +589,11 @@ module mkDCache(DCache);
 
   method Action req(MemReq r);
     reqQ.enq(r);
+  endmethod
+
+  method Action cacop(MemReq r)
+      if (state == Ready && !reqQ.notEmpty && respQ.notFull);
+    doCacopReq(r);
   endmethod
 
   method ActionValue#(DCacheResp) resp;

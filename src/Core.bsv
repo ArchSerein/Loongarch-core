@@ -442,7 +442,8 @@ module mkCore(Core);
         eExcp = checkMemHasExcp(rrfPkt.rInst.mask, eInst.addr, eExcp);
       end
 
-      Bool dCacheCacop = (eInst.iType == Cacop) && fromMaybe(0, eInst.cacheOp)[2:0] != 3'b000;
+      Bit#(5) execCacheOp = fromMaybe(0, eInst.cacheOp);
+      Bool dCacheCacop = (eInst.iType == Cacop) && execCacheOp[2:0] != 3'b000;
       Bool dataTlbLookupPending = (isMemTypeInst || dCacheCacop) &&
         getMmuTranslateType(csrf.crmd) == Translate;
       if (dataTlbLookupPending) begin
@@ -493,11 +494,13 @@ module mkCore(Core);
       Bool isSc = (eInst.iType == Sc);
       Bool isBarrier = coreIsBarrier(eInst.iType);
       Bool isCacop = (eInst.iType == Cacop);
-      Bool cacopNeedsDCache = isCacop && fromMaybe(0, eInst.cacheOp)[2:0] != 3'b000;
+      Bit#(5) cacheOp = fromMaybe(0, eInst.cacheOp);
+      Bool cacopNeedsICache = isCacop && cacheOp[2:0] == 3'b000;
+      Bool cacopNeedsDCache = isCacop && cacheOp[2:0] != 3'b000;
       Bool isTlbOp = (eInst.iType == Tlbsrch || eInst.iType == Tlbrd ||
         eInst.iType == Tlbwr || eInst.iType == Tlbfill || eInst.iType == Invtlb);
       Bool memDCacheSideEffect = isStore || isSc || isBarrier ||
-        cacopNeedsDCache || isTlbOp;
+        cacopNeedsDCache || cacopNeedsICache || isTlbOp;
       Bool memIsCsrWrite = (eInst.iType == Csrw || eInst.iType == Csrxchg);
       Bool memWritesInterruptCsr = False;
       if (memIsCsrWrite &&& eInst.csr matches tagged Valid .csrIdx) begin
@@ -579,16 +582,24 @@ module mkCore(Core);
           memOp = Cacop;
         end
 
-        dCache.req(MemReq {
+        MemReq cacheReq = MemReq {
           op: memOp,
           addr: memInst.addr,
           paddr: memPaddr,
           useCache: (memOp == Cacop || memOp == Barrier) ? True : memUseCache,
           data: wData,
           byteEn: byteEn,
-          cacheOp: isCacop ? fromMaybe(0, eInst.cacheOp) : 5'b0
-        });
+          cacheOp: isCacop ? cacheOp : 5'b0
+        };
+        if (memOp == Cacop) begin
+          dCache.cacop(cacheReq);
+        end else begin
+          dCache.req(cacheReq);
+        end
         nextOp = M2OpDCache;
+      end else if (canIssueMem && cacopNeedsICache) begin
+        iCache.cacop(cacheOp, eInst.addr, eInst.data);
+        nextOp = M2OpICache;
       end else if (canIssueMem && isTlbOp) begin
         TlbOp op = TlbOpSearch;
         Data tlbReqAsid = (eInst.iType == Invtlb) ? eInst.data : csrf.tlbWriteAsid;
@@ -650,7 +661,7 @@ module mkCore(Core);
   endrule
 
   function Action doMemoryStage2Body(Maybe#(DCacheResp) dCacheResp,
-      Maybe#(TlbReadResult) tlbResp);
+      Maybe#(Bool) iCacheResp, Maybe#(TlbReadResult) tlbResp);
     action
     let memPkt = m1m2Fifo.first();
     Maybe#(ExecInst) nextInst = memPkt.eInst;
@@ -694,6 +705,9 @@ module mkCore(Core);
           csrf.commitTlbOp;
         end
       end
+    end else if (memPkt.m2Op == M2OpICache &&&
+        iCacheResp matches tagged Valid .done) begin
+      noAction;
     end
 
 `ifdef CONFIG_DIFFTEST
@@ -747,19 +761,25 @@ module mkCore(Core);
 
   rule doMemoryStage2NoResp (m1m2Fifo.notEmpty &&
       m1m2Fifo.first.m2Op == M2OpNone);
-    doMemoryStage2Body(tagged Invalid, tagged Invalid);
+    doMemoryStage2Body(tagged Invalid, tagged Invalid, tagged Invalid);
   endrule
 
   rule doMemoryStage2DCache (m1m2Fifo.notEmpty &&
       m1m2Fifo.first.m2Op == M2OpDCache);
     let d <- dCache.resp();
-    doMemoryStage2Body(tagged Valid d, tagged Invalid);
+    doMemoryStage2Body(tagged Valid d, tagged Invalid, tagged Invalid);
+  endrule
+
+  rule doMemoryStage2ICache (m1m2Fifo.notEmpty &&
+      m1m2Fifo.first.m2Op == M2OpICache);
+    let done <- iCache.cacopResp();
+    doMemoryStage2Body(tagged Invalid, tagged Valid done, tagged Invalid);
   endrule
 
   rule doMemoryStage2Tlb (m1m2Fifo.notEmpty &&
       m1m2Fifo.first.m2Op == M2OpTlb);
     let res <- tlb.resp();
-    doMemoryStage2Body(tagged Invalid, tagged Valid res);
+    doMemoryStage2Body(tagged Invalid, tagged Invalid, tagged Valid res);
   endrule
 
   // ============================================================
@@ -852,8 +872,6 @@ module mkCore(Core);
             end
           end else if (mInst.iType == Ibar) begin
             iCache.invalidate;
-          end else if (isCacop && fromMaybe(0, mInst.cacheOp)[2:0] == 3'b000) begin
-            iCache.cacop(fromMaybe(0, mInst.cacheOp), mInst.addr, mInst.data);
           end else if (mInst.iType == Ll) begin
             csrf.setLlbit(True);
           end else if (mInst.iType == Sc) begin
