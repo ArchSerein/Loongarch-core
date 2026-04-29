@@ -261,12 +261,7 @@ module mkCore(Core);
         Bit#(9) syscallEsubcode = (inst[14:0] == 15'h11) ? 9'h001 : `ESUBCODE_NONE;
         dExcp = mkExcp(`ECODE_SYS, syscallEsubcode, fetchPkt.pc);
         `else
-        `ifdef CONFIG_VSIM
-        Bit#(9) syscallEsubcode = (inst[14:0] == 15'h11) ? 9'h001 : `ESUBCODE_NONE;
-        dExcp = mkExcp(`ECODE_SYS, syscallEsubcode, fetchPkt.pc);
-        `else
         dExcp = mkExcp(`ECODE_SYS, `ESUBCODE_NONE, fetchPkt.pc);
-        `endif
         `endif
       end
       else if (dInst.iType == Break) dExcp = mkExcp(`ECODE_BRK, `ESUBCODE_NONE, fetchPkt.pc);
