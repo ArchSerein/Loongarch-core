@@ -444,7 +444,8 @@ module mkCore(Core);
 
       Bit#(5) execCacheOp = fromMaybe(0, eInst.cacheOp);
       Bool dCacheCacop = (eInst.iType == Cacop) && execCacheOp[2:0] != 3'b000;
-      Bool dataTlbLookupPending = (isMemTypeInst || dCacheCacop) &&
+      Bool iCacheCacop = (eInst.iType == Cacop) && execCacheOp[2:0] == 3'b000;
+      Bool dataTlbLookupPending = (isMemTypeInst || dCacheCacop || iCacheCacop) &&
         getMmuTranslateType(csrf.crmd) == Translate;
       if (dataTlbLookupPending) begin
         tlb.dataLookupReq(eInst.addr, csrf.asid);
@@ -528,12 +529,13 @@ module mkCore(Core);
       Bool memUseCache = True;
 
       hasIntPrev <= has_int_raw;
-      Bool setRedirectPending = memExcp.valid || execPkt.isNeedFlush;
+      Bool setRedirectPending = memExcp.valid || execPkt.isNeedFlush ||
+        eInst.iType == Ertn;
 
       memPaddr = eInst.addr;
       if (canIssueMem) begin
         Bool dCacheCacop = isCacop && cacopNeedsDCache;
-        if (isLoad || isStore || isSc || dCacheCacop) begin
+        if (isLoad || isStore || isSc || dCacheCacop || cacopNeedsICache) begin
           MmuAccessType accessType = (isStore || isSc) ? MmuStore : MmuLoad;
           Data crmd = csrf.crmd;
           MmuTranslateType transType = getMmuTranslateType(crmd);
@@ -599,7 +601,7 @@ module mkCore(Core);
         end
         nextOp = M2OpDCache;
       end else if (canIssueMem && cacopNeedsICache) begin
-        iCache.cacop(cacheOp, eInst.addr, eInst.data);
+        iCache.cacop(cacheOp, memPaddr, eInst.data);
         nextOp = M2OpICache;
       end else if (canIssueMem && isTlbOp) begin
         TlbOp op = TlbOpSearch;
