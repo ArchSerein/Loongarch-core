@@ -1,5 +1,6 @@
 import Types::*;
 import ProcTypes::*;
+import CoreTypes::*;
 import Core::*;
 import AxiTypes::*;
 `include "Autoconf.bsv"

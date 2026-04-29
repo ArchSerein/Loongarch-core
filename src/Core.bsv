@@ -53,6 +53,17 @@ module mkCore(Core);
 `ifdef CONFIG_DIFFTEST
   Difftest difftest <- mkDifftest;
 `endif
+`ifdef CONFIG_VSIM
+  Wire#(Bool)       debugBreakPoint <- mkDWire(False);
+  Wire#(Bool)       debugInforFlag <- mkDWire(False);
+  Wire#(RIndx)      debugRegNum <- mkDWire(0);
+  Wire#(Bool)       debugWsValidWire <- mkDWire(False);
+  Wire#(Addr)       debugWbPcWire <- mkDWire(0);
+  Wire#(Bit#(4))    debugWbRfWenWire <- mkDWire(0);
+  Wire#(RIndx)      debugWbRfWnumWire <- mkDWire(0);
+  Wire#(Data)       debugWbRfWdataWire <- mkDWire(0);
+  Wire#(Instruction) debugWbInstWire <- mkDWire(0);
+`endif
 
   // 7-stage pipeline FIFOs
   Fifo#(2, F1toF2)       f1f2Fifo <- mkCFFifo;  // IF1 -> IF2
@@ -758,7 +769,30 @@ module mkCore(Core);
   // ============================================================
   // Stage 7: WB — Writeback to RF/CSR, Exception retirement, Pipeline flush
   // ============================================================
+`ifdef CONFIG_VSIM
+  rule driveVsimDebugWb (m2wFifo.notEmpty);
+    let memPkt = m2wFifo.first;
+
+    debugWsValidWire <= True;
+    debugWbPcWire <= memPkt.pc;
+    debugWbInstWire <= memPkt.inst;
+    if (memPkt.mInst matches tagged Valid .mInst) begin
+      debugWbRfWdataWire <= mInst.data;
+      if (mInst.dst matches tagged Valid .dst) begin
+        debugWbRfWnumWire <= dst;
+        if (!memPkt.excp.valid && dst != 0) begin
+          debugWbRfWenWire <= 4'hf;
+        end
+      end
+    end
+  endrule
+`endif
+
+`ifdef CONFIG_VSIM
+  rule doWriteback (!debugBreakPoint);
+`else
   rule doWriteback;
+`endif
     let memPkt = m2wFifo.first();
     Bool wbRetire = False;
     Bool wbFlush = False;
@@ -995,6 +1029,28 @@ module mkCore(Core);
   method Bit#(200) liveDiffStoreBundle = difftest.liveDiffStoreBundle;
   method Bit#(136) liveDiffLoadBundle = difftest.liveDiffLoadBundle;
   `endif
+`endif
+
+`ifdef CONFIG_VSIM
+  method Action debugInput(Bool breakPoint, Bool inforFlag, RIndx regNum);
+    debugBreakPoint <= breakPoint;
+    debugInforFlag <= inforFlag;
+    debugRegNum <= regNum;
+  endmethod
+
+  method Bool wsValid = debugWsValidWire;
+
+  method Data rfRdata = debugInforFlag ? rf.rdDebug(debugRegNum) : 0;
+
+  method Addr debug0WbPc = debugWbPcWire;
+
+  method Bit#(4) debug0WbRfWen = debugWbRfWenWire;
+
+  method RIndx debug0WbRfWnum = debugWbRfWnumWire;
+
+  method Data debug0WbRfWdata = debugWbRfWdataWire;
+
+  method Instruction debug0WbInst = debugWbInstWire;
 `endif
 
   interface axiMem = axiMux;
