@@ -591,6 +591,7 @@ module mkCore(Core);
         nextOp = M2OpDCache;
       end else if (canIssueMem && isTlbOp) begin
         TlbOp op = TlbOpSearch;
+        Data tlbReqAsid = (eInst.iType == Invtlb) ? eInst.data : csrf.tlbWriteAsid;
         if (eInst.iType == Tlbrd) op = TlbOpRead;
         else if (eInst.iType == Tlbwr) op = TlbOpWrite;
         else if (eInst.iType == Tlbfill) op = TlbOpFill;
@@ -602,7 +603,7 @@ module mkCore(Core);
           ehi: csrf.tlbWriteEhi,
           elo0: csrf.tlbWriteElo0,
           elo1: csrf.tlbWriteElo1,
-          asid: csrf.tlbWriteAsid,
+          asid: tlbReqAsid,
           va: eInst.addr
         });
         nextOp = M2OpTlb;
