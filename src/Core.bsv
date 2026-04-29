@@ -82,7 +82,7 @@ module mkCore(Core);
 `ifdef CONFIG_BSIM
   Fifo#(2, CpuToHostData) toHostFifo <- mkCFFifo;
 `endif
-  Reg#(Bool) memExcpPending <- mkReg(False);
+  Reg#(Bool) memRedirectPending <- mkReg(False);
 
   // ============================================================
   // Stage 1: IF1 — PC selection, start I-Cache probe, start I-TLB lookup
@@ -520,7 +520,7 @@ module mkCore(Core);
       Bool has_int = !memDCacheSideEffect && !memWritesInterruptCsr &&
         has_int_raw && (!delayInterrupt || hasIntPrev);
       memExcp = has_int ? mkExcp(`ECODE_INT, 0, 0) : execPkt.excp;
-      Bool canIssueMem = !memExcp.valid && !memExcpPending;
+      Bool canIssueMem = !memExcp.valid && !memRedirectPending;
       ByteMask m = fromMaybe(5'b00000, execPkt.mask);
       let storePkt = selectStoreData(eInst.data, eInst.addr[1:0], m[3:0]);
       Bit#(WordSz) storeByteEn = tpl_1(storePkt);
@@ -528,10 +528,7 @@ module mkCore(Core);
       Bool memUseCache = True;
 
       hasIntPrev <= has_int_raw;
-
-      if (memExcp.valid) begin
-        memExcpPending <= True;
-      end
+      Bool setRedirectPending = memExcp.valid || execPkt.isNeedFlush;
 
       memPaddr = eInst.addr;
       if (canIssueMem) begin
@@ -557,10 +554,14 @@ module mkCore(Core);
           memUseCache = matUseCache(transType, dTrans.mat, crmd, accessType);
           if (dTrans.excValid) begin
             memExcp = mkExcp(dTrans.ecode, dTrans.esubcode, dTrans.badv);
-            memExcpPending <= True;
+            setRedirectPending = True;
             canIssueMem = False;
           end
         end
+      end
+
+      if (setRedirectPending) begin
+        memRedirectPending <= True;
       end
 
       Bool needsDCache = canIssueMem &&
@@ -992,7 +993,7 @@ module mkCore(Core);
       tlb.squashFetchLookup();
       tlb.squashDataLookup();
       dCache.squash(clearDCacheLlOnFlush);
-      memExcpPending <= False;
+      memRedirectPending <= False;
       if2WaitRefill <= False;
       f1f2Fifo.clear();
       f2dFifo.clear();
