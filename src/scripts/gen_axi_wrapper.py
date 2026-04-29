@@ -75,6 +75,24 @@ def render_wrapper(enable_difftest: bool) -> str:
   wire         cmt_tlbfill_en  = liveDiffCommitBundle[5];
   wire [4:0]   cmt_rand_index  = liveDiffCommitBundle[4:0];
   wire [7:0]   cmt_wdest       = {3'b0, cmt_wdest_raw};
+  wire         cmt_is_csr      = cmt_inst[31:24] == 8'h04;
+  wire         cmt_reads_estat = cmt_valid && cmt_is_csr && cmt_inst[23:10] == 14'h0005;
+  wire         cmt_is_cnt_base = cmt_inst[31:26] == 6'h00 &&
+                                 cmt_inst[25:22] == 4'h0 &&
+                                 cmt_inst[21:20] == 2'h0 &&
+                                 cmt_inst[19:15] == 5'h00;
+  wire         cmt_is_rdcntid  = cmt_is_cnt_base && cmt_inst[14:10] == 5'h18 &&
+                                 cmt_inst[4:0] == 5'h00 && cmt_inst[9:5] != 5'h00;
+  wire         cmt_is_rdtimel  = cmt_is_cnt_base && cmt_inst[14:10] == 5'h18 &&
+                                 cmt_inst[9:5] == 5'h00;
+  wire         cmt_is_rdtimeh  = cmt_is_cnt_base && cmt_inst[14:10] == 5'h19 &&
+                                 cmt_inst[9:5] == 5'h00;
+  wire         cmt_is_cntinst  = cmt_valid &&
+                                 (cmt_is_rdcntid || cmt_is_rdtimel || cmt_is_rdtimeh);
+  reg  [63:0] lastTimer64;
+  wire [63:0] cmt_timer64     = cmt_is_rdtimel ? {lastTimer64[63:32], cmt_wdata} :
+                                cmt_is_rdtimeh ? {cmt_wdata, lastTimer64[31:0]} :
+                                                 lastTimer64;
 
   wire         excp_valid      = diffStepValid && liveDiffExcpBundle[129];
   wire         excp_eret       = liveDiffExcpBundle[128];
@@ -157,10 +175,17 @@ def render_wrapper(enable_difftest: bool) -> str:
     if (reset) begin
       cycleCnt <= 64'b0;
       instrCnt <= 64'b0;
+      lastTimer64 <= 64'b0;
     end else begin
       cycleCnt <= cycleCnt + 64'b1;
       if (cmt_valid) begin
         instrCnt <= instrCnt + 64'b1;
+        if (cmt_is_rdtimel) begin
+          lastTimer64[31:0] <= cmt_wdata;
+        end
+        if (cmt_is_rdtimeh) begin
+          lastTimer64[63:32] <= cmt_wdata;
+        end
       end
     end
   end
@@ -175,13 +200,13 @@ def render_wrapper(enable_difftest: bool) -> str:
     .skip               (cmt_skip),
     .is_TLBFILL         (cmt_tlbfill_en),
     .TLBFILL_index      (cmt_rand_index),
-    .is_CNTinst         (1'b0),
-    .timer_64_value     (64'b0),
+    .is_CNTinst         (cmt_is_cntinst),
+    .timer_64_value     (cmt_timer64),
     .wen                (cmt_wen),
     .wdest              (cmt_wdest),
     .wdata              ({32'b0, cmt_wdata}),
-    .csr_rstat          (1'b0),
-    .csr_data           (32'b0)
+    .csr_rstat          (cmt_reads_estat),
+    .csr_data           (cmt_wdata)
   );
 
   DifftestExcpEvent DifftestExcpEvent(
