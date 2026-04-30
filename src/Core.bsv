@@ -316,7 +316,7 @@ module mkCore(Core);
       rInst.iType == Tlbwr || rInst.iType == Tlbfill || rInst.iType == Invtlb;
 
     Bool isBarrier = coreIsBarrier(rInst.iType) || rInst.iType == Cacop;
-    Bool isNeedFlush = isBarrier || isTlbSerial || isCsrWrite;
+    Bool isNeedFlush = isBarrier || isTlbSerial || isCsrWrite || updatesLlbctl;
 
     ScoreboardSearchResult src1Sb = regSb.search1(rInst.src1);
     ScoreboardSearchResult src2Sb = regSb.search2(rInst.src2);
