@@ -23,6 +23,13 @@ import AxiMem::*;
 import CoreTypes::*;
 import CoreFunc::*;
 `include "Autoconf.bsv"
+`ifdef CONFIG_VSIM
+`define CONFIG_WB_DEBUG
+`define CONFIG_WB_DEBUG_INST
+`endif
+`ifdef CONFIG_FPGA
+`define CONFIG_WB_DEBUG
+`endif
 `include "CsrAddr.bsv"
 `ifdef CONFIG_DIFFTEST
 import DiffTypes::*;
@@ -53,7 +60,7 @@ module mkCore(Core);
 `ifdef CONFIG_DIFFTEST
   Difftest difftest <- mkDifftest;
 `endif
-`ifdef CONFIG_VSIM
+`ifdef CONFIG_WB_DEBUG
   Wire#(Bool)       debugBreakPoint <- mkDWire(False);
   Wire#(Bool)       debugInforFlag <- mkDWire(False);
   Wire#(RIndx)      debugRegNum <- mkDWire(0);
@@ -62,7 +69,9 @@ module mkCore(Core);
   Wire#(Bit#(4))    debugWbRfWenWire <- mkDWire(0);
   Wire#(RIndx)      debugWbRfWnumWire <- mkDWire(0);
   Wire#(Data)       debugWbRfWdataWire <- mkDWire(0);
+`ifdef CONFIG_WB_DEBUG_INST
   Wire#(Instruction) debugWbInstWire <- mkDWire(0);
+`endif
 `endif
 
   // 7-stage pipeline FIFOs
@@ -274,6 +283,10 @@ module mkCore(Core);
     d2rFifo.enq(D2R{pc: fetchPkt.pc, predPc: fetchPkt.predPc,
 `ifdef CONFIG_DIFFTEST
       inst: inst,
+`else
+`ifdef CONFIG_WB_DEBUG_INST
+      inst: inst,
+`endif
 `endif
       dInst: dInst, excp: dExcp});
   endrule
@@ -343,6 +356,10 @@ module mkCore(Core);
       predPc: decodePkt.predPc,
   `ifdef CONFIG_DIFFTEST
       inst: decodePkt.inst,
+  `else
+  `ifdef CONFIG_WB_DEBUG_INST
+      inst: decodePkt.inst,
+  `endif
   `endif
       rVal1: rVal1,
       rVal2: rVal2,
@@ -464,6 +481,10 @@ module mkCore(Core);
         pc: rrfPkt.pc,
 `ifdef CONFIG_DIFFTEST
         inst: rrfPkt.inst,
+`else
+`ifdef CONFIG_WB_DEBUG_INST
+        inst: rrfPkt.inst,
+`endif
 `endif
         excp: eExcp,
         mask: rrfPkt.rInst.mask,
@@ -630,6 +651,10 @@ module mkCore(Core);
 `ifdef CONFIG_DIFFTEST
       inst: execPkt.inst,
       csrSnapshot: csrf.diffSnapshot,
+`else
+`ifdef CONFIG_WB_DEBUG_INST
+      inst: execPkt.inst,
+`endif
 `endif
       excp: memExcp,
       mask: execPkt.mask,
@@ -738,6 +763,10 @@ module mkCore(Core);
 `ifdef CONFIG_DIFFTEST
       inst: memPkt.inst,
       csrSnapshot: memPkt.csrSnapshot,
+`else
+`ifdef CONFIG_WB_DEBUG_INST
+      inst: memPkt.inst,
+`endif
 `endif
       excp: memExcp,
       memPaddr: memPkt.memPaddr,
@@ -778,13 +807,15 @@ module mkCore(Core);
   // ============================================================
   // Stage 7: WB — Writeback to RF/CSR, Exception retirement, Pipeline flush
   // ============================================================
-`ifdef CONFIG_VSIM
+`ifdef CONFIG_WB_DEBUG
   rule driveVsimDebugWb (m2wFifo.notEmpty);
     let memPkt = m2wFifo.first;
 
     debugWsValidWire <= True;
     debugWbPcWire <= memPkt.pc;
+`ifdef CONFIG_WB_DEBUG_INST
     debugWbInstWire <= memPkt.inst;
+`endif
     if (memPkt.mInst matches tagged Valid .mInst) begin
       debugWbRfWdataWire <= mInst.data;
       if (mInst.dst matches tagged Valid .dst) begin
@@ -797,7 +828,7 @@ module mkCore(Core);
   endrule
 `endif
 
-`ifdef CONFIG_VSIM
+`ifdef CONFIG_WB_DEBUG
   rule doWriteback (!debugBreakPoint);
 `else
   rule doWriteback;
@@ -1046,7 +1077,7 @@ module mkCore(Core);
   `endif
 `endif
 
-`ifdef CONFIG_VSIM
+`ifdef CONFIG_WB_DEBUG
   method Action debugInput(Bool breakPoint, Bool inforFlag, RIndx regNum);
     debugBreakPoint <= breakPoint;
     debugInforFlag <= inforFlag;
@@ -1065,7 +1096,9 @@ module mkCore(Core);
 
   method Data debug0WbRfWdata = debugWbRfWdataWire;
 
+`ifdef CONFIG_WB_DEBUG_INST
   method Instruction debug0WbInst = debugWbInstWire;
+`endif
 `endif
 
   interface axiMem = axiMux;

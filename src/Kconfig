@@ -10,6 +10,9 @@ config BSIM
 config VSIM
   bool "Enable Verilog simulation/top-level debug ports"
 
+config FPGA
+  bool "Enable FPGA top-level without instruction debug ports"
+
 endchoice
 
 menu "TRACE_WAVE switch"

@@ -4,6 +4,13 @@ import CoreTypes::*;
 import Core::*;
 import AxiTypes::*;
 `include "Autoconf.bsv"
+`ifdef CONFIG_VSIM
+`define CONFIG_WB_DEBUG
+`define CONFIG_WB_DEBUG_INST
+`endif
+`ifdef CONFIG_FPGA
+`define CONFIG_WB_DEBUG
+`endif
 
 interface CoreAxiTop;
   (* always_ready, always_enabled, prefix = "" *)
@@ -31,7 +38,7 @@ interface CoreAxiTop;
   (* always_ready, result = "liveDiffLoadBundle" *)
   method Bit#(136) liveDiffLoadBundle;
 `endif
-`ifdef CONFIG_VSIM
+`ifdef CONFIG_WB_DEBUG
   (* always_ready, always_enabled, prefix = "" *)
   method Action debugInput((* port = "break_point" *) Bool breakPoint,
                            (* port = "infor_flag" *) Bool inforFlag,
@@ -48,8 +55,10 @@ interface CoreAxiTop;
   method RIndx debug0WbRfWnum;
   (* always_ready, result = "debug0_wb_rf_wdata" *)
   method Data debug0WbRfWdata;
+`ifdef CONFIG_WB_DEBUG_INST
   (* always_ready, result = "debug0_wb_inst" *)
   method Instruction debug0WbInst;
+`endif
 `endif
 endinterface
 
@@ -78,7 +87,7 @@ module mkCoreAxiTop(CoreAxiTop);
   method Bit#(200) liveDiffStoreBundle = core.liveDiffStoreBundle;
   method Bit#(136) liveDiffLoadBundle = core.liveDiffLoadBundle;
 `endif
-`ifdef CONFIG_VSIM
+`ifdef CONFIG_WB_DEBUG
   method Action debugInput(Bool breakPoint, Bool inforFlag, RIndx regNum);
     core.debugInput(breakPoint, inforFlag, regNum);
   endmethod
@@ -88,6 +97,8 @@ module mkCoreAxiTop(CoreAxiTop);
   method Bit#(4) debug0WbRfWen = core.debug0WbRfWen;
   method RIndx debug0WbRfWnum = core.debug0WbRfWnum;
   method Data debug0WbRfWdata = core.debug0WbRfWdata;
+`ifdef CONFIG_WB_DEBUG_INST
   method Instruction debug0WbInst = core.debug0WbInst;
+`endif
 `endif
 endmodule

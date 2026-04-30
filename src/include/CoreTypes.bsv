@@ -5,6 +5,13 @@ import ICache::*;
 import Tlb::*;
 import AxiTypes::*;
 `include "Autoconf.bsv"
+`ifdef CONFIG_VSIM
+`define CONFIG_WB_DEBUG
+`define CONFIG_WB_DEBUG_INST
+`endif
+`ifdef CONFIG_FPGA
+`define CONFIG_WB_DEBUG
+`endif
 `ifdef CONFIG_DIFFTEST
 import DiffTypes::*;
 `endif
@@ -39,7 +46,7 @@ interface Core;
 `endif
 `endif
   interface AxiMemMaster axiMem;
-`ifdef CONFIG_VSIM
+`ifdef CONFIG_WB_DEBUG
   (* always_ready, always_enabled *)
   method Action debugInput(Bool breakPoint, Bool inforFlag, RIndx regNum);
   (* always_ready *)
@@ -54,8 +61,10 @@ interface Core;
   method RIndx debug0WbRfWnum;
   (* always_ready *)
   method Data debug0WbRfWdata;
+`ifdef CONFIG_WB_DEBUG_INST
   (* always_ready *)
   method Instruction debug0WbInst;
+`endif
 `endif
 endinterface
 
@@ -86,7 +95,7 @@ typedef struct {
 `ifdef CONFIG_DIFFTEST
   Instruction inst;
 `else
-`ifdef CONFIG_VSIM
+`ifdef CONFIG_WB_DEBUG_INST
   Instruction inst;
 `endif
 `endif
@@ -100,7 +109,7 @@ typedef struct {
 `ifdef CONFIG_DIFFTEST
   Instruction inst;
 `else
-`ifdef CONFIG_VSIM
+`ifdef CONFIG_WB_DEBUG_INST
   Instruction inst;
 `endif
 `endif
@@ -120,7 +129,7 @@ typedef struct {
 `ifdef CONFIG_DIFFTEST
   Instruction         inst;
 `else
-`ifdef CONFIG_VSIM
+`ifdef CONFIG_WB_DEBUG_INST
   Instruction         inst;
 `endif
 `endif
@@ -139,7 +148,7 @@ typedef struct {
   Instruction         inst;
   DiffArchCsrState    csrSnapshot;
 `else
-`ifdef CONFIG_VSIM
+`ifdef CONFIG_WB_DEBUG_INST
   Instruction         inst;
 `endif
 `endif
@@ -211,7 +220,7 @@ typedef struct {
 `ifdef CONFIG_DIFFTEST
   Instruction         inst;
 `else
-`ifdef CONFIG_VSIM
+`ifdef CONFIG_WB_DEBUG_INST
   Instruction         inst;
 `endif
 `endif
