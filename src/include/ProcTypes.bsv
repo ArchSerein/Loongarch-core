@@ -65,6 +65,7 @@ typedef enum {
 
   Syscall, // SYSCALL exception
   Ertn, // ERTN return from exception
+  Idle, // IDLE wait for interrupt
   Break // debug
 } IType deriving(Bits, Eq);
 

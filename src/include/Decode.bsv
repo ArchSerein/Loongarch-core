@@ -89,6 +89,7 @@ function DecodedInst decode(Instruction inst);
     32'b000001_1001_00_10000_01100_00000_00000: dInst.iType = Tlbwr;
     32'b000001_1001_00_10000_01101_00000_00000: dInst.iType = Tlbfill;
     32'b000001_1001_00_10000_01110_00000_00000: dInst.iType = Ertn;
+    32'b000001_1001_00_10001_?????_?????_?????: dInst.iType = Idle;
     32'b000001_1001_00_10011_?????_?????_????? &&& (rd <= 6): begin dInst.iType = Invtlb; dInst.src1 = tagged Valid rj; dInst.src2 = tagged Valid rk; dInst.imm = tagged Valid zeroExtend(rd); end // INVTLB
     32'b000001_1000_00_00000_?????_?????_?????: begin dInst.iType = Cacop; dInst.aluFunc = tagged Valid AddW; dInst.src1 = tagged Valid rj; dInst.csr = tagged Valid `CSR_CTAG; dInst.imm = tagged Valid si12; dInst.cacheOp = tagged Valid rd; end // CACOP
 
