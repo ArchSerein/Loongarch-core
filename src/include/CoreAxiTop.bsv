@@ -6,6 +6,8 @@ import AxiTypes::*;
 `include "Autoconf.bsv"
 
 interface CoreAxiTop;
+  (* always_ready, always_enabled, prefix = "" *)
+  method Action setInterrupt((* port = "intrpt" *) Bit#(8) val);
   interface AxiMemMaster axiMem;
 `ifdef CONFIG_DIFFTEST
 `ifdef CONFIG_BSIM
@@ -54,6 +56,10 @@ endinterface
 (* synthesize *)
 module mkCoreAxiTop(CoreAxiTop);
   Core core <- mkCore;
+
+  method Action setInterrupt(Bit#(8) val);
+    core.setInterrupt(val);
+  endmethod
 
   interface axiMem = core.axiMem;
 `ifdef CONFIG_DIFFTEST

@@ -10,6 +10,7 @@ import DiffTypes::*;
 `endif
 
 interface Core;
+  method Action setInterrupt(Bit#(8) val);
 `ifdef CONFIG_BSIM
   method ActionValue#(CpuToHostData) cpuToHost;
   method Bool cpuToHostValid;

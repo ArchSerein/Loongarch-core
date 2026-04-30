@@ -134,48 +134,6 @@ function Bool coreIsTimerRelatedCsr(CsrIndx idx);
     idx == `CSR_ESTAT;
 endfunction
 
-function Bool coreIsInterruptControlCsr(CsrIndx idx);
-  return idx == `CSR_CRMD || idx == `CSR_ECFG || idx == `CSR_ESTAT ||
-    idx == `CSR_TCFG || idx == `CSR_TICLR;
-endfunction
-
-function Tuple3#(Data, Data, Data) coreInterruptCsrView(
-  Maybe#(CsrIndx) csrIdx, Data writeVal, Data curCrmd, Data curEcfg,
-  Data curEstat);
-  Data nextCrmd = curCrmd;
-  Data nextEcfg = curEcfg;
-  Data nextEstat = curEstat;
-
-  if (csrIdx matches tagged Valid .idx) begin
-    case (idx)
-      `CSR_CRMD: nextCrmd = (writeVal & 32'h000001FF) | (curCrmd & 32'hFFFFFE00);
-      `CSR_ECFG: nextEcfg = (writeVal & 32'h00001BFF) | (curEcfg & 32'hFFFFE400);
-      `CSR_ESTAT: nextEstat = (writeVal & 32'h00000003) | (curEstat & 32'hFFFFFFFC);
-      `CSR_TCFG: begin
-        if (writeVal[`CSR_TCFG_EN] == 1'b1 && writeVal[`CSR_TCFG_INITV] == 0) begin
-          nextEstat = curEstat | 32'h00000800;
-        end
-      end
-      `CSR_TICLR: begin
-        if (writeVal[`CSR_TICLR_CLR] == 1'b1) begin
-          nextEstat = curEstat & 32'hFFFFF7FF;
-        end
-      end
-      default: nextCrmd = nextCrmd;
-    endcase
-  end
-
-  return tuple3(nextCrmd, nextEcfg, nextEstat);
-endfunction
-
-function Data corePendingInterruptBits(Data ecfg, Data estat);
-  return estat & ecfg & 32'h00001fff;
-endfunction
-
-function Bool coreHasInterrupt(Data crmd, Data ecfg, Data estat);
-  return crmd[`CSR_CRMD_IE] == 1'b1 && corePendingInterruptBits(ecfg, estat) != 0;
-endfunction
-
 function Bool coreIsCsrConflict(Maybe#(CsrIndx) pendingWrite, Maybe#(CsrIndx) curAccess);
   if (pendingWrite matches tagged Valid .w &&& curAccess matches tagged Valid .a) begin
     Bool sameCsr = (w == a);

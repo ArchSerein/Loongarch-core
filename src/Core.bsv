@@ -48,7 +48,7 @@ module mkCore(Core);
   Bht#(8)                 bht <- mkBht;
   Scoreboard#(8)        regSb <- mkCFScoreboard;
   SFifo#(8, Maybe#(CsrIndx), Maybe#(CsrIndx)) csrSb <- mkCFSFifo(coreIsCsrConflict);
-  Reg#(Bool)       hasIntPrev <- mkReg(False);
+  Reg#(Bool)         idleLock <- mkReg(False);
   TlbArray                tlb <- mkTlb;
 `ifdef CONFIG_DIFFTEST
   Difftest difftest <- mkDifftest;
@@ -117,11 +117,15 @@ module mkCore(Core);
     endaction
   endfunction
 
-  rule doIF1NoFetchTlb (getMmuTranslateType(csrf.crmd) != Translate);
+  rule releaseIdleOnInterrupt (idleLock && csrf.interruptDetected);
+    idleLock <= False;
+  endrule
+
+  rule doIF1NoFetchTlb (!idleLock && getMmuTranslateType(csrf.crmd) != Translate);
     doIF1Body(pcReg[0], csrf.crmd, csrf.asid, getMmuTranslateType(csrf.crmd));
   endrule
 
-  rule doIF1WithFetchTlb (getMmuTranslateType(csrf.crmd) == Translate);
+  rule doIF1WithFetchTlb (!idleLock && getMmuTranslateType(csrf.crmd) == Translate);
     Addr pc = pcReg[0];
     Data asid = csrf.asid;
     tlb.fetchLookupReq(pc, asid);
@@ -503,32 +507,18 @@ module mkCore(Core);
       Bool memDCacheSideEffect = isStore || isSc || isBarrier ||
         cacopNeedsDCache || cacopNeedsICache || isTlbOp;
       Bool memIsCsrWrite = (eInst.iType == Csrw || eInst.iType == Csrxchg);
-      Bool memWritesInterruptCsr = False;
-      if (memIsCsrWrite &&& eInst.csr matches tagged Valid .csrIdx) begin
-        memWritesInterruptCsr = coreIsInterruptControlCsr(csrIdx);
-      end
-
-      let intCsrView = coreInterruptCsrView(
-        memIsCsrWrite ? eInst.csr : tagged Invalid, eInst.addr, csrf.crmd,
-        csrf.ecfg, csrf.estat);
-      Data pendingInterruptBits = corePendingInterruptBits(tpl_2(intCsrView),
-        tpl_3(intCsrView));
-      Bool timerPending = ((pendingInterruptBits & 32'h00000800) != 0);
-      Bool softPending = ((pendingInterruptBits & 32'h00000003) != 0);
-      Bool delayInterrupt = timerPending && !softPending;
-      Bool has_int_raw = coreHasInterrupt(tpl_1(intCsrView), tpl_2(intCsrView),
-        tpl_3(intCsrView));
-      Bool has_int = !memDCacheSideEffect && !memWritesInterruptCsr &&
-        has_int_raw && (!delayInterrupt || hasIntPrev);
+      Bool has_int = csrf.hasInterrupt(memIsCsrWrite ? eInst.csr : tagged Invalid,
+        eInst.addr, memDCacheSideEffect);
       memExcp = has_int ? mkExcp(`ECODE_INT, 0, 0) : execPkt.excp;
+      if (has_int) begin
+        idleLock <= False;
+      end
       Bool canIssueMem = !memExcp.valid && !memRedirectPending;
       ByteMask m = fromMaybe(5'b00000, execPkt.mask);
       let storePkt = selectStoreData(eInst.data, eInst.addr[1:0], m[3:0]);
       Bit#(WordSz) storeByteEn = tpl_1(storePkt);
       Data storeWData = tpl_2(storePkt);
       Bool memUseCache = True;
-
-      hasIntPrev <= has_int_raw;
       Bool setRedirectPending = memExcp.valid || execPkt.isNeedFlush ||
         eInst.iType == Ertn;
 
@@ -869,6 +859,10 @@ module mkCore(Core);
             ertnTarget = era;
             pcReg[2] <= era;
             wbFlush = True;
+          end else if (mInst.iType == Idle) begin
+            pcReg[2] <= memPkt.pc + 4;
+            idleLock <= True;
+            wbFlush = True;
           end else if (mInst.iType == Tlbfill) begin
             if (memPkt.tlbResult matches tagged Valid .tlbFillRes) begin
               wbTlbfillIndex = truncate(tlbFillRes.ehi[`CSR_TLBIDX_INDEX]);
@@ -1017,6 +1011,10 @@ module mkCore(Core);
       csrSb.deq();
     end
   endrule
+
+  method Action setInterrupt(Bit#(8) val);
+    csrf.setInterrupt(val);
+  endmethod
 
 `ifdef CONFIG_BSIM
   method ActionValue#(CpuToHostData) cpuToHost if (toHostFifo.notEmpty);

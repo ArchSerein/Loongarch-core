@@ -11,6 +11,9 @@ import DiffTypes::*;
 `endif
 
 interface CsrFile;
+  method Action setInterrupt(Bit#(8) val);
+  method Bool interruptDetected;
+  method Bool hasInterrupt(Maybe#(CsrIndx) csrIdx, Data writeVal, Bool blockedBySideEffect);
   method Data crmd;
   method Data prmd;
   method Data ecfg;
@@ -73,6 +76,54 @@ function Data csrEstatWithTimerInt(Data estat, Bool timerIntPending);
   Data nextEstat = estat;
   nextEstat[`CSR_ESTAT_IS_2] = pack(timerIntPending);
   return nextEstat;
+endfunction
+
+function Data csrEstatWithInterrupts(Data estat, Bool timerIntPending, Bit#(8) interrupt);
+  Data nextEstat = csrEstatWithTimerInt(estat, timerIntPending);
+  nextEstat[`CSR_ESTAT_IS_1] = interrupt;
+  return nextEstat;
+endfunction
+
+function Bool csrIsInterruptControlCsr(CsrIndx idx);
+  return idx == `CSR_CRMD || idx == `CSR_ECFG || idx == `CSR_ESTAT ||
+    idx == `CSR_TCFG || idx == `CSR_TICLR;
+endfunction
+
+function Tuple3#(Data, Data, Data) csrInterruptCsrView(
+  Maybe#(CsrIndx) csrIdx, Data writeVal, Data curCrmd, Data curEcfg,
+  Data curEstat);
+  Data nextCrmd = curCrmd;
+  Data nextEcfg = curEcfg;
+  Data nextEstat = curEstat;
+
+  if (csrIdx matches tagged Valid .idx) begin
+    case (idx)
+      `CSR_CRMD: nextCrmd = (writeVal & 32'h000001FF) | (curCrmd & 32'hFFFFFE00);
+      `CSR_ECFG: nextEcfg = (writeVal & 32'h00001BFF) | (curEcfg & 32'hFFFFE400);
+      `CSR_ESTAT: nextEstat = (writeVal & 32'h00000003) | (curEstat & 32'hFFFFFFFC);
+      `CSR_TCFG: begin
+        if (writeVal[`CSR_TCFG_EN] == 1'b1 && writeVal[`CSR_TCFG_INITV] == 0) begin
+          nextEstat = curEstat | 32'h00000800;
+        end
+      end
+      `CSR_TICLR: begin
+        if (writeVal[`CSR_TICLR_CLR] == 1'b1) begin
+          nextEstat = curEstat & 32'hFFFFF7FF;
+        end
+      end
+      default: begin end
+    endcase
+  end
+
+  return tuple3(nextCrmd, nextEcfg, nextEstat);
+endfunction
+
+function Data csrPendingInterruptBits(Data ecfg, Data estat);
+  return estat & ecfg & 32'h00001fff;
+endfunction
+
+function Bool csrHasInterrupt(Data crmd, Data ecfg, Data estat);
+  return crmd[`CSR_CRMD_IE] == 1'b1 && csrPendingInterruptBits(ecfg, estat) != 0;
 endfunction
 
 function Data setTimerIntPending(Data estat);
@@ -444,6 +495,7 @@ module mkCsrFile(CsrFile);
   Reg#(Bool)    tcfgWriteSeen <- mkReg(False);
   Reg#(Bool)    timerIntClearEpoch <- mkReg(False);
   Reg#(Bool)    timerIntClearSeen <- mkReg(False);
+  Wire#(Bit#(8)) externalInterrupt <- mkDWire(0);
 
   Reg#(Bool) llbit <- mkReg(False);
   Reg#(Bool) llbctlKlo <- mkReg(False);
@@ -484,6 +536,31 @@ module mkCsrFile(CsrFile);
     timerIntPending <= nextTimerIntPending;
   endrule
 
+  method Action setInterrupt(Bit#(8) val);
+    externalInterrupt <= val;
+  endmethod
+
+  method Bool interruptDetected;
+    return csrHasInterrupt(csr_crmd, csr_ecfg,
+      csrEstatWithInterrupts(csr_estat, timerIntPending, externalInterrupt));
+  endmethod
+
+  method Bool hasInterrupt(Maybe#(CsrIndx) csrIdx, Data writeVal,
+      Bool blockedBySideEffect);
+    Data estatWithInterrupts = csrEstatWithInterrupts(csr_estat, timerIntPending,
+      externalInterrupt);
+    let intCsrView = csrInterruptCsrView(csrIdx, writeVal, csr_crmd, csr_ecfg,
+      estatWithInterrupts);
+    Bool hasIntRaw = csrHasInterrupt(tpl_1(intCsrView), tpl_2(intCsrView),
+      tpl_3(intCsrView));
+    Bool writesInterruptCsr = False;
+    if (csrIdx matches tagged Valid .idx) begin
+      writesInterruptCsr = csrIsInterruptControlCsr(idx);
+    end
+
+    return !blockedBySideEffect && !writesInterruptCsr && hasIntRaw;
+  endmethod
+
   method Data crmd;
     return csr_crmd;
   endmethod
@@ -497,7 +574,7 @@ module mkCsrFile(CsrFile);
   endmethod
 
   method Data estat;
-    return csrEstatWithTimerInt(csr_estat, timerIntPending);
+    return csrEstatWithInterrupts(csr_estat, timerIntPending, externalInterrupt);
   endmethod
 
   method Data tcfg;
@@ -527,7 +604,7 @@ module mkCsrFile(CsrFile);
         `CSR_PRMD: res = csr_prmd;
         `CSR_EUEN: res = csr_euen; 
         `CSR_ECFG: res = csr_ecfg;
-        `CSR_ESTAT: res = csrEstatWithTimerInt(csr_estat, timerIntPending);
+        `CSR_ESTAT: res = csrEstatWithInterrupts(csr_estat, timerIntPending, externalInterrupt);
         `CSR_ERA: res = csr_era;
         `CSR_BADV: res = csr_badv; 
         `CSR_EENTRY: res = csr_eentry;
@@ -572,7 +649,8 @@ module mkCsrFile(CsrFile);
 
 `ifdef CONFIG_DIFFTEST
   method DiffArchCsrState diffSnapshot;
-    let estatWithTimer = csrEstatWithTimerInt(csr_estat, timerIntPending);
+    let estatWithTimer = csrEstatWithInterrupts(csr_estat, timerIntPending,
+      externalInterrupt);
     return diffSnapshotFromFields(csr_crmd, csr_prmd, csr_euen, csr_ecfg, csr_era, csr_badv,
       csr_eentry, csr_tlbidx, csr_tlbehi, csr_tlbelo0, csr_tlbelo1, csr_asid, csr_pgdl,
       csr_pgdh, csr_save0, csr_save1, csr_save2, csr_save3, csr_tid, csr_tcfg, csr_tval,
@@ -581,7 +659,8 @@ module mkCsrFile(CsrFile);
 
   method DiffArchCsrState diffSnapshotAfterWrite(Maybe#(CsrIndx) csrIdx, Data val, Bool raiseExcp,
       Bit#(6) ecode, Bit#(9) esubcode, Addr pc, Addr badv, Bool isErtn);
-    let estatWithTimer = csrEstatWithTimerInt(csr_estat, timerIntPending);
+    let estatWithTimer = csrEstatWithInterrupts(csr_estat, timerIntPending,
+      externalInterrupt);
     let curr = diffSnapshotFromFields(csr_crmd, csr_prmd, csr_euen, csr_ecfg, csr_era, csr_badv,
       csr_eentry, csr_tlbidx, csr_tlbehi, csr_tlbelo0, csr_tlbelo1, csr_asid, csr_pgdl,
       csr_pgdh, csr_save0, csr_save1, csr_save2, csr_save3, csr_tid, csr_tcfg, csr_tval,
@@ -591,7 +670,8 @@ module mkCsrFile(CsrFile);
   endmethod
 
   method DiffArchCsrState diffSnapshotAfterTlbrd(Bool ne, Bit#(6) ps, Data ehi, Data elo0, Data elo1, Data asidVal);
-    let estatWithTimer = csrEstatWithTimerInt(csr_estat, timerIntPending);
+    let estatWithTimer = csrEstatWithInterrupts(csr_estat, timerIntPending,
+      externalInterrupt);
     let curr = diffSnapshotFromFields(csr_crmd, csr_prmd, csr_euen, csr_ecfg, csr_era, csr_badv,
       csr_eentry, csr_tlbidx, csr_tlbehi, csr_tlbelo0, csr_tlbelo1, csr_asid, csr_pgdl,
       csr_pgdh, csr_save0, csr_save1, csr_save2, csr_save3, csr_tid, csr_tcfg, csr_tval,

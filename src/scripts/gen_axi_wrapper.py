@@ -409,6 +409,7 @@ module core_top
   mkCoreAxiTop u_core (
     .CLK                (aclk),
     .RST_N              (reset),
+    .intrpt             (intrpt),
     .axiMem_rdAddrValid (core_rdAddrValid),
     .RDY_axiMem_rdAddrValid (rdAddrValidRdy),
     .axiMem_rdAddr      (core_rdAddr),
@@ -471,7 +472,7 @@ module core_top
   assign bready  = core_wrRespRdy;
 
 {diff_logic}
-  wire _unused_ok = &{{1'b0, intrpt, rid, bid,
+  wire _unused_ok = &{{1'b0, rid, bid,
                        core_rdAddrRdy, core_wrAddrRdy, core_wrDataRdy,
                        rdAddrValidRdy, wrAddrValidRdy, wrDataValidRdy}};
 
@@ -497,6 +498,7 @@ def main() -> None:
             "axiMem_wrData",
             "axiMem_rdData_d",
             "axiMem_wrResp_r",
+            "intrpt",
         ],
     )
 
