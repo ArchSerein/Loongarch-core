@@ -108,6 +108,7 @@ function DecodedInst decode(Instruction inst);
     32'b000000_0000_00_00000_11000_?????_00000 &&& (rj != 0): begin dInst.iType = RdCntId; dInst.dst = tagged Valid rj; dInst.csr = tagged Valid `CSR_TID; end // RDCNTID.W
     32'b000000_0000_00_00000_11000_00000_?????: begin dInst.iType = RdTimeL; dInst.dst =(rd != 0) ? tagged Valid rd: tagged Invalid; end // RDTIMEL.W
     32'b000000_0000_00_00000_11001_00000_?????: begin dInst.iType = RdTimeH; dInst.dst =(rd != 0) ? tagged Valid rd: tagged Invalid; end // RDTIMEH.W
+    32'b000000_0000_00_00000_11011_?????_?????: begin dInst.iType = Cpucfg; dInst.dst = tagged Valid rd; dInst.src1 = tagged Valid rj; end // CPUCFG
 
     // --- Others / System ---
     32'b000000_0000_10_10110_?????_?????_?????: dInst.iType = Syscall; // SYSCALL (Form 1)

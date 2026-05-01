@@ -28,6 +28,12 @@
 `define CSR_CTAG        14'h98 // CTAG cache tag
 `define CSR_DMW0        14'h180 // DMW0 direct map window 0
 `define CSR_DMW1        14'h181 // DMW1 direct map window 1
+`define CPUCFG_1        14'hb1
+`define CPUCFG_2        14'hb2
+`define CPUCFG_10       14'hc0
+`define CPUCFG_11       14'hc1
+`define CPUCFG_12       14'hc2
+`define CPUCFG_13       14'hc3
 
 `define CSR_CRMD_PLV    1: 0
 `define CSR_CRMD_IE     2
