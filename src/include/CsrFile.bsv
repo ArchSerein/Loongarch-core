@@ -630,6 +630,12 @@ module mkCsrFile(CsrFile);
         `CSR_CTAG: res = csr_ctag;
         `CSR_DMW0: res = csr_dmw0; 
         `CSR_DMW1: res = csr_dmw1;
+        `CPUCFG_1: res = 32'h1f1f4;
+        `CPUCFG_2: res = 0;
+        `CPUCFG_10: res = 32'h5;
+        `CPUCFG_11: res = 32'h04040003;
+        `CPUCFG_12: res = 32'h04040003;
+        `CPUCFG_13: res = 0;
         default: res = 0;
     endcase
     return res;

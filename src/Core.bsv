@@ -336,7 +336,6 @@ module mkCore(Core);
 
     Data rVal1 = rf.rd1(fromMaybe(?, rInst.src1));
     Data rVal2 = rf.rd2(fromMaybe(?, rInst.src2));
-    Data csrVal = csrf.rd(fromMaybe(?, rInst.csr));
 
     if (rInst.src1 matches tagged Valid .s1 &&& s1 == 0) begin
       rVal1 = 0;
@@ -349,6 +348,12 @@ module mkCore(Core);
     end else if (src2Sb.found &&& src2Sb.data matches tagged Valid .fwdData2) begin
       rVal2 = fwdData2;
     end
+
+    CsrIndx csrIdx = fromMaybe(?, rInst.csr);
+    if (rInst.iType == Cpucfg) begin
+      csrIdx = truncate(rVal1) + 14'hb0;
+    end
+    Data csrVal = csrf.rd(csrIdx);
 
     ScoreboardTag sbTag = regSb.enqTag;
     r2eFifo.enq(R2E{

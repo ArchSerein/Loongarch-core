@@ -62,6 +62,7 @@ typedef enum {
   Tlbwr, // TLBWR
   Tlbfill, // TLBFILL
   Invtlb, // INVTLB
+  Cpucfg, // CPUCFG
 
   Syscall, // SYSCALL exception
   Ertn, // ERTN return from exception

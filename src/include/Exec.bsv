@@ -68,6 +68,8 @@ function ExecInst exec(DecodedInst dInst, Data rVal1, Data rVal2, Addr pc, Addr 
 
   eInst.data = dInst.iType == Csrr ?
                  csrVal :
+               dInst.iType == Cpucfg ?
+                 csrVal :
                dInst.iType == Csrw ?
                  csrVal :
                dInst.iType == Csrxchg ?
