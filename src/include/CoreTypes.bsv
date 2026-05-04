@@ -20,8 +20,7 @@ interface Core;
 `ifdef CONFIG_BSIM
   method ActionValue#(DiffTrace) diffTrace;
   method Bool diffTraceValid;
-`endif
-`ifdef CONFIG_VSIM
+`else
   (* always_ready *)
   method Bool diffStepValid;
   (* always_ready *)

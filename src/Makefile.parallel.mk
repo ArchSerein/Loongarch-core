@@ -329,7 +329,7 @@ $(BSIM_COMPAT_RUNNER): $(BSIM_RUNNER) | $(BUILD_DIR)
 $(BSIM_COMPAT_RAW_RUNNER): $(BSIM_RAW_RUNNER) | $(BUILD_DIR)
 	cp $< $@
 
-BDPI_BSV_DEPS = $(ROOT_DIR)/Core.bsv \
+BDPI_BSV_DEPS = $(wildcard $(ROOT_DIR)/*.bsv) \
                 $(wildcard $(ROOT_DIR)/include/*.bsv)
 
 # Main Bluesim runner target
