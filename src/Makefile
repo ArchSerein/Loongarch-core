@@ -241,7 +241,7 @@ $(BDPI_SIMDIR)/%.o: $(ROOT_DIR)/csrc/%.cpp | $(BDPI_SIMDIR)
 $(BDPI_CSRC_DIR)/%.cpp: $(ROOT_DIR)/csrc/%.cpp | $(BDPI_CSRC_DIR)
 	@printf '#include "%s"\n' "$<" > "$@"
 
-$(VDIR)/$(CORE_AXI_TOP).v: $(ROOT_DIR)/include/CoreAxiTop.bsv $(ROOT_DIR)/Core.bsv $(BUILD_DIR) $(BDIR) $(IDIR) $(VDIR)
+$(VDIR)/$(CORE_AXI_TOP).v: $(ROOT_DIR)/include/CoreAxiTop.bsv $(BDPI_BSV_DEPS) $(BUILD_DIR) $(BDIR) $(IDIR) $(VDIR)
 	$(BSC) $(BSC_CORE_FLAGS) $<
 
 $(BSIM_COMPAT_RUNNER): $(BSIM_RUNNER) | $(BUILD_DIR)
@@ -250,7 +250,7 @@ $(BSIM_COMPAT_RUNNER): $(BSIM_RUNNER) | $(BUILD_DIR)
 $(BSIM_COMPAT_RAW_RUNNER): $(BSIM_RAW_RUNNER) | $(BUILD_DIR)
 	cp $< $@
 
-BDPI_BSV_DEPS = $(ROOT_DIR)/Core.bsv \
+BDPI_BSV_DEPS = $(wildcard $(ROOT_DIR)/*.bsv) \
                 $(wildcard $(ROOT_DIR)/include/*.bsv)
 
 $(BDPI_RUNNER): $(BDPI_BSV_DEPS) $(BDPI_OBJS) $(BDPI_BSC_CPPFILES) | $(BUILD_DIR) $(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR) $(BDPI_CSRC_DIR)

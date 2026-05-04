@@ -1,6 +1,5 @@
 import GetPut::*;
 import Types::*;
-import Memory::*;
 
 typedef Data MemResp;
 

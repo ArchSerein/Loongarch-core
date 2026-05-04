@@ -22,7 +22,7 @@ interface CoreAxiTop;
   method ActionValue#(Bit#(2464)) diffTrace;
   (* result = "diffTraceValid" *)
   method Bool diffTraceValid;
-`endif
+`else
   (* always_ready, result = "diffStepValid" *)
   method Bool diffStepValid;
   (* always_ready, result = "liveDiffCommitBundle" *)
@@ -37,6 +37,7 @@ interface CoreAxiTop;
   method Bit#(200) liveDiffStoreBundle;
   (* always_ready, result = "liveDiffLoadBundle" *)
   method Bit#(136) liveDiffLoadBundle;
+`endif
 `endif
 `ifdef CONFIG_WB_DEBUG
   (* always_ready, always_enabled, prefix = "" *)
@@ -78,7 +79,7 @@ module mkCoreAxiTop(CoreAxiTop);
     return pack(t);
   endmethod
   method Bool diffTraceValid = core.diffTraceValid;
-`endif
+`else
   method Bool diffStepValid = core.diffStepValid;
   method Bit#(142) liveDiffCommitBundle = core.liveDiffCommitBundle;
   method Bit#(1024) liveDiffRegsBundle = core.liveDiffRegsBundle;
@@ -86,6 +87,7 @@ module mkCoreAxiTop(CoreAxiTop);
   method Bit#(130) liveDiffExcpBundle = core.liveDiffExcpBundle;
   method Bit#(200) liveDiffStoreBundle = core.liveDiffStoreBundle;
   method Bit#(136) liveDiffLoadBundle = core.liveDiffLoadBundle;
+`endif
 `endif
 `ifdef CONFIG_WB_DEBUG
   method Action debugInput(Bool breakPoint, Bool inforFlag, RIndx regNum);
