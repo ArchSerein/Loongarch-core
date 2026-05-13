@@ -155,6 +155,7 @@ function Action doIF2Body(
         if2PendingReq <= req;
         if2MissPaddr <= fTrans.pa;
         if2WaitRefill <= True;
+        f1f2Fifo.clear();
       end
     end
     endaction
