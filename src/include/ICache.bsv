@@ -3,6 +3,7 @@ import ProcTypes::*;
 import AxiTypes::*;
 import Fifo::*;
 import Vector::*;
+import RegFile::*;
 `include "Autoconf.bsv"
 
 // ============================================================
@@ -28,6 +29,11 @@ typedef Bit#(TLog#(ICacheWays)) ICacheWayIdx;
 typedef Bit#(2)                 ICacheOpType;
 
 typedef Vector#(ICacheLineWords, Data) ICacheLine;
+typedef struct {
+  Bool      valid;
+  ICacheTag tag;
+} ICacheTagValid deriving (Bits, Eq);
+typedef TAdd#(1, ICacheTagSz) ICacheTagValidSz;
 typedef struct {
   Bool        valid;
   ICacheTag   tag;
@@ -63,9 +69,16 @@ function Addr getIBlockBase(Addr a);
   Bit#(ICacheOffsetSz) lower = 0;
   return { upper, lower };
 endfunction
+function Bit#(ICacheTagValidSz) packICacheTagValid(ICacheTagValid tv);
+  return { pack(tv.valid), tv.tag };
+endfunction
+function ICacheTagValid unpackICacheTagValid(Bit#(ICacheTagValidSz) bits);
+  return ICacheTagValid{valid: unpack(msb(bits)), tag: truncate(bits)};
+endfunction
 
 interface ICache;
-  method ICacheProbeResp probe(Addr va);
+  method Action probe(Addr va);
+  method ICacheProbeResp probeResp;
   method Action refillReq(Addr pa, Bool useCache);
   method ActionValue#(ICacheRefillResp) refillResp;
   method Action commitHit(Addr va, ICacheWayIdx way);
@@ -77,6 +90,76 @@ interface ICache;
   interface AxiMemMaster axiMem;
 endinterface
 
+interface ICacheTagSram;
+  method Action put(Bit#(1) wea, ICacheIndex addra, Bit#(ICacheTagValidSz) dina);
+  method Bit#(ICacheTagValidSz) read;
+endinterface
+
+interface ICacheDataSram;
+  method Action put(Bit#(1) wea, ICacheIndex addra, Data dina);
+  method Data read;
+endinterface
+
+`ifndef CONFIG_FPGA
+module mkICacheTagSram(ICacheTagSram);
+  RegFile#(ICacheIndex, Bit#(ICacheTagValidSz)) mem <- mkRegFileFull;
+  Reg#(Bit#(ICacheTagValidSz)) dout <- mkReg(0);
+
+  method Action put(Bit#(1) wea, ICacheIndex addra, Bit#(ICacheTagValidSz) dina);
+    if (wea[0] == 1'b1) begin
+      mem.upd(addra, dina);
+      dout <= dina;
+    end else begin
+      dout <= mem.sub(addra);
+    end
+  endmethod
+
+  method Bit#(ICacheTagValidSz) read = dout;
+endmodule
+
+module mkICacheDataSram(ICacheDataSram);
+  RegFile#(ICacheIndex, Data) mem <- mkRegFileFull;
+  Reg#(Data) dout <- mkReg(0);
+
+  method Action put(Bit#(1) wea, ICacheIndex addra, Data dina);
+    if (wea[0] == 1'b1) begin
+      mem.upd(addra, dina);
+      dout <= dina;
+    end else begin
+      dout <= mem.sub(addra);
+    end
+  endmethod
+
+  method Data read = dout;
+endmodule
+`else
+import "BVI" sram_128x22 =
+module mkICacheTagSram(ICacheTagSram);
+  default_clock clk(clka);
+  default_reset no_reset;
+
+  method put(wea, addra, dina) enable(ena);
+  method douta read();
+
+  schedule (read) CF (read);
+  schedule (put) CF (read);
+  schedule (put) C (put);
+endmodule
+
+import "BVI" sram_128x32 =
+module mkICacheDataSram(ICacheDataSram);
+  default_clock clk(clka);
+  default_reset no_reset;
+
+  method put(wea, addra, dina) enable(ena);
+  method douta read();
+
+  schedule (read) CF (read);
+  schedule (put) CF (read);
+  schedule (put) C (put);
+endmodule
+`endif
+
 // ============================================================
 // Replacement policy interface
 // ============================================================
@@ -87,39 +170,41 @@ endinterface
 
 // -------- LRU replacement --------
 module mkICacheReplaceLRU(ICacheReplace);
-  Vector#(ICacheSets, Vector#(ICacheWays, Reg#(ICacheWayIdx)))
-    ages <- replicateM(replicateM(mkRegU));
+  RegFile#(ICacheIndex, Vector#(ICacheWays, ICacheWayIdx)) ages <- mkRegFileFull;
 
   method ICacheWayIdx replace(ICacheIndex setIdx);
+    Vector#(ICacheWays, ICacheWayIdx) ageVec = ages.sub(setIdx);
     ICacheWayIdx victim = 0;
-    ICacheWayIdx maxAge = ages[setIdx][0];
+    ICacheWayIdx maxAge = ageVec[0];
     for (Integer i = 1; i < valueOf(ICacheWays); i = i + 1) begin
-      if (ages[setIdx][i] > maxAge) begin
+      if (ageVec[i] > maxAge) begin
         victim = fromInteger(i);
-        maxAge = ages[setIdx][i];
+        maxAge = ageVec[i];
       end
     end
     return victim;
   endmethod
 
   method Action access(ICacheIndex setIdx, ICacheWayIdx wayIdx);
+    Vector#(ICacheWays, ICacheWayIdx) ageVec = ages.sub(setIdx);
+    Vector#(ICacheWays, ICacheWayIdx) nextAgeVec = ageVec;
     for (Integer i = 0; i < valueOf(ICacheWays); i = i + 1) begin
       if (fromInteger(i) == wayIdx)
-        ages[setIdx][i] <= 0;
-      else if (ages[setIdx][i] < fromInteger(valueOf(ICacheWays) - 1))
-        ages[setIdx][i] <= ages[setIdx][i] + 1;
+        nextAgeVec = update(nextAgeVec, fromInteger(i), 0);
+      else if (ageVec[i] < fromInteger(valueOf(ICacheWays) - 1))
+        nextAgeVec = update(nextAgeVec, fromInteger(i), ageVec[i] + 1);
     end
+    ages.upd(setIdx, nextAgeVec);
   endmethod
 endmodule
 
 // -------- Pseudo-LRU (tree-based) replacement --------
 // Requires ICacheWays to be a power of two and >= 2
 module mkICacheReplacePLRU(ICacheReplace);
-  Vector#(ICacheSets, Reg#(Bit#(TSub#(ICacheWays, 1))))
-    treeBits <- replicateM(mkRegU);
+  RegFile#(ICacheIndex, Bit#(TSub#(ICacheWays, 1))) treeBits <- mkRegFileFull;
 
   method ICacheWayIdx replace(ICacheIndex setIdx);
-    Bit#(TSub#(ICacheWays, 1)) t = treeBits[setIdx];
+    Bit#(TSub#(ICacheWays, 1)) t = treeBits.sub(setIdx);
     ICacheWayIdx victim = 0;
     ICacheWayIdx node   = 0;
     for (Integer lv = 0; lv < valueOf(TLog#(ICacheWays)); lv = lv + 1) begin
@@ -135,7 +220,7 @@ module mkICacheReplacePLRU(ICacheReplace);
   endmethod
 
   method Action access(ICacheIndex setIdx, ICacheWayIdx wayIdx);
-    Bit#(TSub#(ICacheWays, 1)) t = treeBits[setIdx];
+    Bit#(TSub#(ICacheWays, 1)) t = treeBits.sub(setIdx);
     ICacheWayIdx node = 0;
     for (Integer lv = 0; lv < valueOf(TLog#(ICacheWays)); lv = lv + 1) begin
       Integer bitPos = valueOf(TLog#(ICacheWays)) - 1 - lv;
@@ -148,7 +233,7 @@ module mkICacheReplacePLRU(ICacheReplace);
         node = (node << 1) + 2;
       end
     end
-    treeBits[setIdx] <= t;
+    treeBits.upd(setIdx, t);
   endmethod
 endmodule
 
@@ -168,21 +253,32 @@ endmodule
 // ============================================================
 // ICache implementation
 // ============================================================
-typedef enum { Ready, StartRefill, WaitResp } ICacheState deriving (Bits, Eq);
+typedef enum {
+  Ready,
+  StartRefill,
+  WaitResp,
+  CacopLookup,
+  FlushAll
+} ICacheState deriving (Bits, Eq);
 
 (* synthesize *)
 module mkICache(ICache);
-  Vector#(ICacheSets, Vector#(ICacheWays, Reg#(ICacheTag)))   tagStore   <- replicateM(replicateM(mkRegU));
-  Vector#(ICacheSets, Vector#(ICacheWays, Reg#(ICacheLine)))  dataStore  <- replicateM(replicateM(mkRegU));
-  Vector#(ICacheSets, Vector#(ICacheWays, Reg#(Bool)))        validStore <- replicateM(replicateM(mkReg(False)));
+  Vector#(ICacheWays, ICacheTagSram) tagValidStore <- replicateM(mkICacheTagSram);
+  Vector#(ICacheWays, Vector#(ICacheLineWords, ICacheDataSram))
+    dataStore <- replicateM(replicateM(mkICacheDataSram));
 
-  Reg#(ICacheState)     state          <- mkReg(Ready);
+  Reg#(ICacheState)     state          <- mkReg(FlushAll);
   Reg#(ICacheRefillReq) missReq        <- mkRegU;
   Reg#(Bit#(8))         beatIdx        <- mkRegU;
   Reg#(ICacheLine)      refillLine     <- mkRegU;
   Reg#(Bool)            refillMayWrite <- mkReg(False);
   Reg#(Bool)            epoch          <- mkReg(False);
   Reg#(Bool)            squashPending  <- mkReg(False);
+  Reg#(ICacheWordSel)   probeWordSel   <- mkReg(0);
+  Reg#(Addr)            cacopVaReg     <- mkRegU;
+  Reg#(Data)            cacopTagReg    <- mkRegU;
+  Reg#(ICacheIndex)     flushIdx       <- mkReg(0);
+  Reg#(ICacheWayIdx)    flushWay       <- mkReg(0);
 
   Fifo#(2, ICacheRefillReq)  refillReqQ  <- mkCFFifo;
   Fifo#(2, ICacheRefillResp) refillRespQ <- mkCFFifo;
@@ -200,6 +296,55 @@ module mkICache(ICache);
   ICacheReplace replacer <- mkICacheReplaceLRU;
 `endif
 `endif
+
+  function Action issueRead(ICacheIndex idx, ICacheWordSel wsel);
+    action
+      for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
+        tagValidStore[w].put(1'b0, idx, 0);
+        for (Integer b = 0; b < valueOf(ICacheLineWords); b = b + 1) begin
+          if (fromInteger(b) == wsel) begin
+            dataStore[w][b].put(1'b0, idx, 0);
+          end
+        end
+      end
+      probeWordSel <= wsel;
+    endaction
+  endfunction
+
+  function Action writeTagValid(ICacheWayIdx way, ICacheIndex idx, ICacheTagValid tv);
+    action
+      for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
+        if (fromInteger(w) == way) begin
+          tagValidStore[w].put(1'b1, idx, packICacheTagValid(tv));
+        end
+      end
+    endaction
+  endfunction
+
+  function Action writeLine(ICacheWayIdx way, ICacheIndex idx, ICacheLine line);
+    action
+      for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
+        if (fromInteger(w) == way) begin
+          for (Integer b = 0; b < valueOf(ICacheLineWords); b = b + 1) begin
+            dataStore[w][b].put(1'b1, idx, line[b]);
+          end
+        end
+      end
+    endaction
+  endfunction
+
+  function ICacheProbeResp currentProbeResp;
+    ICacheProbeResp setWays = noICacheProbe;
+    for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
+      ICacheTagValid tv = unpackICacheTagValid(tagValidStore[w].read);
+      setWays = update(setWays, fromInteger(w), ICacheProbeWay{
+        valid: tv.valid,
+        tag: tv.tag,
+        inst: dataStore[w][probeWordSel].read
+      });
+    end
+    return setWays;
+  endfunction
 
   rule doAcceptRefillReq (state == Ready && refillReqQ.notEmpty);
     let req = refillReqQ.first;
@@ -240,9 +385,8 @@ module mkICache(ICache);
     if (beat.last || nextBeat == fromInteger(valueOf(ICacheLineWords))) begin
       Bool liveMiss = missReq.useCache && refillMayWrite && (missReq.epoch == epoch);
       if (liveMiss) begin
-        tagStore[idx][way]   <= tag;
-        dataStore[idx][way]  <= nextLine;
-        validStore[idx][way] <= True;
+        writeTagValid(way, idx, ICacheTagValid{valid: True, tag: tag});
+        writeLine(way, idx, nextLine);
         replacer.access(idx, way);
       end
       if (!squashPending) begin
@@ -258,18 +402,44 @@ module mkICache(ICache);
     end
   endrule
 
-  method ICacheProbeResp probe(Addr va);
-    let idx = getIIndex(va);
-    let wsel = getIWordSel(va);
-    ICacheProbeResp setWays = noICacheProbe;
+  rule doCacopLookup (state == CacopLookup);
+    let idx = getIIndex(cacopVaReg);
+    Bool hit = False;
+    ICacheWayIdx hitWay = 0;
     for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
-      setWays = update(setWays, fromInteger(w), ICacheProbeWay{
-        valid: validStore[idx][w],
-        tag: tagStore[idx][w],
-        inst: dataStore[idx][w][wsel]
-      });
+      ICacheTagValid tv = unpackICacheTagValid(tagValidStore[w].read);
+      if (tv.valid && tv.tag == getITag(cacopTagReg)) begin
+        hit = True;
+        hitWay = fromInteger(w);
+      end
     end
-    return setWays;
+    if (hit) begin
+      writeTagValid(hitWay, idx, ICacheTagValid{valid: False, tag: 0});
+    end
+    cacopRespQ.enq(True);
+    state <= Ready;
+  endrule
+
+  rule doFlushAll (state == FlushAll);
+    writeTagValid(flushWay, flushIdx, ICacheTagValid{valid: False, tag: 0});
+    Bool lastWay = flushWay == fromInteger(valueOf(ICacheWays) - 1);
+    Bool lastIdx = flushIdx == fromInteger(valueOf(ICacheSets) - 1);
+    if (lastWay && lastIdx) begin
+      state <= Ready;
+    end else if (lastWay) begin
+      flushWay <= 0;
+      flushIdx <= flushIdx + 1;
+    end else begin
+      flushWay <= flushWay + 1;
+    end
+  endrule
+
+  method Action probe(Addr va) if (state == Ready);
+    issueRead(getIIndex(va), getIWordSel(va));
+  endmethod
+
+  method ICacheProbeResp probeResp;
+    return currentProbeResp;
   endmethod
 
   method Action refillReq(Addr pa, Bool useCache) if (refillReqQ.notFull);
@@ -297,11 +467,9 @@ module mkICache(ICache);
     if (state != Ready) begin
       squashPending <= True;
     end
-    for (Integer s = 0; s < valueOf(ICacheSets); s = s + 1) begin
-      for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
-        validStore[s][w] <= False;
-      end
-    end
+    flushIdx <= 0;
+    flushWay <= 0;
+    state <= FlushAll;
     epoch <= !epoch;
   endmethod
 
@@ -316,11 +484,9 @@ module mkICache(ICache);
   endmethod
 
   method Action invalidate if (state == Ready && !refillReqQ.notEmpty);
-    for (Integer s = 0; s < valueOf(ICacheSets); s = s + 1) begin
-      for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
-        validStore[s][w] <= False;
-      end
-    end
+    flushIdx <= 0;
+    flushWay <= 0;
+    state <= FlushAll;
   endmethod
 
   method Action cacop(Bit#(5) op, Addr va, Data ctag)
@@ -331,26 +497,24 @@ module mkICache(ICache);
       let way = getICacopWaySel(va);
 
       if (opType == 2'b00) begin
-        validStore[idx][way] <= False;
+        writeTagValid(way, idx, ICacheTagValid{valid: False, tag: 0});
+        cacopRespQ.enq(True);
       end
       else if (opType == 2'b01) begin
-        validStore[idx][way] <= False;
+        writeTagValid(way, idx, ICacheTagValid{valid: False, tag: 0});
+        cacopRespQ.enq(True);
       end
       else if (opType == 2'b10) begin
-        Bool hit = False;
-        ICacheWayIdx hitWay = 0;
-        for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
-          if (validStore[idx][w] && tagStore[idx][w] == getITag(va)) begin
-            hit = True;
-            hitWay = fromInteger(w);
-          end
-        end
-        if (hit) begin
-          validStore[idx][hitWay] <= False;
-        end
+        issueRead(idx, getIWordSel(va));
+        cacopVaReg <= va;
+        cacopTagReg <= ctag;
+        state <= CacopLookup;
+      end else begin
+        cacopRespQ.enq(True);
       end
+    end else begin
+      cacopRespQ.enq(True);
     end
-    cacopRespQ.enq(True);
   endmethod
 
   method ActionValue#(Bool) cacopResp if (cacopRespQ.notEmpty);
