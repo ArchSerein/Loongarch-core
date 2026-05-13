@@ -122,12 +122,14 @@ module mkCore(Core);
     idleLock <= False;
   endrule
 
-  rule doIF1NoFetchTlb (!idleLock && getMmuTranslateType(csrf.crmd) != Translate);
+  rule doIF1NoFetchTlb (!idleLock && !if2WaitRefill && !f1f2Fifo.notEmpty &&
+      getMmuTranslateType(csrf.crmd) != Translate);
     doIF1Body(pcReg[0], csrf.crmd, csrf.asid, csrf.dmw0, csrf.dmw1, getMmuTranslateType(csrf.crmd),
               btb, bht, iCache, f1f2Fifo, pcReg[0]);
   endrule
 
-  rule doIF1WithFetchTlb (!idleLock && getMmuTranslateType(csrf.crmd) == Translate);
+  rule doIF1WithFetchTlb (!idleLock && !if2WaitRefill && !f1f2Fifo.notEmpty &&
+      getMmuTranslateType(csrf.crmd) == Translate);
     Addr pc = pcReg[0];
     Data asid = csrf.asid;
     tlb.fetchLookupReq(pc, asid);
@@ -153,7 +155,7 @@ module mkCore(Core);
         excp: mkNoExcp
       });
       if2WaitRefill <= False;
-      f1f2Fifo.deq();
+      pcReg[0] <= req.predPc;
     end
   endrule
 
