@@ -67,7 +67,6 @@ typedef struct {
   Data             dmw0;
   Data             dmw1;
   MmuTranslateType transType;
-  ICacheProbeResp  probeRes;
 } F1toF2 deriving(Bits, Eq);
 
 // IF2 -> ID packet (replaces old F2D)

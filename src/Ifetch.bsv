@@ -48,7 +48,8 @@ function Action doIF1Body(
     Bool bhtPred = bht.predict(pc);
     Addr predPc = bhtPred ? btbPc : pc + 4;
 
-    // Send requests to IF2 stage and initiate ICache probe
+    // Send requests to IF2 stage and initiate the synchronous ICache probe.
+    iCache.probe(pc);
     f1f2Fifo.enq(F1toF2{
       pc: pc,
       predPc: predPc,
@@ -56,8 +57,7 @@ function Action doIF1Body(
       asid: asid,
       dmw0: dmw0,
       dmw1: dmw1,
-      transType: transType,
-      probeRes: iCache.probe(pc)
+      transType: transType
     });
     // Update PC to the predicted PC
     pcReg <= predPc;
@@ -77,7 +77,7 @@ function Action doIF2Body(
 );
     action
     let req = f1f2Fifo.first();
-    ICacheProbeResp probeRes = req.probeRes;
+    ICacheProbeResp probeRes = iCache.probeResp;
     
     // Address translation result
     MmuResult fTrans = MmuResult{
