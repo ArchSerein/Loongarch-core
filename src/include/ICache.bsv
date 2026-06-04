@@ -9,7 +9,11 @@ import RegFile::*;
 // ============================================================
 // Configurable parameters (values provided by Kconfig -D flags)
 // ============================================================
+`ifdef CONFIG_FPGA
+typedef 256                       ICacheSets;      // matches cache_sram.v depth
+`else
 typedef `CONFIG_ICACHE_SETS       ICacheSets;      // number of sets
+`endif
 typedef `CONFIG_ICACHE_WAYS       ICacheWays;      // set associativity
 typedef `CONFIG_ICACHE_LINE_WORDS ICacheLineWords; // words per cache line
 
@@ -96,7 +100,7 @@ interface ICacheTagSram;
 endinterface
 
 interface ICacheDataSram;
-  method Action put(Bit#(1) wea, ICacheIndex addra, Data dina);
+  method Action put(Bit#(4) wea, ICacheIndex addra, Data dina);
   method Data read;
 endinterface
 
@@ -121,8 +125,8 @@ module mkICacheDataSram(ICacheDataSram);
   RegFile#(ICacheIndex, Data) mem <- mkRegFileFull;
   Reg#(Data) dout <- mkReg(0);
 
-  method Action put(Bit#(1) wea, ICacheIndex addra, Data dina);
-    if (wea[0] == 1'b1) begin
+  method Action put(Bit#(4) wea, ICacheIndex addra, Data dina);
+    if (wea != 4'b0000) begin
       mem.upd(addra, dina);
       dout <= dina;
     end else begin
@@ -133,7 +137,7 @@ module mkICacheDataSram(ICacheDataSram);
   method Data read = dout;
 endmodule
 `else
-import "BVI" sram_128x22 =
+import "BVI" tagv_sram =
 module mkICacheTagSram(ICacheTagSram);
   default_clock clk(clka);
   default_reset no_reset;
@@ -146,7 +150,7 @@ module mkICacheTagSram(ICacheTagSram);
   schedule (put) C (put);
 endmodule
 
-import "BVI" sram_128x32 =
+import "BVI" data_bank_sram =
 module mkICacheDataSram(ICacheDataSram);
   default_clock clk(clka);
   default_reset no_reset;
@@ -303,7 +307,7 @@ module mkICache(ICache);
         tagValidStore[w].put(1'b0, idx, 0);
         for (Integer b = 0; b < valueOf(ICacheLineWords); b = b + 1) begin
           if (fromInteger(b) == wsel) begin
-            dataStore[w][b].put(1'b0, idx, 0);
+            dataStore[w][b].put(4'b0000, idx, 0);
           end
         end
       end
@@ -326,7 +330,7 @@ module mkICache(ICache);
       for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
         if (fromInteger(w) == way) begin
           for (Integer b = 0; b < valueOf(ICacheLineWords); b = b + 1) begin
-            dataStore[w][b].put(1'b1, idx, line[b]);
+            dataStore[w][b].put(4'b1111, idx, line[b]);
           end
         end
       end
