@@ -12,7 +12,11 @@ import RegFile::*;
 import Perf::*;
 `endif
 
+`ifdef CONFIG_FPGA
+typedef 256                       DCacheSets; // matches cache_sram.v depth
+`else
 typedef `CONFIG_DCACHE_SETS       DCacheSets; // number of sets
+`endif
 typedef `CONFIG_DCACHE_WAYS       DCacheWays; // set associativity
 typedef `CONFIG_DCACHE_LINE_WORDS DCacheLineWords; // words per cache line
 
@@ -88,7 +92,7 @@ interface DCacheTagSram;
 endinterface
 
 interface DCacheDataSram;
-  method Action put(Bit#(1) wea, DCacheIndex addra, Data dina);
+  method Action put(Bit#(4) wea, DCacheIndex addra, Data dina);
   method Data read;
 endinterface
 
@@ -113,8 +117,8 @@ module mkDCacheDataSram(DCacheDataSram);
   RegFile#(DCacheIndex, Data) mem <- mkRegFileFull;
   Reg#(Data) dout <- mkReg(0);
 
-  method Action put(Bit#(1) wea, DCacheIndex addra, Data dina);
-    if (wea[0] == 1'b1) begin
+  method Action put(Bit#(4) wea, DCacheIndex addra, Data dina);
+    if (wea != 4'b0000) begin
       mem.upd(addra, dina);
       dout <= dina;
     end else begin
@@ -125,7 +129,7 @@ module mkDCacheDataSram(DCacheDataSram);
   method Data read = dout;
 endmodule
 `else
-import "BVI" sram_128x22 =
+import "BVI" tagv_sram =
 module mkDCacheTagSram(DCacheTagSram);
   default_clock clk(clka);
   default_reset no_reset;
@@ -138,7 +142,7 @@ module mkDCacheTagSram(DCacheTagSram);
   schedule (put) C (put);
 endmodule
 
-import "BVI" sram_128x32 =
+import "BVI" data_bank_sram =
 module mkDCacheDataSram(DCacheDataSram);
   default_clock clk(clka);
   default_reset no_reset;
@@ -299,7 +303,7 @@ module mkDCache(DCache);
       for (Integer w = 0; w < valueOf(DCacheWays); w = w + 1) begin
         tagValidStore[w].put(1'b0, idx, 0);
         for (Integer b = 0; b < valueOf(DCacheLineWords); b = b + 1) begin
-          dataStore[w][b].put(1'b0, idx, 0);
+          dataStore[w][b].put(4'b0000, idx, 0);
         end
       end
     endaction
@@ -331,7 +335,7 @@ module mkDCache(DCache);
       for (Integer w = 0; w < valueOf(DCacheWays); w = w + 1) begin
         if (fromInteger(w) == way) begin
           for (Integer b = 0; b < valueOf(DCacheLineWords); b = b + 1) begin
-            dataStore[w][b].put(1'b1, idx, line[b]);
+            dataStore[w][b].put(4'b1111, idx, line[b]);
           end
         end
       end
@@ -344,7 +348,7 @@ module mkDCache(DCache);
         if (fromInteger(w) == way) begin
           for (Integer b = 0; b < valueOf(DCacheLineWords); b = b + 1) begin
             if (fromInteger(b) == wsel) begin
-              dataStore[w][b].put(1'b1, idx, data);
+              dataStore[w][b].put(4'b1111, idx, data);
             end
           end
         end
