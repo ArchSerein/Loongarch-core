@@ -55,6 +55,7 @@ CONFIG_BSIM ?= $(shell if grep -q '^# CONFIG_BSIM is not set' "$(ROOT_DIR)/.conf
 # ==========================================
 CORE_AXI_TOP   := mkCoreAxiTop
 BSC            := bsc
+BSC_RTS_FLAGS  := +RTS -K256M -RTS
 CXX            ?= c++
 JOBS           ?= $(shell nproc)
 BSC_RESOLVED   := $(shell command -v $(BSC) 2>/dev/null)
@@ -281,7 +282,7 @@ BDPI_MODEL_HEADER_STAMP := $(BDPI_SIMDIR)/.model_header.stamp
 # objects under $(BDPI_SIMDIR). bsim_bdpi.cpp must wait for that phase.
 $(BDPI_RAW_RUNNER): $(BDPI_BSV_BOS) $(BDPI_BSC_CPPFILES) | $(BUILD_DIR) $(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR) $(BDPI_CSRC_DIR)
 	@echo "Generating Bluesim raw runner..."
-	$(BSC) $(BDPI_LINK_FLAGS) -o $@ \
+	$(BSC) $(BSC_RTS_FLAGS) $(BDPI_LINK_FLAGS) -o $@ \
 		-Xc++ -std=c++14 \
 		-Xc++ -I$(BDPI_SIMDIR) \
 		-Xc++ -I$(BLUESIM_DIR) \
@@ -307,7 +308,7 @@ $(BDIR)/%.bo: | $(BDIR) $(IDIR) $(VDIR)
 		exit 1; \
 	fi; \
 	echo "Compiling $$src to .bo (Verilog)"; \
-	$(BSC) -verilog -p +:$(ROOT_DIR)/include -bdir $(BDIR) -info-dir $(IDIR) -vdir $(VDIR) "$$src"
+	$(BSC) $(BSC_RTS_FLAGS) -verilog -p +:$(ROOT_DIR)/include -bdir $(BDIR) -info-dir $(IDIR) -vdir $(VDIR) "$$src"
 
 # For Bluesim (.bo and .ba are generated)
 $(BDPI_BDIR)/%.bo: | $(BDPI_BDIR) $(BDPI_IDIR)
@@ -317,11 +318,11 @@ $(BDPI_BDIR)/%.bo: | $(BDPI_BDIR) $(BDPI_IDIR)
 		exit 1; \
 	fi; \
 	echo "Compiling $$src to .ba (Bluesim)"; \
-	$(BSC) -sim -p +:$(ROOT_DIR)/include -bdir $(BDPI_BDIR) -info-dir $(BDPI_IDIR) "$$src"
+	$(BSC) $(BSC_RTS_FLAGS) -sim -p +:$(ROOT_DIR)/include -bdir $(BDPI_BDIR) -info-dir $(BDPI_IDIR) "$$src"
 
 # 3. Generate Verilog for core
 $(VDIR)/$(CORE_AXI_TOP).v: $(VERILOG_BSV_BOS) | $(VDIR)
-	$(BSC) $(BSC_CORE_FLAGS) $(ROOT_DIR)/include/CoreAxiTop.bsv
+	$(BSC) $(BSC_RTS_FLAGS) $(BSC_CORE_FLAGS) $(ROOT_DIR)/include/CoreAxiTop.bsv
 
 $(BSIM_COMPAT_RUNNER): $(BSIM_RUNNER) | $(BUILD_DIR)
 	cp $< $@
