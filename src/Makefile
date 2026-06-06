@@ -54,6 +54,7 @@ CONFIG_BSIM ?= $(shell if grep -q '^# CONFIG_BSIM is not set' "$(ROOT_DIR)/.conf
 BDPI_TOP       := mkTbBDPI
 CORE_AXI_TOP   := mkCoreAxiTop
 BSC            := bsc
+BSC_RTS_FLAGS  := +RTS -K256M -RTS
 CXX            ?= c++
 BSC_RESOLVED   := $(shell command -v $(BSC) 2>/dev/null)
 BSC_PREFIX     := $(if $(BSC_RESOLVED),$(abspath $(dir $(BSC_RESOLVED))/..),/opt/bsc)
@@ -242,7 +243,7 @@ $(BDPI_CSRC_DIR)/%.cpp: $(ROOT_DIR)/csrc/%.cpp | $(BDPI_CSRC_DIR)
 	@printf '#include "%s"\n' "$<" > "$@"
 
 $(VDIR)/$(CORE_AXI_TOP).v: $(ROOT_DIR)/include/CoreAxiTop.bsv $(BDPI_BSV_DEPS) $(BUILD_DIR) $(BDIR) $(IDIR) $(VDIR)
-	$(BSC) $(BSC_CORE_FLAGS) $<
+	$(BSC) $(BSC_RTS_FLAGS) $(BSC_CORE_FLAGS) $<
 
 $(BSIM_COMPAT_RUNNER): $(BSIM_RUNNER) | $(BUILD_DIR)
 	cp $< $@
@@ -254,8 +255,8 @@ BDPI_BSV_DEPS = $(wildcard $(ROOT_DIR)/*.bsv) \
                 $(wildcard $(ROOT_DIR)/include/*.bsv)
 
 $(BDPI_RUNNER): $(BDPI_BSV_DEPS) $(BDPI_OBJS) $(BDPI_BSC_CPPFILES) | $(BUILD_DIR) $(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR) $(BDPI_CSRC_DIR)
-	$(BSC) $(BDPI_BSC_FLAGS) $(ROOT_DIR)/include/SimBDPI.bsv
-	$(BSC) $(BDPI_LINK_FLAGS) -o $(BDPI_RAW_RUNNER) \
+	$(BSC) $(BSC_RTS_FLAGS) $(BDPI_BSC_FLAGS) $(ROOT_DIR)/include/SimBDPI.bsv
+	$(BSC) $(BSC_RTS_FLAGS) $(BDPI_LINK_FLAGS) -o $(BDPI_RAW_RUNNER) \
 		-Xc++ -std=c++14 \
 		-Xc++ -I$(BDPI_SIMDIR) \
 		-Xc++ -I$(BLUESIM_DIR) \
