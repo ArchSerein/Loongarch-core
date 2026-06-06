@@ -633,8 +633,8 @@ module mkCsrFile(CsrFile);
         `CPUCFG_1: res = 32'h1f1f4;
         `CPUCFG_2: res = 0;
         `CPUCFG_10: res = 32'h5;
-        `CPUCFG_11: res = 32'h04040003;
-        `CPUCFG_12: res = 32'h04040003;
+        `CPUCFG_11: res = 32'h04080001;
+        `CPUCFG_12: res = 32'h04080001;
         `CPUCFG_13: res = 0;
         default: res = 0;
     endcase
