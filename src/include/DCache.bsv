@@ -4,7 +4,6 @@ import MemTypes::*;
 import AxiTypes::*;
 import Fifo::*;
 import Vector::*;
-import Param::*;
 import Assert::*;
 import RegFile::*;
 `include "Autoconf.bsv"
