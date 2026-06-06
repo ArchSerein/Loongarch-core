@@ -157,7 +157,9 @@ function Action doExecBody(
       
       // Update scoreboard with ALU result to allow forwarding (bypassing) to dependent instructions
       Maybe#(Data) exeResult = (isValid(eInst.dst) && !isMemTypeInst && !isTlbSerial) ? tagged Valid eInst.data : tagged Invalid;
-      regSb.updateExe(rrfPkt.sbTag, exeResult);
+      if (exeResult matches tagged Valid .result) begin
+        regSb.updateExe(rrfPkt.sbTag, tagged Valid result);
+      end
       
       // Enqueue to Memory Access stage
       e2mFifo.enq(E2M{

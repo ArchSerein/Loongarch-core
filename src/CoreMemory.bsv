@@ -167,21 +167,6 @@ function Action doMemoryStage1Body(
 
     end
 
-    Maybe#(Data) mem1Result = tagged Invalid;
-    if (nextInst matches tagged Valid .mem1Inst) begin
-      Bool isLoadOp = (mem1Inst.iType == Ld || mem1Inst.iType == Ll || mem1Inst.iType == Sc);
-      Bool isTlbOp  = (mem1Inst.iType == Tlbsrch || mem1Inst.iType == Tlbrd || 
-                       mem1Inst.iType == Tlbwr   || mem1Inst.iType == Tlbfill || mem1Inst.iType == Invtlb);
-      Bool isCacop  = (mem1Inst.iType == Cacop);
-      
-      Bool mem1ResultReady = !(isLoadOp || isTlbOp || isCacop); 
-      
-      if (mem1ResultReady && isValid(mem1Inst.dst)) begin
-        mem1Result = tagged Valid mem1Inst.data;
-      end
-    end
-    regSb.updateMem1(execPkt.sbTag, mem1Result);
-
     e2mFifo.deq();
     m1m2Fifo.enq(M1toM2{
       pc: execPkt.pc,
@@ -285,10 +270,14 @@ function Action doMemoryStage2Body(
 `endif
 
     Maybe#(Data) mem2Result = tagged Invalid;
-    if (nextInst matches tagged Valid .mem2Inst &&& isValid(mem2Inst.dst)) begin
+    if (memPkt.m2Op == M2OpDCache &&&
+        nextInst matches tagged Valid .mem2Inst &&&
+        isValid(mem2Inst.dst)) begin
       mem2Result = tagged Valid mem2Inst.data;
     end
-    regSb.updateMem2(memPkt.sbTag, mem2Result);
+    if (mem2Result matches tagged Valid .result) begin
+      regSb.updateMem2(memPkt.sbTag, tagged Valid result);
+    end
 
     m1m2Fifo.deq();
     m2wFifo.enq(M2W{
