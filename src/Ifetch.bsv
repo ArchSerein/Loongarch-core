@@ -15,7 +15,7 @@ import MemTypes::*;
 import Fifo::*;
 import Ehr::*;
 import Btb::*;
-import Bht::*;
+import Perceptron::*;
 import ICache::*;
 import Tlb::*;
 import Mmu::*;
@@ -36,17 +36,16 @@ function Action doIF1Body(
     Data dmw1, 
     MmuTranslateType transType,
     Btb#(6) btb,
-    Bht#(8) bht,
+    PerceptronPredictor#(8) perceptron,
     ICache iCache,
     Fifo#(2, F1toF2) f1f2Fifo,
     Reg#(Addr) pcReg
 );
     action
-    // Branch Prediction Integration
-    // Predict branch target using BTB and branch direction using BHT
-    Addr btbPc = btb.predPc(pc);
-    Bool bhtPred = bht.predict(pc);
-    Addr predPc = bhtPred ? btbPc : pc + 4;
+    // Perceptron predicts direction; BTB supplies the target when one is known.
+    match {.btbHit, .btbTarget} = btb.getTarget(pc);
+    Bool dirPred = perceptron.predict(pc);
+    Addr predPc = (dirPred && btbHit) ? btbTarget : pc + 4;
 
     // Send requests to IF2 stage and initiate the synchronous ICache probe.
     iCache.probe(pc);

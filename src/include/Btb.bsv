@@ -5,6 +5,7 @@ import Vector::*;
 
 interface Btb#(numeric type indexSize);
   method Addr predPc(Addr pc);
+  method Tuple2#(Bool, Addr) getTarget(Addr pc);
   method Action update(Addr thispc, Addr nextpc);
 endinterface
 
@@ -36,6 +37,13 @@ provisos(
     end
   endmethod
 
+  method Tuple2#(Bool, Addr) getTarget(Addr pc);
+    let index = getIndex(pc);
+    let tag = getTag(pc);
+    Bool hit = valid[index] && (tag == tags[index]);
+    return tuple2(hit, targets[index]);
+  endmethod
+
   method Action update(Addr thisPc, Addr nextPc);
     let index = getIndex(thisPc);
     let tag = getTag(thisPc);
@@ -43,9 +51,6 @@ provisos(
       valid[index] <= True;
       tags[index] <= tag;
       targets[index] <= nextPc;
-    end
-    else if (tag == tags[index]) begin
-      valid[index] <= False;
     end
   endmethod
 endmodule

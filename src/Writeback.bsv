@@ -71,23 +71,27 @@ function Action doWritebackBody(
       Bool isCacop = (mInst.iType == Cacop);
 
       ExcpInfo wbExcp = memPkt.excp;
-      Bool wb_finish_on_syscall = False;
       Bool has_int = memPkt.excp.valid && memPkt.excp.ecode == `ECODE_INT;
 `ifdef CONFIG_BSIM
+      Bool wb_finish_on_syscall = False;
       wb_finish_on_syscall = (!has_int) && wbExcp.valid &&
         (wbExcp.ecode == `ECODE_SYS) && (wbExcp.esubcode == 9'h001);
-`endif
       Bool wb_has_excp = wbExcp.valid && !wb_finish_on_syscall;
+`else
+      Bool wb_has_excp = wbExcp.valid;
+`endif
       Bit#(6) wb_ecode = wbExcp.ecode;
       Bit#(9) wb_esubcode = wbExcp.esubcode;
+`ifdef CONFIG_DIFFTEST
       Addr ertnTarget = 0;
+`endif
       Bool wbNeedsFlush = wb_has_excp || ((!wb_has_excp) && mInst.iType == Ertn);
       Bit#(5) wbTlbfillIndex = 0;
 
       if (wbReady) begin
-        Bool wen = False;
         Bool wbIsCsrWrite = (mInst.iType == Csrw || mInst.iType == Csrxchg);
 `ifdef CONFIG_DIFFTEST
+        Bool wen = False;
         let currDiffCsrState = memPkt.csrSnapshot;
 `endif
         if (wb_has_excp) begin
@@ -106,7 +110,9 @@ function Action doWritebackBody(
 `endif
           if (isValid(mInst.dst)) begin
             rf.wr(fromMaybe(?, mInst.dst), mInst.data);
+`ifdef CONFIG_DIFFTEST
             wen = (fromMaybe(0, mInst.dst) != 0);
+`endif
           end
           if (mInst.iType == Ertn) begin
             Bool clearLl = !csrf.llbctlKloValue;
@@ -114,7 +120,9 @@ function Action doWritebackBody(
             if (clearLl) begin
               clearDCacheLlOnFlush = True;
             end
+`ifdef CONFIG_DIFFTEST
             ertnTarget = era;
+`endif
             pcReg_2 <= era;
             wbFlush = True;
           end else if (mInst.iType == Idle) begin
@@ -229,7 +237,7 @@ function Action doWritebackBody(
         });
 `endif
         `ifdef CONFIG_TRACE_PERFORMANCE
-          if (!wb_has_excp) begin
+          if (!wbRetire) begin
             inst_count();
           end
         `endif

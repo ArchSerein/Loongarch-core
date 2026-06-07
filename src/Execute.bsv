@@ -21,7 +21,7 @@ import Div::*;
 import ICache::*;
 import Tlb::*;
 import Btb::*;
-import Bht::*;
+import Perceptron::*;
 import CoreFunc::*;
 import CoreTypes::*;
 `ifdef CONFIG_TRACE_PERFORMANCE
@@ -41,7 +41,7 @@ function Action doExecBody(
     ICache iCache,
     TlbArray tlb,
     Btb#(6) btb,
-    Bht#(8) bht,
+    PerceptronPredictor#(8) perceptron,
     Scoreboard#(8) regSb,
     SFifo#(8, Maybe#(CsrIndx), Maybe#(CsrIndx)) csrSb,
     Reg#(Bool) if2WaitRefill,
@@ -119,7 +119,8 @@ function Action doExecBody(
 
       // Branch Prediction Integration & Misprediction Recovery
       // If a branch is mispredicted, squash all previous pipeline stages, 
-      // redirect PC, and update branch prediction structures (BTB, BHT).
+      // redirect PC, and update branch prediction structures (BTB, perceptron).
+      Bool isControlFlowInst = (eInst.iType == J) || (eInst.iType == Jr) || (eInst.iType == Br);
       if (eInst.mispredict) begin
         pcReg_1 <= eInst.targetAddr;
         iCache.squash();
@@ -131,9 +132,11 @@ function Action doExecBody(
         regSb.redirect(rrfPkt.sbTag);
         csrSb.redirect(rrfPkt.sbTag);
         if2WaitRefill <= False;
-        btb.update(rrfPkt.pc, eInst.targetAddr);
       end
-      bht.update(rrfPkt.pc, eInst.brTaken);
+      if (isControlFlowInst) begin
+        btb.update(rrfPkt.pc, eInst.targetAddr);
+        perceptron.update(rrfPkt.pc, eInst.brTaken);
+      end
 
       Bool isMemTypeInst = eInst.iType == Ld || eInst.iType == St || eInst.iType == Ll || eInst.iType == Sc;
       Bool isTlbSerial = (eInst.iType == Tlbsrch || eInst.iType == Tlbrd || eInst.iType == Tlbwr || eInst.iType == Tlbfill || eInst.iType == Invtlb);
