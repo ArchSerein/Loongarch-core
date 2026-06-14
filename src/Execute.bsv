@@ -20,8 +20,8 @@ import Mul::*;
 import Div::*;
 import ICache::*;
 import Tlb::*;
-import Btb::*;
-import Bht::*;
+import BranchPredTypes::*;
+import BranchPredictor::*;
 import CoreFunc::*;
 import CoreTypes::*;
 `ifdef CONFIG_TRACE_PERFORMANCE
@@ -40,8 +40,7 @@ function Action doExecBody(
     Reg#(Addr) pcReg_1,
     ICache iCache,
     TlbArray tlb,
-    Btb#(6) btb,
-    Bht#(8) bht,
+    BranchPredictor branchPred,
     Scoreboard#(8) regSb,
     SFifo#(8, Maybe#(CsrIndx), Maybe#(CsrIndx)) csrSb,
     Reg#(Bool) if2WaitRefill,
@@ -117,9 +116,31 @@ function Action doExecBody(
         eInst.data = truncateLSB(csrf.stableCounterValue);
       end
 
-      // Branch Prediction Integration & Misprediction Recovery
-      // If a branch is mispredicted, squash all previous pipeline stages, 
-      // redirect PC, and update branch prediction structures (BTB, BHT).
+      CfiType cfiType = CFI_NONE;
+      if (rrfPkt.rInst.iType == Br) begin
+        cfiType = CFI_COND;
+      end else if (rrfPkt.rInst.iType == J) begin
+        cfiType = isValid(rrfPkt.rInst.dst) ? CFI_CALL : CFI_JAL;
+      end else if (rrfPkt.rInst.iType == Jr) begin
+        Bool linkDst = False;
+        Bool returnSrc = False;
+        if (rrfPkt.rInst.dst matches tagged Valid .dst) begin
+          linkDst = (dst == 5'd1 || dst == 5'd5);
+        end
+        if (rrfPkt.rInst.src1 matches tagged Valid .src1) begin
+          returnSrc = (src1 == 5'd1 || src1 == 5'd5);
+        end
+
+        if (returnSrc) begin
+          cfiType = CFI_RET;
+        end else if (linkDst) begin
+          cfiType = CFI_ICALL;
+        end else begin
+          cfiType = CFI_JALR;
+        end
+      end
+
+      // If a branch is mispredicted, squash previous pipeline stages and redirect PC.
       if (eInst.mispredict) begin
         pcReg_1 <= eInst.targetAddr;
         iCache.squash();
@@ -131,9 +152,10 @@ function Action doExecBody(
         regSb.redirect(rrfPkt.sbTag);
         csrSb.redirect(rrfPkt.sbTag);
         if2WaitRefill <= False;
-        btb.update(rrfPkt.pc, eInst.targetAddr);
       end
-      bht.update(rrfPkt.pc, eInst.brTaken);
+      if (cfiType != CFI_NONE) begin
+        branchPred.executeUpdate(rrfPkt.pc, eInst.targetAddr, eInst.brTaken, cfiType);
+      end
 
       Bool isMemTypeInst = eInst.iType == Ld || eInst.iType == St || eInst.iType == Ll || eInst.iType == Sc;
       Bool isTlbSerial = (eInst.iType == Tlbsrch || eInst.iType == Tlbrd || eInst.iType == Tlbwr || eInst.iType == Tlbfill || eInst.iType == Invtlb);

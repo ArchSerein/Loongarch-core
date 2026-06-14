@@ -9,10 +9,8 @@ import Mmu::*;
 import Tlb::*;
 import Fifo::*;
 import Ehr::*;
-import Btb::*;
 import Scoreboard::*;
 import SFifo::*;
-import Bht::*;
 import Vector::*;
 import ICache::*;
 import DCache::*;
@@ -22,6 +20,7 @@ import AxiTypes::*;
 import AxiMem::*;
 import CoreTypes::*;
 import CoreFunc::*;
+import BranchPredictor::*;
 
 import Ifetch::*;
 import Idecode::*;
@@ -63,8 +62,7 @@ module mkCore(Core);
   Reg#(Bool)      divInFlight <- mkReg(False);
   // AXI Bus Arbitration: Multiplexes memory requests from I-Cache and D-Cache to the main memory.
   AxiMemMaster        axiMux <- mkAxiArbiter2(iCache.axiMem, dCache.axiMem);
-  Btb#(6)                 btb <- mkBtb; // 64-entry BTB
-  Bht#(8)                 bht <- mkBht;
+  BranchPredictor  branchPred <- mkBranchPredictor;
   Scoreboard#(8)        regSb <- mkCFScoreboard;
   SFifo#(8, Maybe#(CsrIndx), Maybe#(CsrIndx)) csrSb <- mkCFSFifo(coreIsCsrConflict);
   Reg#(Bool)         idleLock <- mkReg(False);
@@ -125,7 +123,7 @@ module mkCore(Core);
   rule doIF1NoFetchTlb (!idleLock && !if2WaitRefill && !f1f2Fifo.notEmpty &&
       getMmuTranslateType(csrf.crmd) != Translate);
     doIF1Body(pcReg[0], csrf.crmd, csrf.asid, csrf.dmw0, csrf.dmw1, getMmuTranslateType(csrf.crmd),
-              btb, bht, iCache, f1f2Fifo, pcReg[0]);
+              branchPred, iCache, f1f2Fifo, pcReg[0]);
   endrule
 
   rule doIF1WithFetchTlb (!idleLock && !if2WaitRefill && !f1f2Fifo.notEmpty &&
@@ -134,7 +132,7 @@ module mkCore(Core);
     Data asid = csrf.asid;
     tlb.fetchLookupReq(pc, asid);
     doIF1Body(pc, csrf.crmd, asid, csrf.dmw0, csrf.dmw1, Translate,
-              btb, bht, iCache, f1f2Fifo, pcReg[0]);
+              branchPred, iCache, f1f2Fifo, pcReg[0]);
   endrule
 
   // ============================================================
@@ -195,7 +193,7 @@ module mkCore(Core);
   // D-MMU translation is REMOVED from this stage (moved to MEM)
   // ============================================================
   rule doExec;
-    doExecBody(r2eFifo, e2mFifo, f1f2Fifo, f2dFifo, d2rFifo, pcReg[1], iCache, tlb, btb, bht, regSb, csrSb, if2WaitRefill, mulUnit, mulInFlight, divUnit, divInFlight, csrf);
+    doExecBody(r2eFifo, e2mFifo, f1f2Fifo, f2dFifo, d2rFifo, pcReg[1], iCache, tlb, branchPred, regSb, csrSb, if2WaitRefill, mulUnit, mulInFlight, divUnit, divInFlight, csrf);
   endrule
 
   // ============================================================
