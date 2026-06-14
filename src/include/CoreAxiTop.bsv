@@ -4,6 +4,13 @@ import CoreTypes::*;
 import Core::*;
 import AxiTypes::*;
 `include "Autoconf.bsv"
+`ifdef CONFIG_VSIM
+`define CONFIG_WB_DEBUG
+`define CONFIG_WB_DEBUG_INST
+`endif
+`ifdef CONFIG_FPGA
+`define CONFIG_WB_DEBUG
+`endif
 
 interface CoreAxiTop;
   (* always_ready, always_enabled, prefix = "" *)
@@ -49,8 +56,10 @@ interface CoreAxiTop;
   method RIndx debug0WbRfWnum;
   (* always_ready, result = "debug0_wb_rf_wdata" *)
   method Data debug0WbRfWdata;
+`ifdef CONFIG_WB_DEBUG_INST
   (* always_ready, result = "debug0_wb_inst" *)
   method Instruction debug0WbInst;
+`endif
 `endif
 endinterface
 
@@ -90,6 +99,8 @@ module mkCoreAxiTop(CoreAxiTop);
   method Bit#(4) debug0WbRfWen = core.debug0WbRfWen;
   method RIndx debug0WbRfWnum = core.debug0WbRfWnum;
   method Data debug0WbRfWdata = core.debug0WbRfWdata;
+`ifdef CONFIG_WB_DEBUG_INST
   method Instruction debug0WbInst = core.debug0WbInst;
+`endif
 `endif
 endmodule

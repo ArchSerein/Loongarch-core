@@ -22,6 +22,20 @@ DIFF_PORTS = [
     "liveDiffLoadBundle",
 ]
 
+DEBUG_PORTS = [
+    "break_point",
+    "infor_flag",
+    "reg_num",
+    "ws_valid",
+    "rf_rdata",
+    "debug0_wb_pc",
+    "debug0_wb_rf_wen",
+    "debug0_wb_rf_wnum",
+    "debug0_wb_rf_wdata",
+]
+
+DEBUG_INST_PORT = "debug0_wb_inst"
+
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -36,10 +50,40 @@ def require_ports(text: str, ports: list[str]) -> None:
 def has_all_ports(text: str, ports: list[str]) -> bool:
     return all(port in text for port in ports)
 
-def render_wrapper(enable_difftest: bool) -> str:
+def render_wrapper(enable_difftest: bool, enable_debug: bool, enable_debug_inst: bool) -> str:
     diff_decl = ""
     diff_conn_ports: list[str] = []
     diff_logic = ""
+    debug_port_decl = ""
+    debug_conn_ports: list[str] = []
+
+    if enable_debug:
+        debug_ports = [
+            "input           break_point",
+            "input           infor_flag",
+            "input  [ 4:0]   reg_num",
+            "output          ws_valid",
+            "output [31:0]   rf_rdata",
+            "output [31:0] debug0_wb_pc",
+            "output [ 3:0] debug0_wb_rf_wen",
+            "output [ 4:0] debug0_wb_rf_wnum",
+            "output [31:0] debug0_wb_rf_wdata",
+        ]
+        debug_conn_ports = [
+            ".break_point        (break_point)",
+            ".infor_flag         (infor_flag)",
+            ".reg_num            (reg_num)",
+            ".ws_valid           (ws_valid)",
+            ".rf_rdata           (rf_rdata)",
+            ".debug0_wb_pc       (debug0_wb_pc)",
+            ".debug0_wb_rf_wen   (debug0_wb_rf_wen)",
+            ".debug0_wb_rf_wnum  (debug0_wb_rf_wnum)",
+            ".debug0_wb_rf_wdata (debug0_wb_rf_wdata)",
+        ]
+        if enable_debug_inst:
+            debug_ports.append("output [31:0] debug0_wb_inst")
+            debug_conn_ports.append(".debug0_wb_inst     (debug0_wb_inst)")
+        debug_port_decl = ",\n" + ",\n".join(f"    {port}" for port in debug_ports)
 
     if enable_difftest:
         diff_decl = """
@@ -319,7 +363,7 @@ def render_wrapper(enable_difftest: bool) -> str:
   );
 `endif
 """
-    extra_conn_ports = diff_conn_ports
+    extra_conn_ports = debug_conn_ports + diff_conn_ports
     extra_conn = ""
     if extra_conn_ports:
         extra_conn = ",\n" + ",\n".join(f"    {port}" for port in extra_conn_ports)
@@ -371,17 +415,7 @@ module core_top
     input    [ 3:0] bid,
     input    [ 1:0] bresp,
     input           bvalid,
-    output          bready,
-    input           break_point,
-    input           infor_flag,
-    input  [ 4:0]   reg_num,
-    output          ws_valid,
-    output [31:0]   rf_rdata,
-    output [31:0] debug0_wb_pc,
-    output [ 3:0] debug0_wb_rf_wen,
-    output [ 4:0] debug0_wb_rf_wnum,
-    output [31:0] debug0_wb_rf_wdata,
-    output [31:0] debug0_wb_inst
+    output          bready{debug_port_decl}
 );
 
   wire        core_rdAddrValid;
@@ -430,17 +464,7 @@ module core_top
     .RDY_axiMem_wrData  (core_wrDataRdy),
     .axiMem_wrResp_r    (bresp),
     .EN_axiMem_wrResp   (bvalid && core_wrRespRdy),
-    .RDY_axiMem_wrResp  (core_wrRespRdy),
-    .break_point        (break_point),
-    .infor_flag         (infor_flag),
-    .reg_num            (reg_num),
-    .ws_valid           (ws_valid),
-    .rf_rdata           (rf_rdata),
-    .debug0_wb_pc       (debug0_wb_pc),
-    .debug0_wb_rf_wen   (debug0_wb_rf_wen),
-    .debug0_wb_rf_wnum  (debug0_wb_rf_wnum),
-    .debug0_wb_rf_wdata (debug0_wb_rf_wdata),
-    .debug0_wb_inst     (debug0_wb_inst){extra_conn}
+    .RDY_axiMem_wrResp  (core_wrRespRdy){extra_conn}
   );
 
   assign arid    = 4'b0;
@@ -503,11 +527,18 @@ def main() -> None:
     )
 
     enable_difftest = has_all_ports(text, DIFF_PORTS)
-    wrapper = render_wrapper(enable_difftest)
+    enable_debug = has_all_ports(text, DEBUG_PORTS)
+    enable_debug_inst = DEBUG_INST_PORT in text
+    if enable_debug_inst and not enable_debug:
+        raise RuntimeError(f"mkCoreAxiTop.v has {DEBUG_INST_PORT} without standard debug ports")
+
+    wrapper = render_wrapper(enable_difftest, enable_debug, enable_debug_inst)
     output_v.write_text(wrapper, encoding="utf-8")
 
     print(f"Generated: {output_v}")
     print(f"Difftest bridge: {'enabled' if enable_difftest else 'disabled'}")
+    print(f"Debug ports: {'enabled' if enable_debug else 'disabled'}")
+    print(f"Debug inst port: {'enabled' if enable_debug_inst else 'disabled'}")
 
 
 if __name__ == "__main__":

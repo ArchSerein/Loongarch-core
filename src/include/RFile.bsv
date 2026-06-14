@@ -3,6 +3,12 @@ import ProcTypes::*;
 import Vector::*;
 import Ehr::*;
 `include "Autoconf.bsv"
+`ifdef CONFIG_VSIM
+`define CONFIG_WB_DEBUG
+`endif
+`ifdef CONFIG_FPGA
+`define CONFIG_WB_DEBUG
+`endif
 `ifdef CONFIG_DIFFTEST
 import DiffTypes::*;
 `endif
@@ -11,7 +17,7 @@ interface RFile;
   method Action wr(RIndx rindx, Data data);
   method Data rd1(RIndx rindx);
   method Data rd2(RIndx rindx);
-`ifdef CONFIG_VSIM
+`ifdef CONFIG_WB_DEBUG
   method Data rdDebug(RIndx rindx);
 `endif
   `ifdef CONFIG_DIFFTEST
@@ -42,7 +48,7 @@ module mkRFile(RFile);
 
   method Data rd1(RIndx rindx) = read(rindx);
   method Data rd2(RIndx rindx) = read(rindx);
-`ifdef CONFIG_VSIM
+`ifdef CONFIG_WB_DEBUG
   method Data rdDebug(RIndx rindx) = read(rindx);
 `endif
 
@@ -90,7 +96,7 @@ module mkBypassRFile(RFile);
 
   method Data rd1(RIndx rindx) = read(rindx);
   method Data rd2(RIndx rindx) = read(rindx);
-`ifdef CONFIG_VSIM
+`ifdef CONFIG_WB_DEBUG
   method Data rdDebug(RIndx rindx) = read(rindx);
 `endif
 
