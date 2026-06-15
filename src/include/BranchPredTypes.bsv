@@ -1,4 +1,5 @@
 import Types::*;
+`include "Autoconf.bsv"
 
 // ============================================================================
 // Branch Prediction Unit — Shared Type Definitions
@@ -16,9 +17,14 @@ typedef enum {
 } CfiType deriving (Bits, Eq, FShow);
 
 // ---- Small BTB Parameters ----
-typedef 4  LogSmallBtbEntries;   // 16 entries
-typedef 16 SmallBtbTagSz;
-typedef TExp#(LogSmallBtbEntries) SmallBtbEntries;
+// Configurable via Kconfig: run 'make menuconfig' and set SMALL_BTB_ENTRIES
+// (power of 2, e.g. 0x10=16, 0x20=32, 0x40=64, 0x80=128)
+`ifndef CONFIG_SMALL_BTB_ENTRIES
+`define CONFIG_SMALL_BTB_ENTRIES 32
+`endif
+typedef `CONFIG_SMALL_BTB_ENTRIES SmallBtbEntries;      // e.g. 32 entries
+typedef TLog#(SmallBtbEntries)     LogSmallBtbEntries;   // e.g. TLog#(32) = 5
+typedef 16                         SmallBtbTagSz;        // 16-bit partial tag
 
 // ---- Small BTB Entry ----
 typedef struct {

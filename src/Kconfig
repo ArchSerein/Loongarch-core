@@ -107,3 +107,14 @@ config ICACHE_REPLACE_LRU
 endmenu
 
 endmenu
+
+menu "Branch Prediction Config"
+
+config SMALL_BTB_ENTRIES
+    hex "Small BTB entries (power of 2)"
+    default 0x20
+    help
+      Number of entries in the fast-path Small BTB (L0 predictor).
+      Must be a power of 2. Common values: 0x10 (16), 0x20 (32), 0x40 (64).
+
+endmenu
