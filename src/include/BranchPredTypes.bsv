@@ -36,9 +36,14 @@ typedef struct {
 } SmallBtbEntry deriving (Bits, Eq);
 
 // ---- Main BTB Parameters ----
-typedef 6  LogMbtbEntries;       // 64 entries
-typedef 16 MbtbTagSz;
-typedef TExp#(LogMbtbEntries) MbtbEntries;
+// Configurable via Kconfig: MBTB_ENTRIES (power of 2). Default 0x80=128 to
+// match sram_128x64_wrap depth on FPGA. SmallBtb stays flip-flop based.
+`ifndef CONFIG_MBTB_ENTRIES
+`define CONFIG_MBTB_ENTRIES 128
+`endif
+typedef `CONFIG_MBTB_ENTRIES MbtbEntries;
+typedef TLog#(MbtbEntries)    LogMbtbEntries;   // 7 for 128 entries
+typedef 16                    MbtbTagSz;
 
 // ---- Main BTB Entry ----
 typedef struct {
@@ -59,14 +64,18 @@ typedef struct {
 } FastPredInfo deriving (Bits, Eq);
 
 // ---- TAGE Parameters ----
-typedef 5   LogTageEntries;      // 32 entries per TAGE table
+// Configurable via Kconfig: TAGE_ENTRIES (power of 2). Default 0x40=64.
+// On FPGA, sram_128x64_wrap is used (128 deep); the lower 64 entries are used.
+`ifndef CONFIG_TAGE_ENTRIES
+`define CONFIG_TAGE_ENTRIES 64
+`endif
+typedef `CONFIG_TAGE_ENTRIES TageEntries;
+typedef TLog#(TageEntries)   LogTageEntries;   // 6 for 64 entries
 typedef 8   TageTagSz;           // 8-bit partial tag
 typedef 256 GhrSz;               // Global History Register width
 typedef 3   TageCtrSz;           // 3-bit signed prediction counter
 typedef 2   TageUseSz;           // 2-bit usefulness counter
 typedef 7   NumTageTables;       // T1 through T7
-
-typedef TExp#(LogTageEntries) TageEntries;
 
 // TAGE history lengths (geometric progression)
 typedef 4   TAGE_HL1;   // T1
@@ -85,17 +94,25 @@ typedef struct {
 } TageEntry deriving (Bits, Eq);
 
 // TAGE prediction metadata (provider table + index + alternate table)
+// Repacked for 64-entry tables (6-bit provider index):
+//   [15:13] provider_table  (0=bimodal, 1-7=T1-T7)
+//   [12:10] alternate_table (0=none/bimodal)
+//   [9:4]   provider_index  (6 bits for 64-entry tables)
+//   [3:0]   bimodal_index   (4 bits for 16-entry bimodal table)
 typedef 16 TageMetaSz;
 typedef Bit#(TageMetaSz) TageMeta;
 
 // ---- ITTAGE Parameters ----
+// Configurable via Kconfig: ITTAGE_ENTRIES (power of 2). Default 0x40=64.
+`ifndef CONFIG_ITTAGE_ENTRIES
+`define CONFIG_ITTAGE_ENTRIES 64
+`endif
+typedef `CONFIG_ITTAGE_ENTRIES IttageEntries;
+typedef TLog#(IttageEntries)    IttageLogEntries;   // 6 for 64 entries
 typedef 4   IttageNumTables;     // 4 tagged tables
-typedef 5   IttageLogEntries;    // 32 entries per table
 typedef 8   IttageTagSz;         // 8-bit partial tag
 typedef 256 IttagePathHistSz;    // Path history register width
 typedef 2   IttageConfSz;        // 2-bit confidence counter
-
-typedef TExp#(IttageLogEntries) IttageEntries;
 
 // ITTAGE history lengths (geometric progression)
 typedef 4   IT_HL1;
@@ -117,7 +134,10 @@ typedef struct {
 } IttagePrediction deriving (Bits, Eq);
 
 // ITTAGE prediction metadata (provider table + index)
-typedef 8 IttageMetaSz;
+// Repacked for 64-entry tables (6-bit provider index):
+//   [8:6] provider_table (0=none, 1-4=T1-T4)
+//   [5:0] provider_index (6 bits for 64-entry tables)
+typedef 9 IttageMetaSz;
 typedef Bit#(IttageMetaSz) IttageMeta;
 
 // ---- Prediction Results from TAGE ----

@@ -134,15 +134,21 @@ module mkBranchPredictor(BranchPredictor);
     endmethod
 
     method Action startAccurate(Addr pc);
-        accHist  <= hist.snapshot();
+        HistSnapshot snap = hist.snapshot();
+        accHist  <= snap;
         accPc    <= pc;
         accValid <= True;
+        // Issue SRAM reads now (1-cycle latency): results are consumed in
+        // getAccurateResult() next cycle.
+        mbtb.startLookup(pc);
+        tage.startPredict(pc, snap.ghist_snapshot);
+        ittage.startPredict(pc, snap.phist_snapshot);
     endmethod
 
     method ActionValue#(BPUResult) getAccurateResult() if (accValid);
-        Maybe#(MBtbEntry) mbtbRes = mbtb.lookup(accPc);
-        TagePredInfo     tageRes  = tage.predict(accPc, accHist.ghist_snapshot);
-        IttagePredInfo   ittagRes = ittage.predict(accPc, accHist.phist_snapshot);
+        Maybe#(MBtbEntry) mbtbRes = mbtb.lookupResult(accPc);
+        TagePredInfo     tageRes  = tage.predictResult();
+        IttagePredInfo   ittagRes = ittage.predictResult();
         FastPredInfo     fastInfo = smallBtb.predict(accPc);
 
         Bool    hit = isValid(mbtbRes);

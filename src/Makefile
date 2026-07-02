@@ -128,6 +128,8 @@ core-verilog: $(VDIR)/$(CORE_AXI_TOP).v
     	/opt/bsc/lib/Verilog/FIFO*.v \
     	/opt/bsc/lib/Verilog/RegFile*.v \
     	/opt/bsc/lib/Verilog/CReg*.v $(ROOT_DIR)/../chiplab/IP/myCPU/
+# Branch predictor SRAM IP (referenced via BVI under CONFIG_FPGA)
+	cp $(ROOT_DIR)/vsrc/sram_128x64_wrap.v $(ROOT_DIR)/../chiplab/IP/myCPU/
 	python3 $(ROOT_DIR)/scripts/gen_axi_wrapper.py
 
 # Build a software test image and record the resolved bin path in build/test-bin.<test>.path.
