@@ -152,7 +152,6 @@ function Action doExecBody(
         regSb.redirect(rrfPkt.sbTag);
         csrSb.redirect(rrfPkt.sbTag);
         if2WaitRefill <= False;
-=======
       end
       if (cfiType != CFI_NONE) begin
         branchPred.executeUpdate(rrfPkt.pc, eInst.targetAddr, eInst.brTaken, cfiType);
