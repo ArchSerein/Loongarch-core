@@ -36,6 +36,9 @@ typedef struct {
   Instruction      inst;
   Maybe#(PIndx)    pDst;         // destination physical register
   Maybe#(PIndx)    oldPdst;      // old physical register (for free list release)
+  Maybe#(RIndx)    dst;          // logical destination register (for commit)
+  PIndx            pSrc1;        // source 1 physical register (for CSR/TLB commit)
+  PIndx            pSrc2;        // source 2 physical register (for CSR/TLB commit)
   IType            iType;        // instruction type (determines commit behavior)
   ExcpInfo         excp;         // exception info
   Bool             isBranch;     // branch flag
@@ -45,6 +48,8 @@ typedef struct {
   Bool             isSpecial;    // Ertn/Idle/Syscall/Break
   Bool             mispredict;   // branch mispredict flag
   Addr             correctTarget; // correct branch target
+  Addr             memVaddr;     // virtual address (for memory ops, Difftest)
+  Addr             memPaddr;     // physical address (for memory ops, Difftest)
 } RobEntry deriving(Bits, Eq);
 
 // Reservation Station entry (used for ALU, MulDiv, and Memory RS)
@@ -64,6 +69,7 @@ typedef struct {
   Addr                pc;       // program counter
   Addr                predPc;   // predicted PC (for branch)
   Maybe#(ByteMask)    mask;     // byte mask (for memory ops)
+  Maybe#(Bit#(5))     cacheOp;  // cache operation (for Cacop)
   Bool                isStore;  // store flag
   Bool                isLoad;   // load flag
 } RSEntry deriving(Bits, Eq);
@@ -149,6 +155,19 @@ function Bool isAlu(IType t);
   return t == Alu || t == Lu12i || t == Pcaddu12i;
 endfunction
 
+function Bool isCsrTlbSpecial(IType t);
+  return isCsr(t) || isTlb(t) || isSpecial(t);
+endfunction
+
+// Memory execution state machine (for in-order memory ops)
+typedef enum {
+  MemIdle,        // no memory operation in flight
+  MemTLBWait,     // waiting for TLB data lookup response
+  MemCacheWait,   // waiting for D-Cache response
+  MemCacopIWait,  // waiting for I-Cache cacop response
+  MemTLBOpWait    // waiting for TLB operation response (Tlbrd/Tlbwr/etc.)
+} MemExecState deriving(Bits, Eq);
+
 // Normalize a logical register index for renaming: R0 is never renamed
 function Maybe#(RIndx) normalizeReg(Maybe#(RIndx) r);
   if (r matches tagged Valid .rv &&& rv == 0) begin
@@ -163,15 +182,16 @@ function RSEntry invalidRSEntry();
   return RSEntry {
     valid: False, iType: ?, aluFunc: ?, muldivFunc: ?, brFunc: ?,
     qj: ?, qk: ?, vj: ?, vk: ?, pDst: ?, robTag: ?,
-    imm: ?, pc: ?, predPc: ?, mask: ?, isStore: ?, isLoad: ?
+    imm: ?, pc: ?, predPc: ?, mask: ?, cacheOp: ?, isStore: ?, isLoad: ?
   };
 endfunction
 
 function RobEntry invalidRobEntry();
   return RobEntry {
     valid: False, state: ?, pc: ?, inst: ?, pDst: ?, oldPdst: ?,
-    iType: ?, excp: ?, isBranch: ?, isStore: ?, isCsr: ?,
-    isTlb: ?, isSpecial: ?, mispredict: ?, correctTarget: ?
+    dst: ?, pSrc1: ?, pSrc2: ?, iType: ?, excp: ?, isBranch: ?, isStore: ?,
+    isCsr: ?, isTlb: ?, isSpecial: ?, mispredict: ?, correctTarget: ?,
+    memVaddr: ?, memPaddr: ?
   };
 endfunction
 

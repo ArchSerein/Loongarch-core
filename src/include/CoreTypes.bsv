@@ -90,13 +90,7 @@ typedef struct {
 typedef struct {
   Addr        pc;
   Addr        predPc;
-`ifdef CONFIG_DIFFTEST
   Instruction inst;
-`else
-`ifdef CONFIG_WB_DEBUG_INST
-  Instruction inst;
-`endif
-`endif
   DecodedInst dInst;
   ExcpInfo    excp;
 }   D2R deriving(Bits, Eq);

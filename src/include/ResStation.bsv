@@ -63,7 +63,7 @@ module mkResStation(ResStation#(size))
       if (flushPos matches tagged Valid .fp) begin
         // Invalidate all entries after fp (circular, up to enqP)
         for (Integer i = 0; i < valueOf(size); i = i + 1) begin
-          Bit#(TLog#(size)) idx = fp + fromInteger(i + 1);
+          Bit#(TLog#(size)) idx = fp + fromInteger(i) + 1;
           if (idx != enqP) begin
             entries[idx] <= invalidRSEntry;
           end
@@ -122,7 +122,7 @@ module mkResStation(ResStation#(size))
                 valid: True, iType: e.iType, aluFunc: e.aluFunc, muldivFunc: e.muldivFunc,
                 brFunc: e.brFunc, qj: newQj, qk: newQk, vj: newVj, vk: newVk,
                 pDst: e.pDst, robTag: e.robTag, imm: e.imm, pc: e.pc, predPc: e.predPc,
-                mask: e.mask, isStore: e.isStore, isLoad: e.isLoad
+                mask: e.mask, cacheOp: e.cacheOp, isStore: e.isStore, isLoad: e.isLoad
               };
             end
           end
