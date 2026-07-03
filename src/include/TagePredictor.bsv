@@ -247,7 +247,7 @@ module mkTagePredictor(TagePredictor);
 
             // Usefulness update uses the OLD counter (the prediction that was
             // actually made), compared against the alternate's prediction.
-            Bool provCorrect = (ctrToPrediction(provEntry.ctr) == taken);
+            Bool provPred = ctrToPrediction(provEntry.ctr);
             Bool altPred;
             if (alt >= 0) begin
                 TageEntry altEntry = unpackTageWord(srams[alt].read);
@@ -255,13 +255,19 @@ module mkTagePredictor(TagePredictor);
             end else begin
                 altPred = (bimodal[bIdx][1] == 1'b1);
             end
-            Bool altCorrect = (altPred == taken);
 
             Bit#(TageUseSz) newU = provEntry.u;
-            if (provCorrect && !altCorrect)
-                newU = updateUsefulness(provEntry.u, True);
-            else if (!provCorrect && altCorrect)
-                newU = updateUsefulness(provEntry.u, False);
+            if (taken) begin
+                if (provPred && !altPred)
+                    newU = updateUsefulness(provEntry.u, True);
+                else if (!provPred && altPred)
+                    newU = updateUsefulness(provEntry.u, False);
+            end else begin
+                if (!provPred && altPred)
+                    newU = updateUsefulness(provEntry.u, True);
+                else if (provPred && !altPred)
+                    newU = updateUsefulness(provEntry.u, False);
+            end
 
             TageEntry newProvEntry = TageEntry{
                 tag: provEntry.tag,
