@@ -1,0 +1,244 @@
+package Collect;
+
+`include "Autoconf.bsv"
+`ifdef CONFIG_VSIM
+`define CONFIG_WB_DEBUG
+`define CONFIG_WB_DEBUG_INST
+`endif
+`ifdef CONFIG_FPGA
+`define CONFIG_WB_DEBUG
+`endif
+
+import Types::*;
+import ProcTypes::*;
+import MemTypes::*;
+import CsrFile::*;
+import Mmu::*;
+import Tlb::*;
+import ICache::*;
+import DCache::*;
+import Mul::*;
+import Div::*;
+import CoreTypes::*;
+import CoreFunc::*;
+import OoOTypes::*;
+import ROB::*;
+import ResStation::*;
+import CDB::*;
+
+`include "CsrAddr.bsv"
+
+function Action doCollectMulBody(
+    Reg#(Bool) mulInFlight,
+    Reg#(RSEntry) mulExecEntry,
+    Mul_ifc mulUnit,
+    CDB cdb,
+    ROB rob
+);
+  action
+    let entry = mulExecEntry;
+    mulInFlight <= False;
+    let mdFunc = fromMaybe(?, entry.muldivFunc);
+    Data result = ?;
+    case (mdFunc)
+      MulW:    result = truncate(mulUnit.result);
+      MulhW:   result = truncateLSB(mulUnit.result);
+      MulhWu:  result = truncateLSB(mulUnit.result);
+    endcase
+    if (entry.pDst matches tagged Valid .pd) begin
+      cdb.sendMul(pd, result);
+    end
+    rob.update(entry.robTag, RobCompleted);
+  endaction
+endfunction
+
+function Action doCollectDivBody(
+    Reg#(Bool) divInFlight,
+    Reg#(RSEntry) divExecEntry,
+    Div_ifc divUnit,
+    CDB cdb,
+    ROB rob
+);
+  action
+    let entry = divExecEntry;
+    divInFlight <= False;
+    let mdFunc = fromMaybe(?, entry.muldivFunc);
+    Data result = ?;
+    case (mdFunc)
+      DivW:    result = truncate(divUnit.result);
+      DivWu:   result = truncate(divUnit.result);
+      ModW:    result = truncateLSB(divUnit.result);
+      ModWu:   result = truncateLSB(divUnit.result);
+    endcase
+    if (entry.pDst matches tagged Valid .pd) begin
+      cdb.sendDiv(pd, result);
+    end
+    rob.update(entry.robTag, RobCompleted);
+  endaction
+endfunction
+
+function Action doCollectMemTLBBody(
+    Reg#(MemExecState) memState,
+    Reg#(Bool) memNeedTlb,
+    Reg#(RSEntry) memExecEntry,
+    Reg#(Addr) memVaddr,
+    Reg#(Addr) memPaddr,
+    CsrFile csrf,
+    TlbArray tlb,
+    ICache iCache,
+    DCache dCache,
+    ROB rob,
+    ResStation#(16) memRS
+);
+  action
+    let tlbRes <- tlb.dataLookupResp;
+    let entry = memExecEntry;
+    Addr vaddr = memVaddr;
+    MmuAccessType accessType = (entry.isStore || entry.iType == Sc) ? MmuStore : MmuLoad;
+    MmuResult dTrans = mmuTranslate(vaddr, accessType, csrf.crmd, csrf.asid,
+      csrf.dmw0, csrf.dmw1, tlbRes);
+    if (dTrans.excValid) begin
+      ExcpInfo memExcp = mkExcp(dTrans.ecode, dTrans.esubcode, dTrans.badv);
+      rob.updateExcp(entry.robTag, memExcp);
+      rob.update(entry.robTag, RobCompleted);
+      memRS.remove(entry.robTag);
+      memState <= MemIdle;
+    end else begin
+      memPaddr <= dTrans.pa;
+      Bit#(5) cacheOp = fromMaybe(0, entry.cacheOp);
+      Bool isCacop = (entry.iType == Cacop);
+      if (isCacop && cacheOp[2:0] == 3'b000) begin
+        iCache.cacop(cacheOp, vaddr, dTrans.pa);
+        memState <= MemCacopIWait;
+      end else begin
+        Bit#(WordSz) byteEn = 4'b0000;
+        Data wData = 0;
+        MemOp memOp = Ld;
+        if (entry.isLoad) begin
+          memOp = (entry.iType == Ll) ? Ll : Ld;
+        end else if (entry.iType == Sc) begin
+          ByteMask m = fromMaybe(5'b00000, entry.mask);
+          let storePkt = selectStoreData(entry.vk, vaddr[1:0], m[3:0]);
+          byteEn = tpl_1(storePkt); wData = tpl_2(storePkt); memOp = Sc;
+        end else if (coreIsBarrier(entry.iType)) begin
+          memOp = Barrier;
+        end else if (isCacop) begin
+          memOp = Cacop;
+        end
+        Bool memUseCache = matUseCache(Translate, dTrans.mat, csrf.crmd, accessType);
+        let cacheReq = MemReq{
+          op: memOp, addr: vaddr, paddr: dTrans.pa,
+          useCache: (memOp == Cacop || memOp == Barrier) ? True : memUseCache,
+          data: wData, byteEn: byteEn,
+          cacheOp: isCacop ? cacheOp : 5'b0
+        };
+        if (memOp == Cacop) dCache.cacop(cacheReq);
+        else dCache.req(cacheReq);
+        rob.updateMemInfo(entry.robTag, vaddr, dTrans.pa);
+        memState <= MemCacheWait;
+      end
+    end
+  endaction
+endfunction
+
+function Action doCollectMemDirectBody(
+    Reg#(MemExecState) memState,
+    Reg#(RSEntry) memExecEntry,
+    Reg#(Addr) memVaddr,
+    Reg#(Addr) memPaddr,
+    ICache iCache,
+    DCache dCache,
+    ROB rob
+);
+  action
+    let entry = memExecEntry;
+    Addr vaddr = memVaddr;
+    Addr paddr = memPaddr;
+    Bit#(5) cacheOp = fromMaybe(0, entry.cacheOp);
+    Bool isCacop = (entry.iType == Cacop);
+    if (isCacop && cacheOp[2:0] == 3'b000) begin
+      iCache.cacop(cacheOp, vaddr, paddr);
+      memState <= MemCacopIWait;
+    end else begin
+      Bit#(WordSz) byteEn = 4'b0000;
+      Data wData = 0;
+      MemOp memOp = Ld;
+      if (entry.isLoad) begin
+        memOp = (entry.iType == Ll) ? Ll : Ld;
+      end else if (entry.iType == Sc) begin
+        ByteMask m = fromMaybe(5'b00000, entry.mask);
+        let storePkt = selectStoreData(entry.vk, vaddr[1:0], m[3:0]);
+        byteEn = tpl_1(storePkt); wData = tpl_2(storePkt); memOp = Sc;
+      end else if (coreIsBarrier(entry.iType)) begin
+        memOp = Barrier;
+      end else if (isCacop) begin
+        memOp = Cacop;
+      end
+      let cacheReq = MemReq{
+        op: memOp, addr: vaddr, paddr: paddr,
+        useCache: True, data: wData, byteEn: byteEn,
+        cacheOp: isCacop ? cacheOp : 5'b0
+      };
+      if (memOp == Cacop) dCache.cacop(cacheReq);
+      else dCache.req(cacheReq);
+      rob.updateMemInfo(entry.robTag, vaddr, paddr);
+      memState <= MemCacheWait;
+    end
+  endaction
+endfunction
+
+function Action doCollectMemCacheBody(
+    Reg#(MemExecState) memState,
+    Reg#(RSEntry) memExecEntry,
+    Reg#(Addr) memVaddr,
+    DCache dCache,
+    CDB cdb,
+    ROB rob,
+    ResStation#(16) memRS
+);
+  action
+    let d <- dCache.resp;
+    let entry = memExecEntry;
+    memState <= MemIdle;
+
+    if (entry.isLoad) begin
+      ByteMask m = fromMaybe(5'b00000, entry.mask);
+      Data loadData = ?;
+      if (entry.iType == Ll)
+        loadData = d.data;
+      else
+        loadData = selectLoadData(d.data, memVaddr[1:0], m[3:0], m[4] == 1'b1);
+      if (entry.pDst matches tagged Valid .pd) begin
+        cdb.sendLoad(pd, loadData);
+      end
+      rob.update(entry.robTag, RobCompleted);
+    end else if (entry.iType == Sc) begin
+      if (entry.pDst matches tagged Valid .pd) begin
+        cdb.sendLoad(pd, d.data);
+      end
+      rob.update(entry.robTag, RobCompleted);
+    end else begin
+      // Dbar, Cacop: no PRF write
+      rob.update(entry.robTag, RobCompleted);
+    end
+    memRS.remove(entry.robTag);
+  endaction
+endfunction
+
+function Action doCollectMemCacopIBody(
+    Reg#(MemExecState) memState,
+    Reg#(RSEntry) memExecEntry,
+    ICache iCache,
+    ROB rob,
+    ResStation#(16) memRS
+);
+  action
+    let done <- iCache.cacopResp;
+    let entry = memExecEntry;
+    memState <= MemIdle;
+    rob.update(entry.robTag, RobCompleted);
+    memRS.remove(entry.robTag);
+  endaction
+endfunction
+
+endpackage

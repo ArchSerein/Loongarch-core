@@ -229,3 +229,9 @@ typedef struct {
 } M1toM2 deriving(Bits, Eq);
 
 Addr startpc = 32'h1c000000;
+
+typedef enum {
+  CommitIdle,
+  CommitReady,
+  CommitTLBWait
+} CommitState deriving(Bits, Eq);
