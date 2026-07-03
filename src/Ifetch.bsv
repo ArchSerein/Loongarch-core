@@ -14,8 +14,7 @@ import ProcTypes::*;
 import MemTypes::*;
 import Fifo::*;
 import Ehr::*;
-import Btb::*;
-import Bht::*;
+import BranchPredictor::*;
 import ICache::*;
 import Tlb::*;
 import Mmu::*;
@@ -35,18 +34,13 @@ function Action doIF1Body(
     Data dmw0, 
     Data dmw1, 
     MmuTranslateType transType,
-    Btb#(6) btb,
-    Bht#(8) bht,
+    BranchPredictor branchPred,
     ICache iCache,
     Fifo#(2, F1toF2) f1f2Fifo,
     Reg#(Addr) pcReg
 );
     action
-    // Branch Prediction Integration
-    // Predict branch target using BTB and branch direction using BHT
-    Addr btbPc = btb.predPc(pc);
-    Bool bhtPred = bht.predict(pc);
-    Addr predPc = bhtPred ? btbPc : pc + 4;
+    Addr predPc = branchPred.predict(pc);
 
     // Send requests to IF2 stage and initiate the synchronous ICache probe.
     iCache.probe(pc);

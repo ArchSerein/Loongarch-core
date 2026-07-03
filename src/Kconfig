@@ -107,3 +107,39 @@ config ICACHE_REPLACE_LRU
 endmenu
 
 endmenu
+
+menu "Branch Prediction Config"
+
+config SMALL_BTB_ENTRIES
+    hex "Small BTB entries (power of 2)"
+    default 0x20
+    help
+      Number of entries in the fast-path Small BTB (L0 predictor).
+      Must be a power of 2. Common values: 0x10 (16), 0x20 (32), 0x40 (64).
+      SmallBtb stays flip-flop based (P0 path needs combinational read).
+
+config MBTB_ENTRIES
+    hex "Main BTB entries (power of 2)"
+    default 0x80
+    help
+      Number of entries in the L1 accurate-path Main BTB.
+      Must be a power of 2. Default 0x80 (128) matches the sram_128x64_wrap
+      depth used when CONFIG_FPGA is set. On FPGA the value must be <= 128.
+
+config TAGE_ENTRIES
+    hex "TAGE tagged table entries per table (power of 2)"
+    default 0x40
+    help
+      Number of entries per TAGE tagged table (T1-T7).
+      Must be a power of 2. Default 0x40 (64). On FPGA the value must be
+      <= 128 (sram_128x64_wrap depth); the lower half is used.
+
+config ITTAGE_ENTRIES
+    hex "ITTAGE tagged table entries per table (power of 2)"
+    default 0x40
+    help
+      Number of entries per ITTAGE tagged table (T1-T4).
+      Must be a power of 2. Default 0x40 (64). On FPGA the value must be
+      <= 128 (sram_128x64_wrap depth); the lower half is used.
+
+endmenu
