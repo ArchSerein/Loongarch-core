@@ -61,7 +61,7 @@ function Action doExecALUBody(
     TlbArray tlb,
     Fifo#(2, F1toF2) f1f2Fifo,
     Fifo#(2, F2D) f2dFifo,
-    Fifo#(2, D2R) d2rnFifo,
+    Fifo#(2, D2RN) d2rnFifo,
     Fifo#(2, RenamedInst) rn2diFifo,
     ResStation#(16) aluRS,
     ResStation#(4) muldivRS,

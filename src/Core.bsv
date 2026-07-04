@@ -67,10 +67,9 @@ module mkCore(Core);
   ResStation#(16)      memRS <- mkResStation;
   StoreBuf#(16)     storeBuf <- mkStoreBuf;
 
+`ifdef CONFIG_DIFFTEST
   // Shadow ARF for Difftest and debug
   Vector#(32, Reg#(Data)) archRegs <- replicateM(mkReg(0));
-
-`ifdef CONFIG_DIFFTEST
   Difftest           difftest <- mkDifftest;
 `endif
 
@@ -113,7 +112,7 @@ module mkCore(Core);
   // Pipeline FIFOs
   Fifo#(2, F1toF2)       f1f2Fifo <- mkCFFifo;
   Fifo#(2, F2D)            f2dFifo <- mkCFFifo;
-  Fifo#(2, D2R)            d2rnFifo <- mkCFFifo;
+  Fifo#(2, D2RN)           d2rnFifo <- mkCFFifo;
   Fifo#(2, RenamedInst)   rn2diFifo <- mkCFFifo;
 
 `ifdef CONFIG_BSIM
@@ -194,7 +193,7 @@ module mkCore(Core);
   endrule
 
   // ============================================================
-  // RN Stage: Rename — RAT lookup, FreeList alloc, ROB enq
+  // RN Stage: Rename - RAT lookup, FreeList alloc, ROB enq
   // ============================================================
   rule doRename (!idleLock &&
       d2rnFifo.notEmpty && rn2diFifo.notFull && rob.notFull &&
@@ -329,7 +328,7 @@ module mkCore(Core);
 
   rule doCommit (rob.headValid && commitState == CommitReady);
     doCommitBody(rob, commitState, csrf, csrSnapReg, stableCounterReg,
-      prf, archRegs, rat, freeList, tlb, pcReg[2], iCache, dCache,
+      prf, rat, freeList, tlb, pcReg[2], iCache, dCache,
       if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
       aluRS, muldivRS, memRS, storeBuf, idleLock, aluBusy, mulInFlight,
       divInFlight, memState
@@ -337,7 +336,7 @@ module mkCore(Core);
       , toHostFifo
 `endif
 `ifdef CONFIG_DIFFTEST
-      , difftest
+      , difftest, archRegs
 `endif
 `ifdef CONFIG_WB_DEBUG
       , debugWsValidWire, debugWbPcWire

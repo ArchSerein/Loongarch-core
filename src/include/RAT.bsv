@@ -17,50 +17,38 @@ interface RAT;
   method Action checkpoint(RobTag tag);            // snapshot speculative RAT
   method Action restore(RobTag tag);               // restore from checkpoint
   method Action restoreFromRetirement();           // restore specRAT from retRAT
-  method Action clear;                             // reset to initial state
 endinterface
 
 module mkRAT(RAT);
   // Speculative RAT: maps logical reg -> physical reg (most recent mapping)
-  Vector#(32, Reg#(PIndx)) specRAT <- replicateM(mkRegU);
+  Vector#(32, Reg#(PIndx)) specRAT <- replicateM(mkReg(0));
   // Retirement RAT: maps logical reg -> physical reg (committed state)
-  Vector#(32, Reg#(PIndx)) retRAT <- replicateM(mkRegU);
+  Vector#(32, Reg#(PIndx)) retRAT <- replicateM(mkReg(0));
   // Checkpoint table: full RAT snapshots indexed by ROB tag
   Vector#(32, Reg#(Vector#(32, PIndx))) checkpoints <- replicateM(mkRegU);
   Vector#(32, Reg#(Bool)) cpValid <- replicateM(mkReg(False));
 
-  Reg#(Bool) initialized <- mkReg(False);
-  Reg#(Bit#(5)) initIdx <- mkReg(0);
-
-  // Initialization: R0-R31 -> P0-P31 in both RATs
-  rule doInit (!initialized);
-    specRAT[initIdx] <= zeroExtend(initIdx);
-    retRAT[initIdx] <= zeroExtend(initIdx);
-    if (initIdx == 31) initialized <= True;
-    else initIdx <= initIdx + 1;
-  endrule
-
-  method PIndx lookup(RIndx r) if (initialized);
+  method PIndx lookup(RIndx r);
     return specRAT[r];
   endmethod
 
-  method PIndx lookupRet(RIndx r) if (initialized);
+  method PIndx lookupRet(RIndx r);
     return retRAT[r];
   endmethod
 
-  method Action update(RIndx r, PIndx p) if (initialized);
+  method Action update(RIndx r, PIndx p); 
     if (r != 0) begin
       specRAT[r] <= p;
     end
   endmethod
 
-  method Action updateRet(RIndx r, PIndx p) if (initialized);
+  method Action updateRet(RIndx r, PIndx p);
     if (r != 0) begin
       retRAT[r] <= p;
     end
   endmethod
 
-  method Action checkpoint(RobTag tag) if (initialized);
+  method Action checkpoint(RobTag tag);
     Vector#(32, PIndx) snap = ?;
     for (Integer i = 0; i < 32; i = i + 1) begin
       snap[i] = specRAT[i];
@@ -69,7 +57,7 @@ module mkRAT(RAT);
     cpValid[tag] <= True;
   endmethod
 
-  method Action restore(RobTag tag) if (initialized);
+  method Action restore(RobTag tag);
     if (cpValid[tag]) begin
       Vector#(32, PIndx) snap = checkpoints[tag];
       for (Integer i = 0; i < 32; i = i + 1) begin
@@ -78,17 +66,9 @@ module mkRAT(RAT);
     end
   endmethod
 
-  method Action restoreFromRetirement() if (initialized);
+  method Action restoreFromRetirement();
     for (Integer i = 0; i < 32; i = i + 1) begin
       specRAT[i] <= retRAT[i];
     end
-  endmethod
-
-  method Action clear if (initialized);
-    for (Integer i = 0; i < 32; i = i + 1) begin
-      cpValid[i] <= False;
-    end
-    initialized <= False;
-    initIdx <= 0;
   endmethod
 endmodule

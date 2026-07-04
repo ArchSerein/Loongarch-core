@@ -162,7 +162,6 @@ function Action doCommitBody(
     Reg#(DiffArchCsrState) csrSnapReg,
     Reg#(Bit#(64)) stableCounterReg,
     PRF prf,
-    Vector#(32, Reg#(Data)) archRegs,
     RAT rat,
     FreeList freeList,
     TlbArray tlb,
@@ -172,7 +171,7 @@ function Action doCommitBody(
     Reg#(Bool) if2WaitRefill,
     Fifo#(2, F1toF2) f1f2Fifo,
     Fifo#(2, F2D) f2dFifo,
-    Fifo#(2, D2R) d2rnFifo,
+    Fifo#(2, D2RN) d2rnFifo,
     Fifo#(2, RenamedInst) rn2diFifo,
     ResStation#(16) aluRS,
     ResStation#(4) muldivRS,
@@ -188,6 +187,7 @@ function Action doCommitBody(
 `endif
 `ifdef CONFIG_DIFFTEST
     , Difftest difftest
+    , Vector#(32, Reg#(Data)) archRegs
 `endif
 `ifdef CONFIG_WB_DEBUG
     , Wire#(Bool) debugWsValidWire
@@ -362,7 +362,9 @@ function Action doCommitBody(
           prf.commitWrite(pd, csrVal);
           prf.setReadyCommit(pd);
         end
+		`ifdef CONFIG_DIFFTEST
         archRegs[dst] <= csrVal;
+		`endif
         rat.updateRet(dst, fromMaybe(?, head.pDst));
         if (head.oldPdst matches tagged Valid .old) begin
           freeList.enq(old);
@@ -545,7 +547,9 @@ function Action doCommitBody(
         if (head.pDst matches tagged Valid .pd) begin
           wdata = prf.rd5(pd);
         end
+		`ifdef CONFIG_DIFFTEST
         archRegs[dst] <= wdata;
+		`endif
         rat.updateRet(dst, fromMaybe(?, head.pDst));
         if (head.oldPdst matches tagged Valid .old) begin
           freeList.enq(old);

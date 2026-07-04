@@ -93,7 +93,7 @@ typedef struct {
   Instruction inst;
   DecodedInst dInst;
   ExcpInfo    excp;
-}   D2R deriving(Bits, Eq);
+}   D2RN deriving(Bits, Eq);
 
 typedef struct {
   Addr        pc;
