@@ -128,13 +128,6 @@ function Action doExecALUBody(
   endaction
 endfunction
 
-function Bool isMulFunc(MulDivFunc f);
-    return f == MulW || f == MulhW || f == MulhWu;
-  endfunction
-function Bool isDivFunc(MulDivFunc f);
-    return f == DivW || f == DivWu || f == ModW || f == ModWu;
-  endfunction
-
 function Action doIssueMulBody(
     RSEntry entry,
     Mul_ifc mulUnit,

@@ -1,6 +1,5 @@
 import Types::*;
 import ProcTypes::*;
-import Scoreboard::*;
 import ICache::*;
 import Tlb::*;
 import AxiTypes::*;
@@ -96,66 +95,6 @@ typedef struct {
 }   D2RN deriving(Bits, Eq);
 
 typedef struct {
-  Addr        pc;
-  Addr        predPc;
-`ifdef CONFIG_DIFFTEST
-  Instruction inst;
-`else
-`ifdef CONFIG_WB_DEBUG_INST
-  Instruction inst;
-`endif
-`endif
-  Data        rVal1;
-  Data        rVal2;
-  Data        csrVal;
-  Bool        isNeedFlush;
-  ScoreboardTag sbTag;
-  DecodedInst rInst;
-  ExcpInfo    excp;
-}   R2E deriving(Bits, Eq);
-
-// EXE -> MEM packet: addr carries AGU result; memPaddr/memUseCache
-// will be filled in by the MEM stage after D-MMU translation
-typedef struct {
-  Addr                pc;
-`ifdef CONFIG_DIFFTEST
-  Instruction         inst;
-`else
-`ifdef CONFIG_WB_DEBUG_INST
-  Instruction         inst;
-`endif
-`endif
-  ExcpInfo            excp;
-  Maybe#(ByteMask)    mask;
-  Bool                isNeedFlush;
-  Bool                dataTlbLookupPending;
-  ScoreboardTag       sbTag;
-  Maybe#(ExecInst)    eInst;
-}   E2M deriving(Bits, Eq);
-
-// MEM -> WB packet: carries translated physical address from MEM stage
-typedef struct {
-  Addr                pc;
-`ifdef CONFIG_DIFFTEST
-  Instruction         inst;
-  DiffArchCsrState    csrSnapshot;
-`else
-`ifdef CONFIG_WB_DEBUG_INST
-  Instruction         inst;
-`endif
-`endif
-  ExcpInfo            excp;
-`ifdef CONFIG_DIFFTEST
-  Maybe#(DiffMemOp)   diffMem;
-`endif
-  Addr                memPaddr;
-  Bool                isNeedFlush;
-  ScoreboardTag       sbTag;
-  Maybe#(ExecInst)    mInst;
-  Maybe#(TlbReadResult) tlbResult;
-}   M2W deriving(Bits, Eq);
-
-typedef struct {
   Bool      valid;
   Bit#(6)   ecode;
   Bit#(9)   esubcode;
@@ -191,42 +130,6 @@ typedef struct {
   Bit#(9) esubcode;
   Addr    badv;
 } MmuResult deriving(Bits, Eq);
-
-typedef struct {
-  Bool    valid;
-  Bool    stall;
-  Bit#(5) index;
-  Data    data;
-} ForwardType deriving(Bits, Eq);
-
-
-typedef enum {
-  M2OpNone,
-  M2OpDCache,
-  M2OpICache,
-  M2OpTlb
-} Mem2Op deriving(Bits, Eq);
-
-typedef struct {
-  Addr                pc;
-`ifdef CONFIG_DIFFTEST
-  Instruction         inst;
-`else
-`ifdef CONFIG_WB_DEBUG_INST
-  Instruction         inst;
-`endif
-`endif
-  ExcpInfo            excp;
-  Maybe#(ByteMask)    mask;
-`ifdef CONFIG_DIFFTEST
-  DiffArchCsrState    csrSnapshot;
-`endif
-  Bool                isNeedFlush;
-  ScoreboardTag       sbTag;
-  Maybe#(ExecInst)    eInst;
-  Mem2Op              m2Op;
-  Addr                memPaddr;
-} M1toM2 deriving(Bits, Eq);
 
 Addr startpc = 32'h1c000000;
 

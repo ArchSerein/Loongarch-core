@@ -1,6 +1,8 @@
 import Types::*;
 import ProcTypes::*;
 import CoreTypes::*;
+import OoOTypes::*;
+import DiffTypes::*;
 import CsrAddr::*;
 `include "CsrAddr.bsv"
 
@@ -57,28 +59,6 @@ function Bool coreSameWordAddr(Addr a, Addr b);
   return wordA == wordB;
 endfunction
 
-function Bit#(WordSz) coreLoadByteEn(Bit#(2) offset, Bit#(4) rawEn);
-  Bit#(2) alignOff = 0;
-  Bit#(WordSz) byteEn = 0;
-  case (rawEn)
-    4'b0001: begin
-      alignOff = offset;
-      byteEn = 4'b0001 << alignOff;
-    end
-    4'b0011: begin
-      alignOff = {offset[1], 1'b0};
-      byteEn = 4'b0011 << alignOff;
-    end
-    4'b1111: begin
-      byteEn = 4'b1111;
-    end
-    default: begin
-      byteEn = 4'b0000;
-    end
-  endcase
-  return byteEn;
-endfunction
-
 // Helper functions for optimization
 function Data selectLoadData(Data rData, Bit#(2) offset, Bit#(4) rawEn, Bool signExt);
   Bit#(2) loadOffset = 2'b00;
@@ -129,21 +109,6 @@ function Tuple2#(Bit#(4), Data) selectStoreData(Data d, Bit#(2) offset, Bit#(4) 
   return tuple2(byteEn, wData);
 endfunction
 
-function Bool coreIsTimerRelatedCsr(CsrIndx idx);
-  return idx == `CSR_TCFG || idx == `CSR_TVAL || idx == `CSR_TICLR ||
-    idx == `CSR_ESTAT;
-endfunction
-
-function Bool coreIsCsrConflict(Maybe#(CsrIndx) pendingWrite, Maybe#(CsrIndx) curAccess);
-  if (pendingWrite matches tagged Valid .w &&& curAccess matches tagged Valid .a) begin
-    Bool sameCsr = (w == a);
-    Bool timerSideEffectConflict = coreIsTimerRelatedCsr(w) && coreIsTimerRelatedCsr(a);
-    return sameCsr || timerSideEffectConflict;
-  end else begin
-    return False;
-  end
-endfunction
-
 function Bool coreIsBarrier(IType t);
   return t == Dbar || t == Ibar;
 endfunction
@@ -168,36 +133,6 @@ function Data mkInterruptNo(Data estat);
   return intNo;
 endfunction
 
-function Bool e2mHasValidInst(E2M pkt);
-  return isValid(pkt.eInst);
-endfunction
-
-function Bool e2mIsTlbsrch(E2M pkt);
-  Bool ret = False;
-  if (pkt.eInst matches tagged Valid .inst) begin
-    ret = inst.iType == Tlbsrch;
-  end
-  return ret;
-endfunction
-
-function Bool e2mNeedsTlbsrchResp(E2M pkt);
-  return e2mIsTlbsrch(pkt) && !pkt.excp.valid;
-endfunction
-
-function Bool e2mMayUseDCache(E2M pkt);
-  Bool ret = False;
-  if (pkt.eInst matches tagged Valid .inst) begin
-    Bool isLoad = (inst.iType == Ld || inst.iType == Ll);
-    Bool isStore = (inst.iType == St);
-    Bool isSc = (inst.iType == Sc);
-    Bool isBarrier = coreIsBarrier(inst.iType);
-    Bool isCacop = (inst.iType == Cacop);
-    Bool cacopNeedsDCache = isCacop && fromMaybe(0, inst.cacheOp)[2:0] != 3'b000;
-    ret = isLoad || isStore || isSc || isBarrier || cacopNeedsDCache;
-  end
-  return ret;
-endfunction
-
 function ExcpInfo checkMemHasExcp(Maybe#(ByteMask) mask, Addr addr, ExcpInfo excp);
   ByteMask m = fromMaybe(5'b00000, mask);
   if (!excp.valid) begin
@@ -213,15 +148,70 @@ function ExcpInfo checkMemHasExcp(Maybe#(ByteMask) mask, Addr addr, ExcpInfo exc
   return excp;
 endfunction
 
-function Bool rrfIsCsrWrite(DecodedInst rInst);
-  return rInst.iType == Csrw || rInst.iType == Csrxchg || rInst.iType == Tlbsrch;
+// Rename-stage helper
+function Bool renameNeedsFree(D2RN r);
+  return !r.excp.valid && isValid(normalizeReg(r.dInst.dst));
 endfunction
 
-function Maybe#(CsrIndx) rrfTargetCsr(DecodedInst rInst);
-  Maybe#(CsrIndx) ret = (rInst.iType == Tlbsrch) ?
-    tagged Valid `CSR_TLBIDX : rInst.csr;
-  if (rInst.iType == Ll || rInst.iType == Sc) begin
-    ret = tagged Valid `CSR_LLBCTL;
-  end
-  return ret;
+// Dispatch-stage helpers
+function Bool dispIsAlu(RenamedInst r);
+  return !r.excp.valid && !isCsrTlbSpecial(r.dInst.iType) &&
+         (isAlu(r.dInst.iType) || isBranch(r.dInst.iType));
+endfunction
+
+function Bool dispIsMul(RenamedInst r);
+  return !r.excp.valid && !isCsrTlbSpecial(r.dInst.iType) && isMulDiv(r.dInst.muldivFunc);
+endfunction
+
+function Bool dispIsMem(RenamedInst r);
+  return !r.excp.valid && !isCsrTlbSpecial(r.dInst.iType) && isMem(r.dInst.iType);
+endfunction
+
+function Bool dispIsSpecial(RenamedInst r);
+  return r.excp.valid || isCsrTlbSpecial(r.dInst.iType);
+endfunction
+
+// Issue-stage helpers
+function Bool isMulFunc(MulDivFunc f);
+  return f == MulW || f == MulhW || f == MulhWu;
+endfunction
+
+function Bool isDivFunc(MulDivFunc f);
+  return f == DivW || f == DivWu || f == ModW || f == ModWu;
+endfunction
+
+// Commit-stage helper: read CSR value from snapshot
+function Data csrRdFromSnapshot(DiffArchCsrState snap, CsrIndx idx);
+  Data res = 0;
+  case (idx)
+    `CSR_CRMD: res = snap.crmd;
+    `CSR_PRMD: res = snap.prmd;
+    `CSR_EUEN: res = snap.euen;
+    `CSR_ECFG: res = snap.ecfg;
+    `CSR_ESTAT: res = snap.estat;
+    `CSR_ERA: res = snap.era;
+    `CSR_BADV: res = snap.badv;
+    `CSR_EENTRY: res = snap.eentry;
+    `CSR_TLBIDX: res = snap.tlbidx;
+    `CSR_TLBEHI: res = snap.tlbehi;
+    `CSR_TLBEL0: res = snap.tlbelo0;
+    `CSR_TLBEL1: res = snap.tlbelo1;
+    `CSR_ASID: res = snap.asid;
+    `CSR_PGDL: res = snap.pgdl;
+    `CSR_PGDH: res = snap.pgdh;
+    `CSR_PGD: res = (snap.badv[31] == 1) ? snap.pgdh : snap.pgdl;
+    `CSR_SAVE0: res = snap.save0;
+    `CSR_SAVE1: res = snap.save1;
+    `CSR_SAVE2: res = snap.save2;
+    `CSR_SAVE3: res = snap.save3;
+    `CSR_TID: res = snap.tid;
+    `CSR_TCFG: res = snap.tcfg;
+    `CSR_TVAL: res = snap.tval;
+    `CSR_LLBCTL: res = snap.llbctl;
+    `CSR_TLBRENTRY: res = snap.tlbrentry;
+    `CSR_DMW0: res = snap.dmw0;
+    `CSR_DMW1: res = snap.dmw1;
+    default: res = 0;
+  endcase
+  return res;
 endfunction

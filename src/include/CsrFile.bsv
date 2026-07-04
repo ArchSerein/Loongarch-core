@@ -138,28 +138,6 @@ function Data clearTimerIntPending(Data estat);
   return nextEstat;
 endfunction
 
-function Data updateTimerView(Data tcfg, Data tval, Bool timerInt, Bool wrote_tcfg, Bool cleared_timer_int);
-  Data next_tval = tval;
-  Bool next_timerInt = timerInt;
-
-  if (!wrote_tcfg && !cleared_timer_int && tcfg[`CSR_TCFG_EN] == 1) begin
-    if (next_tval != 0) begin
-      let tval_next = next_tval - 1;
-      if (tval_next == 0) begin
-        next_timerInt = True;
-        if (tcfg[`CSR_TCFG_PERIOD] == 1)
-          next_tval = {tcfg[`CSR_TCFG_INITV], 2'b0};
-        else
-          next_tval = 0;
-      end else begin
-        next_tval = tval_next;
-      end
-    end
-  end
-
-  return (next_timerInt ? 32'h80000000 : 32'h0) | next_tval;
-endfunction
-
 `ifdef CONFIG_DIFFTEST
 function DiffArchCsrState diffSnapshotAfterWriteFromState(
     DiffArchCsrState curr,

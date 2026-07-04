@@ -186,15 +186,6 @@ function RSEntry invalidRSEntry();
   };
 endfunction
 
-function RobEntry invalidRobEntry();
-  return RobEntry {
-    valid: False, state: ?, pc: ?, inst: ?, pDst: ?, oldPdst: ?,
-    dst: ?, pSrc1: ?, pSrc2: ?, iType: ?, excp: ?, isBranch: ?, isStore: ?,
-    isCsr: ?, isTlb: ?, isSpecial: ?, mispredict: ?, correctTarget: ?,
-    memVaddr: ?, memPaddr: ?
-  };
-endfunction
-
 function LQEntry invalidLQEntry();
   return LQEntry {
     valid: False, robTag: ?, vaddr: ?, paddr: ?, done: ?, replay: ?

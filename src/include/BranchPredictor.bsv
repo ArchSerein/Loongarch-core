@@ -10,7 +10,7 @@ import PredMeta::*;
 import Vector::*;
 
 // ============================================================================
-// Branch Prediction Unit — Top-Level Integration
+// Branch Prediction Unit - Top-Level Integration
 // ============================================================================
 // Integrates all sub-predictors into a two-layer branch prediction system:
 //

@@ -8,24 +8,6 @@ import CoreTypes::*;
 import PRF::*;
 import ResStation::*;
 
-// Helper: classify dispatch target.
-function Bool dispIsAlu(RenamedInst r);
-  return !r.excp.valid && !isCsrTlbSpecial(r.dInst.iType) &&
-         (isAlu(r.dInst.iType) || isBranch(r.dInst.iType));
-endfunction
-
-function Bool dispIsMul(RenamedInst r);
-  return !r.excp.valid && !isCsrTlbSpecial(r.dInst.iType) && isMulDiv(r.dInst.muldivFunc);
-endfunction
-
-function Bool dispIsMem(RenamedInst r);
-  return !r.excp.valid && !isCsrTlbSpecial(r.dInst.iType) && isMem(r.dInst.iType);
-endfunction
-
-function Bool dispIsSpecial(RenamedInst r);
-  return r.excp.valid || isCsrTlbSpecial(r.dInst.iType);
-endfunction
-
 function Action doDispatchAluBody(
     Fifo#(2, RenamedInst) rn2diFifo,
     PRF prf,

@@ -10,11 +10,6 @@ import RAT::*;
 import FreeList::*;
 import ROB::*;
 
-// RN Stage: Rename -- RAT lookup, FreeList alloc, ROB enq.
-function Bool renameNeedsFree(D2RN r);
-  return !r.excp.valid && isValid(normalizeReg(r.dInst.dst));
-endfunction
-
 function Action doRenameBody(
     Fifo#(2, D2RN) d2rnFifo,
     Fifo#(2, RenamedInst) rn2diFifo,

@@ -106,42 +106,6 @@ function Action doCollectCommitTLBBody(
   endaction
 endfunction
 
-  // Helper: look up CSR value from a DiffArchCsrState snapshot
-  function Data csrRdFromSnapshot(DiffArchCsrState snap, CsrIndx idx);
-    Data res = 0;
-    case (idx)
-      `CSR_CRMD: res = snap.crmd;
-      `CSR_PRMD: res = snap.prmd;
-      `CSR_EUEN: res = snap.euen;
-      `CSR_ECFG: res = snap.ecfg;
-      `CSR_ESTAT: res = snap.estat;
-      `CSR_ERA: res = snap.era;
-      `CSR_BADV: res = snap.badv;
-      `CSR_EENTRY: res = snap.eentry;
-      `CSR_TLBIDX: res = snap.tlbidx;
-      `CSR_TLBEHI: res = snap.tlbehi;
-      `CSR_TLBEL0: res = snap.tlbelo0;
-      `CSR_TLBEL1: res = snap.tlbelo1;
-      `CSR_ASID: res = snap.asid;
-      `CSR_PGDL: res = snap.pgdl;
-      `CSR_PGDH: res = snap.pgdh;
-      `CSR_PGD: res = (snap.badv[31] == 1) ? snap.pgdh : snap.pgdl;
-      `CSR_SAVE0: res = snap.save0;
-      `CSR_SAVE1: res = snap.save1;
-      `CSR_SAVE2: res = snap.save2;
-      `CSR_SAVE3: res = snap.save3;
-      `CSR_TID: res = snap.tid;
-      `CSR_TCFG: res = snap.tcfg;
-      `CSR_TVAL: res = snap.tval;
-      `CSR_LLBCTL: res = snap.llbctl;
-      `CSR_TLBRENTRY: res = snap.tlbrentry;
-      `CSR_DMW0: res = snap.dmw0;
-      `CSR_DMW1: res = snap.dmw1;
-      default: res = 0;
-    endcase
-    return res;
-  endfunction
-
 function Action takeCsrSnapshotBody(
     Reg#(DiffArchCsrState) csrSnapReg,
     Reg#(Bit#(64)) stableCounterReg,
