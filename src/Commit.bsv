@@ -37,6 +37,18 @@ import Difftest::*;
 
 `include "CsrAddr.bsv"
 
+typedef struct {
+  Bit#(64) stableCounter;
+  Data csrReadVal;
+  Data tlbReqAsidVal;
+  Bit#(5) tlbRdIndex;
+  Data tlbWrIdx;
+  Data tlbWrEhi;
+  Data tlbWrElo0;
+  Data tlbWrElo1;
+  Bool llbctlKloVal;
+} CommitCsrSnapshot deriving(Bits, Eq);
+
 function Action doCollectCommitTLBBody(
     Reg#(CommitState) commitState,
     TlbArray tlb,
@@ -107,14 +119,31 @@ function Action doCollectCommitTLBBody(
 endfunction
 
 function Action takeCsrSnapshotBody(
+`ifdef CONFIG_DIFFTEST
     Reg#(DiffArchCsrState) csrSnapReg,
-    Reg#(Bit#(64)) stableCounterReg,
+`endif
+    Reg#(CommitCsrSnapshot) commitCsrSnapReg,
     CsrFile csrf,
+    ROB rob,
     Reg#(CommitState) commitState
 );
   action
+    DecodedInst dInst = decode(rob.head.inst);
+    CsrIndx csrIdxForRd = fromMaybe(0, dInst.csr);
+`ifdef CONFIG_DIFFTEST
     csrSnapReg <= csrf.diffSnapshot;
-    stableCounterReg <= csrf.stableCounterValue;
+`endif
+    commitCsrSnapReg <= CommitCsrSnapshot{
+      stableCounter: csrf.stableCounterValue,
+      csrReadVal: csrf.rd(csrIdxForRd),
+      tlbReqAsidVal: csrf.tlbWriteAsid,
+      tlbRdIndex: csrf.tlbReadIndex,
+      tlbWrIdx: csrf.tlbWriteIdx,
+      tlbWrEhi: csrf.tlbWriteEhi,
+      tlbWrElo0: csrf.tlbWriteElo0,
+      tlbWrElo1: csrf.tlbWriteElo1,
+      llbctlKloVal: csrf.llbctlKloValue
+    };
     commitState <= CommitReady;
   endaction
 endfunction
@@ -123,8 +152,10 @@ function Action doCommitBody(
     ROB rob,
     Reg#(CommitState) commitState,
     CsrFile csrf,
+`ifdef CONFIG_DIFFTEST
     Reg#(DiffArchCsrState) csrSnapReg,
-    Reg#(Bit#(64)) stableCounterReg,
+`endif
+    Reg#(CommitCsrSnapshot) commitCsrSnapReg,
     PRF prf,
     RAT rat,
     FreeList freeList,
@@ -168,9 +199,10 @@ function Action doCommitBody(
 
     // Read CSR values before any commit-side CSR action in this rule.
     DecodedInst dInst = decode(head.inst);
-    DiffArchCsrState diffCsrSnap = csrSnapReg;
-    Bit#(64) stableCounter = stableCounterReg;
     CsrIndx csrIdxForRd = fromMaybe(0, dInst.csr);
+    CommitCsrSnapshot commitCsrSnap = commitCsrSnapReg;
+`ifdef CONFIG_DIFFTEST
+    DiffArchCsrState diffCsrSnap = csrSnapReg;
     Data csrReadVal = csrRdFromSnapshot(diffCsrSnap, csrIdxForRd);
     Data tlbReqAsidVal = diffCsrSnap.asid;
     Bit#(5) tlbRdIndex = truncate(diffCsrSnap.tlbidx[`CSR_TLBIDX_INDEX]);
@@ -179,6 +211,17 @@ function Action doCommitBody(
     Data tlbWrElo0 = diffCsrSnap.tlbelo0;
     Data tlbWrElo1 = diffCsrSnap.tlbelo1;
     Bool llbctlKloVal = unpack(diffCsrSnap.llbctl[2]);
+`else
+    Data csrReadVal = commitCsrSnap.csrReadVal;
+    Data tlbReqAsidVal = commitCsrSnap.tlbReqAsidVal;
+    Bit#(5) tlbRdIndex = commitCsrSnap.tlbRdIndex;
+    Data tlbWrIdx = commitCsrSnap.tlbWrIdx;
+    Data tlbWrEhi = commitCsrSnap.tlbWrEhi;
+    Data tlbWrElo0 = commitCsrSnap.tlbWrElo0;
+    Data tlbWrElo1 = commitCsrSnap.tlbWrElo1;
+    Bool llbctlKloVal = commitCsrSnap.llbctlKloVal;
+`endif
+    Bit#(64) stableCounter = commitCsrSnap.stableCounter;
 
     // Unconditional PRF reads for commit-stage source operands
     // (must be outside if-else branches to avoid EHR port sharing)

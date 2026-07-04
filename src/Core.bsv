@@ -99,8 +99,10 @@ module mkCore(Core);
 
   // Commit state
   Reg#(CommitState) commitState <- mkReg(CommitIdle);
+`ifdef CONFIG_DIFFTEST
   Reg#(DiffArchCsrState) csrSnapReg <- mkRegU;
-  Reg#(Bit#(64)) stableCounterReg <- mkReg(0);
+`endif
+  Reg#(CommitCsrSnapshot) commitCsrSnapReg <- mkRegU;
 
   Reg#(Bool)         idleLock <- mkReg(False);
 
@@ -323,12 +325,19 @@ module mkCore(Core);
   rule takeCsrSnapshot (rob.headValid && commitState == CommitIdle &&
       (rob.head.state == RobCompleted || rob.head.excp.valid ||
        isCsrTlbSpecial(rob.head.iType)));
-    takeCsrSnapshotBody(csrSnapReg, stableCounterReg, csrf, commitState);
+    takeCsrSnapshotBody(
+`ifdef CONFIG_DIFFTEST
+      csrSnapReg,
+`endif
+      commitCsrSnapReg, csrf, rob, commitState);
   endrule
 
   rule doCommit (rob.headValid && commitState == CommitReady);
-    doCommitBody(rob, commitState, csrf, csrSnapReg, stableCounterReg,
-      prf, rat, freeList, tlb, pcReg[2], iCache, dCache,
+    doCommitBody(rob, commitState, csrf,
+`ifdef CONFIG_DIFFTEST
+      csrSnapReg,
+`endif
+      commitCsrSnapReg, prf, rat, freeList, tlb, pcReg[2], iCache, dCache,
       if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
       aluRS, muldivRS, memRS, storeBuf, idleLock, aluBusy, mulInFlight,
       divInFlight, memState

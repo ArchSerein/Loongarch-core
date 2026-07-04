@@ -1,10 +1,13 @@
+`include "Autoconf.bsv"
+`include "CsrAddr.bsv"
 import Types::*;
 import ProcTypes::*;
 import CoreTypes::*;
 import OoOTypes::*;
-import DiffTypes::*;
 import CsrAddr::*;
-`include "CsrAddr.bsv"
+`ifdef CONFIG_DIFFTEST
+import DiffTypes::*;
+`endif
 
 function ExcpInfo mkNoExcp;
   return ExcpInfo{valid: False, ecode: 0, esubcode: 0, badv: 0};
@@ -180,6 +183,7 @@ function Bool isDivFunc(MulDivFunc f);
   return f == DivW || f == DivWu || f == ModW || f == ModWu;
 endfunction
 
+`ifdef CONFIG_DIFFTEST
 // Commit-stage helper: read CSR value from snapshot
 function Data csrRdFromSnapshot(DiffArchCsrState snap, CsrIndx idx);
   Data res = 0;
@@ -215,3 +219,4 @@ function Data csrRdFromSnapshot(DiffArchCsrState snap, CsrIndx idx);
   endcase
   return res;
 endfunction
+`endif
