@@ -220,6 +220,7 @@ function Action doCommitBody(
     // (must be outside if-else branches to avoid EHR port sharing)
     Data cmRVal1 = prf.rd3(head.pSrc1);
     Data cmRVal2 = prf.rd4(head.pSrc2);
+    StoreBufEntry commitStoreEntry = ?;
 
 `ifdef CONFIG_WB_DEBUG
     debugWsValidWire <= True;
@@ -527,13 +528,12 @@ function Action doCommitBody(
       // Normal commit (ALU, Ld, MulDiv, St, etc.)
       if (head.isStore) begin
         // Store commit: write to D-Cache
-        let sqEntry = storeBuf.first;
+        commitStoreEntry = storeBuf.first;
         storeBuf.deq;
-        let storePkt = selectStoreData(sqEntry.data, sqEntry.addr[1:0], truncate(sqEntry.byteEn));
         dCache.req(MemReq{
-          op: St, addr: sqEntry.addr, paddr: head.memPaddr,
+          op: St, addr: commitStoreEntry.addr, paddr: head.memPaddr,
           useCache: True,
-          data: tpl_2(storePkt), byteEn: tpl_1(storePkt),
+          data: commitStoreEntry.data, byteEn: truncate(commitStoreEntry.byteEn),
           cacheOp: 5'b0
         });
       end
@@ -584,11 +584,10 @@ function Action doCommitBody(
           paddr: head.memPaddr, vaddr: head.memVaddr, storeData: 0
         };
       end else if (head.iType == St) begin
-        let sqEntry = storeBuf.first;
         diffMem = tagged Valid DiffMemOp{
           isLoad: False, isStore: True, isSc: False,
           paddr: head.memPaddr, vaddr: head.memVaddr,
-          storeData: sqEntry.data
+          storeData: commitStoreEntry.data
         };
       end else if (head.iType == Sc) begin
         diffMem = tagged Valid DiffMemOp{

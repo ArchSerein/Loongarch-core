@@ -16,6 +16,8 @@ interface FreeList;
   method Action enq(PIndx p);        // free (CM stage)
   method Bool notEmpty;
   method Bool notFull;
+  method Action checkpoint(RobTag tag); // snapshot for branch recovery
+  method Action restore(RobTag tag);    // restore branch snapshot
   method Action clear;               // reset to initial state
 endinterface
 
@@ -27,9 +29,17 @@ module mkFreeList(FreeList);
   Reg#(Bool) initialized <- mkReg(False);
   Reg#(Bit#(5)) initIdx <- mkReg(0);
 
+  Vector#(32, Reg#(Vector#(32, PIndx))) checkpoints <- replicateM(mkRegU);
+  Vector#(32, Reg#(Bit#(5))) cpEnqP <- replicateM(mkRegU);
+  Vector#(32, Reg#(Bit#(5))) cpDeqP <- replicateM(mkRegU);
+  Vector#(32, Reg#(Bit#(6))) cpCount <- replicateM(mkRegU);
+  Vector#(32, Reg#(Bool)) cpValid <- replicateM(mkReg(False));
+
   Ehr#(3, Maybe#(PIndx)) enqReq <- mkEhr(tagged Invalid);
   Ehr#(3, Maybe#(Bool)) deqReq <- mkEhr(tagged Invalid);
   Ehr#(2, Maybe#(Bool)) clearReq <- mkEhr(tagged Invalid);
+  Ehr#(2, Maybe#(RobTag)) restoreReq <- mkEhr(tagged Invalid);
+  Ehr#(2, Maybe#(RobTag)) checkpointReq <- mkEhr(tagged Invalid);
 
   Bit#(5) maxIndex = fromInteger(valueOf(32) - 1);
   Bit#(6) depth = fromInteger(valueOf(32));
@@ -51,8 +61,6 @@ module mkFreeList(FreeList);
   endrule
 
   // Canonicalize: process enq/deq/clear requests
-  (* fire_when_enabled *)
-  (* no_implicit_conditions *)
   rule canonicalize (initialized);
     if (isValid(clearReq[1])) begin
       enqP <= 0;
@@ -60,6 +68,17 @@ module mkFreeList(FreeList);
       count <= 0;
       initialized <= False;
       initIdx <= 0;
+      for (Integer i = 0; i < 32; i = i + 1) begin
+        cpValid[i] <= False;
+      end
+    end else if (restoreReq[1] matches tagged Valid .tag &&& cpValid[tag]) begin
+      Vector#(32, PIndx) snap = checkpoints[tag];
+      for (Integer i = 0; i < 32; i = i + 1) begin
+        data[fromInteger(i)] <= snap[fromInteger(i)];
+      end
+      enqP <= cpEnqP[tag];
+      deqP <= cpDeqP[tag];
+      count <= cpCount[tag];
     end else begin
       Bit#(5) nextEnqP = enqP;
       Bit#(5) nextDeqP = deqP;
@@ -75,12 +94,29 @@ module mkFreeList(FreeList);
         nextCount = nextCount - 1;
       end
 
+      if (checkpointReq[1] matches tagged Valid .tag) begin
+        Vector#(32, PIndx) snap = ?;
+        for (Integer i = 0; i < 32; i = i + 1) begin
+          snap[fromInteger(i)] = data[fromInteger(i)];
+        end
+        if (enqReq[2] matches tagged Valid .p) begin
+          snap[enqP] = p;
+        end
+        checkpoints[tag] <= snap;
+        cpEnqP[tag] <= nextEnqP;
+        cpDeqP[tag] <= nextDeqP;
+        cpCount[tag] <= nextCount;
+        cpValid[tag] <= True;
+      end
+
       enqP <= nextEnqP;
       deqP <= nextDeqP;
       count <= nextCount;
     end
 
     clearReq[1] <= tagged Invalid;
+    restoreReq[1] <= tagged Invalid;
+    checkpointReq[1] <= tagged Invalid;
     enqReq[2] <= tagged Invalid;
     deqReq[2] <= tagged Invalid;
   endrule
@@ -101,9 +137,22 @@ module mkFreeList(FreeList);
     enqReq[0] <= tagged Valid p;
   endmethod
 
+  method Action checkpoint(RobTag tag) if (initialized);
+    checkpointReq[0] <= tagged Valid tag;
+  endmethod
+
+  method Action restore(RobTag tag) if (initialized);
+    enqReq[1] <= tagged Invalid;
+    deqReq[1] <= tagged Invalid;
+    checkpointReq[1] <= tagged Invalid;
+    restoreReq[0] <= tagged Valid tag;
+  endmethod
+
   method Action clear if (initialized);
     enqReq[1] <= tagged Invalid;
     deqReq[1] <= tagged Invalid;
+    restoreReq[0] <= tagged Invalid;
+    checkpointReq[1] <= tagged Invalid;
     clearReq[0] <= tagged Valid True;
   endmethod
 endmodule

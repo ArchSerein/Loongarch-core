@@ -197,7 +197,8 @@ module mkCore(Core);
   // RN Stage: Rename — RAT lookup, FreeList alloc, ROB enq
   // ============================================================
   rule doRename (!idleLock &&
-      d2rnFifo.notEmpty && rn2diFifo.notFull && rob.notFull && freeList.notEmpty);
+      d2rnFifo.notEmpty && rn2diFifo.notFull && rob.notFull &&
+      (!renameNeedsFree(d2rnFifo.first) || freeList.notEmpty));
     doRenameBody(d2rnFifo, rn2diFifo, rat, freeList, prf, rob);
   endrule
 
@@ -240,7 +241,8 @@ module mkCore(Core);
   // IS/EX Stage: ALU issue and execute
   // ============================================================
   rule doIssueALU (!aluBusy && !isCsrTlbSpecial(rob.headIType) &&&
-      aluRS.selectOldestReady matches tagged Valid .entry);
+      aluRS.selectOldestReady matches tagged Valid .entry &&&
+      (!isBranch(entry.iType) || (rob.headValid && rob.headTag == entry.robTag)));
     doIssueALUBody(entry, aluExecEntry, aluRS, aluBusy);
   endrule
 
@@ -319,7 +321,9 @@ module mkCore(Core);
   endrule
 
 
-  rule takeCsrSnapshot (rob.headValid && commitState == CommitIdle);
+  rule takeCsrSnapshot (rob.headValid && commitState == CommitIdle &&
+      (rob.head.state == RobCompleted || rob.head.excp.valid ||
+       isCsrTlbSpecial(rob.head.iType)));
     takeCsrSnapshotBody(csrSnapReg, stableCounterReg, csrf, commitState);
   endrule
 

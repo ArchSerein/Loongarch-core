@@ -111,8 +111,8 @@ function Action doExecALUBody(
       memRS.clear;
       if2WaitRefill <= False;
       rob.flushAfter(entry.robTag);
-      rat.restoreFromRetirement;
-      freeList.clear;
+      rat.restore(entry.robTag);
+      freeList.restore(entry.robTag);
 
       // Train BPU
       CfiType cfiType = CFI_NONE;

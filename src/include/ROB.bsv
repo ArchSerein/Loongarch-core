@@ -14,6 +14,7 @@ interface ROB;
   method RobTag enqTag;              // next tag to assign (tail)
   method Action enq(RobEntry e);     // insert at tail
   method RobEntry head;              // peek head entry (CM)
+  method RobTag headTag;             // current head tag
   method IType headIType;            // head entry's iType (unguarded, for issue blocking)
   method Action deq;                 // advance head (CM)
   method Bool headValid;             // head slot occupied
@@ -147,6 +148,8 @@ module mkROB(ROB);
   method RobEntry head if (count != 0);
     return entries[headPtr];
   endmethod
+
+  method RobTag headTag = headPtr;
 
   method IType headIType;
     return (count != 0) ? entries[headPtr].iType : Alu;

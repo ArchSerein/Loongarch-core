@@ -11,6 +11,10 @@ import FreeList::*;
 import ROB::*;
 
 // RN Stage: Rename -- RAT lookup, FreeList alloc, ROB enq.
+function Bool renameNeedsFree(D2R r);
+  return !r.excp.valid && isValid(normalizeReg(r.dInst.dst));
+endfunction
+
 function Action doRenameBody(
     Fifo#(2, D2R) d2rnFifo,
     Fifo#(2, RenamedInst) rn2diFifo,
@@ -71,7 +75,10 @@ function Action doRenameBody(
       memPaddr: 0
     });
 
-    if (brFlag) rat.checkpoint(robTag);
+    if (brFlag) begin
+      rat.checkpoint(robTag);
+      freeList.checkpoint(robTag);
+    end
 
     rn2diFifo.enq(RenamedInst{
       pc: r.pc,
