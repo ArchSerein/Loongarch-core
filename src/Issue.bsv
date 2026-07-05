@@ -147,7 +147,8 @@ function Action doIssueMulBody(
 );
   action
     let mdFunc = fromMaybe(?, entry.muldivFunc);
-    Bool is_signed = (mdFunc == MulW || mdFunc == MulhW || mdFunc == MulhWu);
+    // MulhWu is unsigned; MulW and MulhW are signed.
+    Bool is_signed = (mdFunc == MulW || mdFunc == MulhW);
     mulUnit.start(is_signed, entry.vj, entry.vk);
     mulExecEntry <= entry;
     muldivRS.remove(entry.robTag);
@@ -164,7 +165,8 @@ function Action doIssueDivBody(
 );
   action
     let mdFunc = fromMaybe(?, entry.muldivFunc);
-    Bool is_signed = (mdFunc == DivW || mdFunc == DivWu || mdFunc == ModW || mdFunc == ModWu);
+    // DivWu/ModWu are unsigned; DivW/ModW are signed.
+    Bool is_signed = (mdFunc == DivW || mdFunc == ModW);
     divUnit.start(is_signed, entry.vj, entry.vk);
     divExecEntry <= entry;
     muldivRS.remove(entry.robTag);

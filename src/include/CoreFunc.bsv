@@ -158,7 +158,11 @@ endfunction
 
 // Dispatch-stage helpers
 function Bool dispIsAlu(RenamedInst r);
+  // MUL/DIV instructions also have iType=Alu but must be routed to
+  // the MulDiv RS, not the ALU RS — otherwise the ALU unit (which
+  // only handles aluFunc) silently produces a wrong result.
   return !r.excp.valid && !isCsrTlbSpecial(r.dInst.iType) &&
+         !isMulDiv(r.dInst.muldivFunc) &&
          (isAlu(r.dInst.iType) || isBranch(r.dInst.iType));
 endfunction
 

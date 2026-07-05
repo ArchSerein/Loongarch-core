@@ -97,6 +97,15 @@ module mkCore(Core);
 
   Reg#(MemExecState) memState <- mkReg(MemIdle);
   Reg#(RSEntry)   memExecEntry <- mkRegU;
+
+  // CDB arbitration wires. Set by an FU completion rule when it
+  // drives the bus (has a pDst). Lower-priority FU rules read these
+  // in their guards to stall when a higher-priority FU is using the
+  // bus, preventing the CDB from silently dropping their result.
+  // Priority: Load > ALU > Mul > Div.
+  Wire#(Bool) loadUsingCDB <- mkDWire(False);
+  Wire#(Bool) aluUsingCDB  <- mkDWire(False);
+  Wire#(Bool) mulUsingCDB  <- mkDWire(False);
   Reg#(Addr)        memVaddr  <- mkRegU;
   Reg#(Addr)        memPaddr  <- mkRegU;
 
@@ -267,10 +276,14 @@ module mkCore(Core);
     doIssueALUBody(entry, aluExecEntry, aluRS, aluBusy);
   endrule
 
-  rule doExecALU (aluBusy);
+  rule doExecALU (aluBusy && (!isValid(aluExecEntry.pDst) || !loadUsingCDB));
     doExecALUBody(aluExecEntry, aluBusy, cdb, rob, pcReg[1], iCache, tlb,
       f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo, aluRS, muldivRS, memRS,
       if2WaitRefill, rat, freeList, branchPred);
+    // Claim the CDB so Mul/Div stall when we have a destination.
+    if (isValid(aluExecEntry.pDst)) begin
+      aluUsingCDB <= True;
+    end
   endrule
 
   // ============================================================
@@ -289,11 +302,17 @@ module mkCore(Core);
     doIssueDivBody(entry, divUnit, divExecEntry, muldivRS, divInFlight);
   endrule
 
-  rule doCollectMul (mulInFlight && mulUnit.finish);
+  rule doCollectMul (mulInFlight && mulUnit.finish &&&
+      (!isValid(mulExecEntry.pDst) || (!loadUsingCDB && !aluUsingCDB)));
     doCollectMulBody(mulInFlight, mulExecEntry, mulUnit, cdb, rob);
+    if (isValid(mulExecEntry.pDst)) begin
+      mulUsingCDB <= True;
+    end
   endrule
 
-  rule doCollectDiv (divInFlight && divUnit.finish);
+  rule doCollectDiv (divInFlight && divUnit.finish &&&
+      (!isValid(divExecEntry.pDst) ||
+       (!loadUsingCDB && !aluUsingCDB && !mulUsingCDB)));
     doCollectDivBody(divInFlight, divExecEntry, divUnit, cdb, rob);
   endrule
 
@@ -321,6 +340,11 @@ module mkCore(Core);
   rule doCollectMemCache (memState == MemCacheWait);
     doCollectMemCacheBody(memState, memExecEntry, memVaddr, dCache, cdb,
       rob, memRS);
+    // Load has the highest CDB priority. Claim the bus so ALU/Mul/Div
+    // stall when we have a destination register to write back.
+    if (isValid(memExecEntry.pDst)) begin
+      loadUsingCDB <= True;
+    end
   endrule
 
   rule doCollectMemCacopI (memState == MemCacopIWait);
