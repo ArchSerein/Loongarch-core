@@ -31,6 +31,9 @@ import ROB::*;
 import ResStation::*;
 import StoreBuf::*;
 import DiffTypes::*;
+`ifdef CONFIG_TRACE_PERFORMANCE
+import Perf::*;
+`endif
 `ifdef CONFIG_DIFFTEST
 import Difftest::*;
 `endif
@@ -86,6 +89,9 @@ function Action doCollectCommitTLBBody(
       end
     end
 
+`ifdef CONFIG_TRACE_PERFORMANCE
+    inst_count();
+`endif
     rob.deq;
 `ifdef CONFIG_DIFFTEST
     // Difftest for TLB commit
@@ -541,7 +547,7 @@ function Action doCommitBody(
         storeBuf.deq;
         dCache.req(MemReq{
           op: St, addr: commitStoreEntry.addr, paddr: head.memPaddr,
-          useCache: True,
+          useCache: head.memUseCache,
           data: commitStoreEntry.data, byteEn: truncate(commitStoreEntry.byteEn),
           cacheOp: 5'b0
         });
@@ -628,6 +634,10 @@ function Action doCommitBody(
     end else begin
       // Not completed: stall
     end
+
+`ifdef CONFIG_TRACE_PERFORMANCE
+    if (doDeq) inst_count();
+`endif
 
     if (waitTlb) begin
       commitState <= CommitTLBWait;

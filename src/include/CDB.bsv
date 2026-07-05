@@ -23,6 +23,28 @@ module mkCDB(CDB);
   Wire#(Maybe#(CDBMessage)) aluIn  <- mkDWire(tagged Invalid);
   Wire#(Maybe#(CDBMessage)) mulIn  <- mkDWire(tagged Invalid);
   Wire#(Maybe#(CDBMessage)) divIn  <- mkDWire(tagged Invalid);
+  Reg#(CDBMessage) msgReg <- mkReg(CDBMessage{tag: 0, value: 0, valid: False});
+  Reg#(Bool) validReg <- mkReg(False);
+
+  rule latchBroadcast;
+    CDBMessage nextMsg = CDBMessage{tag: 0, value: 0, valid: False};
+    Bool nextValid = False;
+    if (loadIn matches tagged Valid .m) begin
+      nextMsg = m;
+      nextValid = True;
+    end else if (aluIn matches tagged Valid .m) begin
+      nextMsg = m;
+      nextValid = True;
+    end else if (mulIn matches tagged Valid .m) begin
+      nextMsg = m;
+      nextValid = True;
+    end else if (divIn matches tagged Valid .m) begin
+      nextMsg = m;
+      nextValid = True;
+    end
+    msgReg <= nextMsg;
+    validReg <= nextValid;
+  endrule
 
   method Action sendLoad(PIndx tag, Data value);
     loadIn <= tagged Valid CDBMessage{tag: tag, value: value, valid: True};
@@ -40,16 +62,7 @@ module mkCDB(CDB);
     divIn <= tagged Valid CDBMessage{tag: tag, value: value, valid: True};
   endmethod
 
-  method CDBMessage msg;
-    // Priority: Load > ALU > Mul > Div
-    if (loadIn matches tagged Valid .m) return m;
-    else if (aluIn matches tagged Valid .m) return m;
-    else if (mulIn matches tagged Valid .m) return m;
-    else if (divIn matches tagged Valid .m) return m;
-    else return CDBMessage{tag: 0, value: 0, valid: False};
-  endmethod
+  method CDBMessage msg = msgReg;
 
-  method Bool valid;
-    return isValid(loadIn) || isValid(aluIn) || isValid(mulIn) || isValid(divIn);
-  endmethod
+  method Bool valid = validReg;
 endmodule

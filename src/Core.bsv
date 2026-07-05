@@ -290,12 +290,12 @@ module mkCore(Core);
 
   rule doCollectMemTLB (memState == MemTLBWait && memNeedTlb);
     doCollectMemTLBBody(memState, memNeedTlb, memExecEntry, memVaddr,
-      memPaddr, csrf, tlb, iCache, dCache, rob, memRS);
+      memPaddr, csrf, tlb, iCache, dCache, rob, memRS, storeBuf);
   endrule
 
   rule doCollectMemDirect (memState == MemTLBWait && !memNeedTlb);
     doCollectMemDirectBody(memState, memExecEntry, memVaddr, memPaddr,
-      iCache, dCache, rob);
+      csrf, iCache, dCache, rob, memRS, storeBuf);
   endrule
 
   rule doCollectMemCache (memState == MemCacheWait);

@@ -185,16 +185,6 @@ function Action doIssueMemBody(
       rob.updateExcp(entry.robTag, excp);
       rob.update(entry.robTag, RobCompleted);
       memRS.remove(entry.robTag);
-    end else if (entry.iType == St) begin
-      ByteMask m = fromMaybe(5'b00000, entry.mask);
-      let storePkt = selectStoreData(entry.vk, vaddr[1:0], m[3:0]);
-      storeBuf.enq(StoreBufEntry{
-        addr: vaddr, data: tpl_2(storePkt),
-        byteEn: extend(tpl_1(storePkt))
-      });
-      rob.updateMemInfo(entry.robTag, vaddr, vaddr);
-      rob.update(entry.robTag, RobCompleted);
-      memRS.remove(entry.robTag);
     end else if (entry.iType == Ibar) begin
       iCache.invalidate;
       rob.update(entry.robTag, RobCompleted);

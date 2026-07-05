@@ -609,9 +609,6 @@ module mkDCache(DCache);
           };
           writeBufferValid <= True;
           writeDirty(idx, hitWay, True);
-          if (r.op == St) begin
-            respQ.enq(DCacheResp{data: 0});
-          end
         end
 
         if (r.op == St && llValid && llAddr == r.paddr)
@@ -730,9 +727,6 @@ module mkDCache(DCache);
           DCacheLine newLine = update(nextLine, wsel, mergedWord);
           writeLine(way, idx, newLine);
           writeDirty(idx, way, True);
-          if (!squashPending) begin
-            respQ.enq(DCacheResp{data: 0});
-          end
         end
         Ll: begin
           if (!squashPending) begin
@@ -807,7 +801,7 @@ module mkDCache(DCache);
     bQ.deq;
     dynamicAssert(beat.resp == AxiRespOkay ||
                   beat.resp == AxiRespExOkay, "write resp has fault");
-    if (!squashPending) begin
+    if (!squashPending && (r.op == Sc || fenceFlushWait)) begin
       respQ.enq(DCacheResp{data: r.op == Sc ? scSucc : 0});
     end
     if (r.op == Sc || (r.op == St && llValid && llAddr == r.paddr)) begin

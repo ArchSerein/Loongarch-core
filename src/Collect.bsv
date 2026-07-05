@@ -24,6 +24,7 @@ import CoreFunc::*;
 import OoOTypes::*;
 import ROB::*;
 import ResStation::*;
+import StoreBuf::*;
 import CDB::*;
 
 `include "CsrAddr.bsv"
@@ -88,7 +89,8 @@ function Action doCollectMemTLBBody(
     ICache iCache,
     DCache dCache,
     ROB rob,
-    ResStation#(16) memRS
+    ResStation#(16) memRS,
+    StoreBuf#(16) storeBuf
 );
   action
     let tlbRes <- tlb.dataLookupResp;
@@ -111,6 +113,85 @@ function Action doCollectMemTLBBody(
         iCache.cacop(cacheOp, vaddr, dTrans.pa);
         memState <= MemCacopIWait;
       end else begin
+        Bool memUseCache = matUseCache(Translate, dTrans.mat, csrf.crmd, accessType);
+        if (entry.iType == St) begin
+          ByteMask m = fromMaybe(5'b00000, entry.mask);
+          let storePkt = selectStoreData(entry.vk, vaddr[1:0], m[3:0]);
+          storeBuf.enq(StoreBufEntry{
+            addr: vaddr, data: tpl_2(storePkt),
+            byteEn: extend(tpl_1(storePkt))
+          });
+          rob.updateMemInfo(entry.robTag, vaddr, dTrans.pa, memUseCache);
+          rob.update(entry.robTag, RobCompleted);
+          memRS.remove(entry.robTag);
+          memState <= MemIdle;
+        end else begin
+          Bit#(WordSz) byteEn = 4'b0000;
+          Data wData = 0;
+          MemOp memOp = Ld;
+          if (entry.isLoad) begin
+            memOp = (entry.iType == Ll) ? Ll : Ld;
+          end else if (entry.iType == Sc) begin
+            ByteMask m = fromMaybe(5'b00000, entry.mask);
+            let storePkt = selectStoreData(entry.vk, vaddr[1:0], m[3:0]);
+            byteEn = tpl_1(storePkt); wData = tpl_2(storePkt); memOp = Sc;
+          end else if (coreIsBarrier(entry.iType)) begin
+            memOp = Barrier;
+          end else if (isCacop) begin
+            memOp = Cacop;
+          end
+          let cacheReq = MemReq{
+            op: memOp, addr: vaddr, paddr: dTrans.pa,
+            useCache: (memOp == Cacop || memOp == Barrier) ? True : memUseCache,
+            data: wData, byteEn: byteEn,
+            cacheOp: isCacop ? cacheOp : 5'b0
+          };
+          if (memOp == Cacop) dCache.cacop(cacheReq);
+          else dCache.req(cacheReq);
+          rob.updateMemInfo(entry.robTag, vaddr, dTrans.pa, memUseCache);
+          memState <= MemCacheWait;
+        end
+      end
+    end
+  endaction
+endfunction
+
+function Action doCollectMemDirectBody(
+    Reg#(MemExecState) memState,
+    Reg#(RSEntry) memExecEntry,
+    Reg#(Addr) memVaddr,
+    Reg#(Addr) memPaddr,
+    CsrFile csrf,
+    ICache iCache,
+    DCache dCache,
+    ROB rob,
+    ResStation#(16) memRS,
+    StoreBuf#(16) storeBuf
+);
+  action
+    let entry = memExecEntry;
+    Addr vaddr = memVaddr;
+    Addr paddr = memPaddr;
+    Bit#(5) cacheOp = fromMaybe(0, entry.cacheOp);
+    Bool isCacop = (entry.iType == Cacop);
+    if (isCacop && cacheOp[2:0] == 3'b000) begin
+      iCache.cacop(cacheOp, vaddr, paddr);
+      memState <= MemCacopIWait;
+    end else begin
+      MmuAccessType accessType = (entry.isStore || entry.iType == Sc) ? MmuStore : MmuLoad;
+      Bool memUseCache = matUseCache(Direct, Cc, csrf.crmd, accessType);
+      if (entry.iType == St) begin
+        ByteMask m = fromMaybe(5'b00000, entry.mask);
+        let storePkt = selectStoreData(entry.vk, vaddr[1:0], m[3:0]);
+        storeBuf.enq(StoreBufEntry{
+          addr: vaddr, data: tpl_2(storePkt),
+          byteEn: extend(tpl_1(storePkt))
+        });
+        rob.updateMemInfo(entry.robTag, vaddr, paddr, memUseCache);
+        rob.update(entry.robTag, RobCompleted);
+        memRS.remove(entry.robTag);
+        memState <= MemIdle;
+      end else begin
         Bit#(WordSz) byteEn = 4'b0000;
         Data wData = 0;
         MemOp memOp = Ld;
@@ -125,64 +206,17 @@ function Action doCollectMemTLBBody(
         end else if (isCacop) begin
           memOp = Cacop;
         end
-        Bool memUseCache = matUseCache(Translate, dTrans.mat, csrf.crmd, accessType);
         let cacheReq = MemReq{
-          op: memOp, addr: vaddr, paddr: dTrans.pa,
+          op: memOp, addr: vaddr, paddr: paddr,
           useCache: (memOp == Cacop || memOp == Barrier) ? True : memUseCache,
           data: wData, byteEn: byteEn,
           cacheOp: isCacop ? cacheOp : 5'b0
         };
         if (memOp == Cacop) dCache.cacop(cacheReq);
         else dCache.req(cacheReq);
-        rob.updateMemInfo(entry.robTag, vaddr, dTrans.pa);
+        rob.updateMemInfo(entry.robTag, vaddr, paddr, memUseCache);
         memState <= MemCacheWait;
       end
-    end
-  endaction
-endfunction
-
-function Action doCollectMemDirectBody(
-    Reg#(MemExecState) memState,
-    Reg#(RSEntry) memExecEntry,
-    Reg#(Addr) memVaddr,
-    Reg#(Addr) memPaddr,
-    ICache iCache,
-    DCache dCache,
-    ROB rob
-);
-  action
-    let entry = memExecEntry;
-    Addr vaddr = memVaddr;
-    Addr paddr = memPaddr;
-    Bit#(5) cacheOp = fromMaybe(0, entry.cacheOp);
-    Bool isCacop = (entry.iType == Cacop);
-    if (isCacop && cacheOp[2:0] == 3'b000) begin
-      iCache.cacop(cacheOp, vaddr, paddr);
-      memState <= MemCacopIWait;
-    end else begin
-      Bit#(WordSz) byteEn = 4'b0000;
-      Data wData = 0;
-      MemOp memOp = Ld;
-      if (entry.isLoad) begin
-        memOp = (entry.iType == Ll) ? Ll : Ld;
-      end else if (entry.iType == Sc) begin
-        ByteMask m = fromMaybe(5'b00000, entry.mask);
-        let storePkt = selectStoreData(entry.vk, vaddr[1:0], m[3:0]);
-        byteEn = tpl_1(storePkt); wData = tpl_2(storePkt); memOp = Sc;
-      end else if (coreIsBarrier(entry.iType)) begin
-        memOp = Barrier;
-      end else if (isCacop) begin
-        memOp = Cacop;
-      end
-      let cacheReq = MemReq{
-        op: memOp, addr: vaddr, paddr: paddr,
-        useCache: True, data: wData, byteEn: byteEn,
-        cacheOp: isCacop ? cacheOp : 5'b0
-      };
-      if (memOp == Cacop) dCache.cacop(cacheReq);
-      else dCache.req(cacheReq);
-      rob.updateMemInfo(entry.robTag, vaddr, paddr);
-      memState <= MemCacheWait;
     end
   endaction
 endfunction

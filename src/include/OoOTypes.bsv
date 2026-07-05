@@ -50,6 +50,7 @@ typedef struct {
   Addr             correctTarget; // correct branch target
   Addr             memVaddr;     // virtual address (for memory ops, Difftest)
   Addr             memPaddr;     // physical address (for memory ops, Difftest)
+  Bool             memUseCache;  // whether memory op should use D-Cache
 } RobEntry deriving(Bits, Eq);
 
 // Reservation Station entry (used for ALU, MulDiv, and Memory RS)

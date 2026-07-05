@@ -101,11 +101,11 @@ module mkStoreBuf(StoreBuf#(n)) provisos (Bits#(StoreBufEntry, entrySz));
     enqReq[0] <= tagged Valid x;
   endmethod
 
-  method Action deq if (count != 0);
+  method Action deq;
     deqReq[0] <= tagged Valid True;
   endmethod
 
-  method StoreBufEntry first if (count != 0);
+  method StoreBufEntry first;
     return data[deqP];
   endmethod
 

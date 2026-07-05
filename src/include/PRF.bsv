@@ -33,10 +33,7 @@ module mkPRF(PRF);
   // port [0] = CDB write, port [1] = commit write, port [2] = DI read, port [3] = CM src read, port [4] = CM dst read
   Vector#(64, Ehr#(5, Data)) pregfile = newVector;
   for (Integer i = 0; i < 64; i = i + 1) begin
-    if (i == 1)
-      pregfile[i] <- mkEhr(0);
-    else
-      pregfile[i] <- mkEhrU;
+    pregfile[i] <- mkEhr(0);
   end
 
   // Ready bits: EHR with 5 ports for conflict-free concurrent access

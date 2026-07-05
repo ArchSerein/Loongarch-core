@@ -67,7 +67,8 @@ function Action doRenameBody(
       mispredict: False,
       correctTarget: r.pc + 4,
       memVaddr: 0,
-      memPaddr: 0
+      memPaddr: 0,
+      memUseCache: True
     });
 
     if (brFlag) begin

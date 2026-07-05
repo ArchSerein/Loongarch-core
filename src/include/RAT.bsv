@@ -21,9 +21,15 @@ endinterface
 
 module mkRAT(RAT);
   // Speculative RAT: maps logical reg -> physical reg (most recent mapping)
-  Vector#(32, Reg#(PIndx)) specRAT <- replicateM(mkReg(0));
+  Vector#(32, Reg#(PIndx)) specRAT = newVector;
+  for (Integer i = 0; i < 32; i = i + 1) begin
+    specRAT[i] <- mkReg(fromInteger(i));
+  end
   // Retirement RAT: maps logical reg -> physical reg (committed state)
-  Vector#(32, Reg#(PIndx)) retRAT <- replicateM(mkReg(0));
+  Vector#(32, Reg#(PIndx)) retRAT = newVector;
+  for (Integer i = 0; i < 32; i = i + 1) begin
+    retRAT[i] <- mkReg(fromInteger(i));
+  end
   // Checkpoint table: full RAT snapshots indexed by ROB tag
   Vector#(32, Reg#(Vector#(32, PIndx))) checkpoints <- replicateM(mkRegU);
   Vector#(32, Reg#(Bool)) cpValid <- replicateM(mkReg(False));
