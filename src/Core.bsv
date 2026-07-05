@@ -49,6 +49,9 @@ import Commit::*;
 import DiffTypes::*;
 import Difftest::*;
 `endif
+`ifdef CONFIG_TRACE_PERFORMANCE
+import Perf::*;
+`endif
 
 (* synthesize *)
 module mkCore(Core);
@@ -116,6 +119,23 @@ module mkCore(Core);
   Fifo#(2, F2D)            f2dFifo <- mkCFFifo;
   Fifo#(2, D2RN)           d2rnFifo <- mkCFFifo;
   Fifo#(2, RenamedInst)   rn2diFifo <- mkCFFifo;
+
+`ifdef CONFIG_TRACE_PERFORMANCE
+  rule countFetchStall (!idleLock && (if2WaitRefill || f1f2Fifo.notEmpty));
+    perf_fetch_stall_cycle();
+  endrule
+
+  rule countDispatchDependencyStall (rn2diFifo.notEmpty);
+    let rInst = rn2diFifo.first;
+    if (!prf.isReady(rInst.pSrc1) || !prf.isReady2(rInst.pSrc2)) begin
+      perf_dispatch_dependency_stall_cycle();
+    end
+  endrule
+
+  rule countMemoryStall (memState != MemIdle);
+    perf_memory_stall_cycle();
+  endrule
+`endif
 
 `ifdef CONFIG_BSIM
   Fifo#(2, CpuToHostData) toHostFifo <- mkCFFifo;

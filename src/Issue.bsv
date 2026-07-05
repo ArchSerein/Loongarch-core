@@ -35,6 +35,9 @@ import ROB::*;
 import ResStation::*;
 import CDB::*;
 import StoreBuf::*;
+`ifdef CONFIG_TRACE_PERFORMANCE
+import Perf::*;
+`endif
 
 `include "CsrAddr.bsv"
 
@@ -99,6 +102,13 @@ function Action doExecALUBody(
 
     // Branch mispredict recovery
     if (eInst.mispredict) begin
+`ifdef CONFIG_TRACE_PERFORMANCE
+      if (entry.iType == Br || entry.iType == Jr) begin
+        perf_branch_mispredict_tage();
+      end else begin
+        perf_branch_mispredict_fast();
+      end
+`endif
       pcReg <= eInst.targetAddr;
       iCache.squash;
       tlb.squashFetchLookup;

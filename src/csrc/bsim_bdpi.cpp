@@ -631,6 +631,7 @@ extern "C" void bdpi_difftest_instr_commit(unsigned char valid, unsigned int pc,
   }
   if (valid != 0) {
     trigger_difftest();
+    run_pending_difftest();
   }
 }
 #endif
@@ -643,9 +644,11 @@ uint64_t icache_miss_cnt;
 uint64_t icache_miss_cycle_cnt;
 uint64_t dcache_miss_cnt;
 uint64_t dcache_miss_cycle_cnt;
-uint64_t branch_cnt;
-uint64_t branch_mispredict_cnt;
-uint64_t stall_cycles[4]; // 0: IF, 1: ID/RR, 2: EXE, 3: MEM
+uint64_t tage_mispredict_cnt;
+uint64_t fast_mispredict_cnt;
+uint64_t fetch_stall_cycle_cnt;
+uint64_t dispatch_dependency_stall_cycle_cnt;
+uint64_t memory_stall_cycle_cnt;
 
 extern "C" void inst_count() {
   ++inst_cnt;
@@ -665,12 +668,20 @@ extern "C" void perf_dcache_miss() {
 extern "C" void perf_dcache_miss_cycle() {
   ++dcache_miss_cycle_cnt;
 }
-extern "C" void perf_branch_exec(unsigned char mispredict) {
-  ++branch_cnt;
-  if (mispredict) ++branch_mispredict_cnt;
+extern "C" void perf_branch_mispredict_tage() {
+  ++tage_mispredict_cnt;
 }
-extern "C" void perf_pipeline_stall(unsigned char stage) {
-  if (stage < 4) ++stall_cycles[stage];
+extern "C" void perf_branch_mispredict_fast() {
+  ++fast_mispredict_cnt;
+}
+extern "C" void perf_fetch_stall_cycle() {
+  ++fetch_stall_cycle_cnt;
+}
+extern "C" void perf_dispatch_dependency_stall_cycle() {
+  ++dispatch_dependency_stall_cycle_cnt;
+}
+extern "C" void perf_memory_stall_cycle() {
+  ++memory_stall_cycle_cnt;
 }
 #endif
 
@@ -706,22 +717,24 @@ int main(int argc, char** argv) {
   }
 
   #ifdef CONFIG_TRACE_PERFORMANCE
-  double ipc = static_cast<double>(inst_cnt) / static_cast<double>(cycle_cnt);
+  double ipc = cycle_cnt ? static_cast<double>(inst_cnt) / static_cast<double>(cycle_cnt) : 0.0;
+  double inst_den = inst_cnt ? static_cast<double>(inst_cnt) : 1.0;
+  double cycle_den = cycle_cnt ? static_cast<double>(cycle_cnt) : 1.0;
   printf("\n--- Performance Statistics ---\n");
   printf("Cycles:            0x%lx (%ld)\n", cycle_cnt, cycle_cnt);
   printf("Instructions:      0x%lx (%ld)\n", inst_cnt, inst_cnt);
   printf("IPC:               %f\n", ipc);
   printf("ICache Misses:     %ld\n", icache_miss_cnt);
-  printf("ICache Miss Cycles:%ld (%.2f%%)\n", icache_miss_cycle_cnt, 100.0 * icache_miss_cycle_cnt / cycle_cnt);
+  printf("ICache Miss Cycles:%ld (%.2f%%)\n", icache_miss_cycle_cnt, 100.0 * icache_miss_cycle_cnt / cycle_den);
   printf("DCache Misses:     %ld\n", dcache_miss_cnt);
-  printf("DCache Miss Cycles:%ld (%.2f%%)\n", dcache_miss_cycle_cnt, 100.0 * dcache_miss_cycle_cnt / cycle_cnt);
-  printf("Branches:          %ld\n", branch_cnt);
-  printf("Mispredicts:       %ld (%.2f%%)\n", branch_mispredict_cnt, branch_cnt ? 100.0 * branch_mispredict_cnt / branch_cnt : 0);
+  printf("DCache Miss Cycles:%ld (%.2f%%)\n", dcache_miss_cycle_cnt, 100.0 * dcache_miss_cycle_cnt / cycle_den);
+  printf("Mispredicts:\n");
+  printf("  (IT)TAGE:        %ld (%.2f%% of instructions)\n", tage_mispredict_cnt, 100.0 * tage_mispredict_cnt / inst_den);
+  printf("  Fast Path:       %ld (%.2f%% of instructions)\n", fast_mispredict_cnt, 100.0 * fast_mispredict_cnt / inst_den);
   printf("Stall Cycles:\n");
-  printf("  IF:              %ld (%.2f%%)\n", stall_cycles[0], 100.0 * stall_cycles[0] / cycle_cnt);
-  printf("  ID/RR:           %ld (%.2f%%)\n", stall_cycles[1], 100.0 * stall_cycles[1] / cycle_cnt);
-  printf("  EXE:             %ld (%.2f%%)\n", stall_cycles[2], 100.0 * stall_cycles[2] / cycle_cnt);
-  printf("  MEM:             %ld (%.2f%%)\n", stall_cycles[3], 100.0 * stall_cycles[3] / cycle_cnt);
+  printf("  Fetch Blocked:   %ld (%.2f%%)\n", fetch_stall_cycle_cnt, 100.0 * fetch_stall_cycle_cnt / cycle_den);
+  printf("  Dispatch Deps:   %ld (%.2f%%)\n", dispatch_dependency_stall_cycle_cnt, 100.0 * dispatch_dependency_stall_cycle_cnt / cycle_den);
+  printf("  Memory Blocked:  %ld (%.2f%%)\n", memory_stall_cycle_cnt, 100.0 * memory_stall_cycle_cnt / cycle_den);
   printf("------------------------------\n");
   #endif
 
