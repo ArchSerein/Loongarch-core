@@ -29,6 +29,13 @@ import CDB::*;
 
 `include "CsrAddr.bsv"
 
+function StoreForwardResult mergeForward(StoreForwardResult older, StoreForwardResult newer);
+  return StoreForwardResult{
+    data: coreApplyByteMask(older.data, newer.data, truncate(newer.byteEn)),
+    byteEn: older.byteEn | newer.byteEn
+  };
+endfunction
+
 function Action doCollectMulBody(
     Reg#(Bool) mulInFlight,
     Reg#(RSEntry) mulExecEntry,
@@ -84,13 +91,15 @@ function Action doCollectMemTLBBody(
     Reg#(RSEntry) memExecEntry,
     Reg#(Addr) memVaddr,
     Reg#(Addr) memPaddr,
+    Reg#(StoreForwardResult) memForward,
     CsrFile csrf,
     TlbArray tlb,
     ICache iCache,
     DCache dCache,
     ROB rob,
     ResStation#(16) memRS,
-    StoreBuf#(16) storeBuf
+    StoreBuf#(16) storeBuf,
+    StoreForwardBuf#(16) committedStoreBuf
 );
   action
     let tlbRes <- tlb.dataLookupResp;
@@ -146,6 +155,9 @@ function Action doCollectMemTLBBody(
             data: wData, byteEn: byteEn,
             cacheOp: isCacop ? cacheOp : 5'b0
           };
+          memForward <= entry.isLoad ?
+            mergeForward(committedStoreBuf.forward(vaddr), storeBuf.forward(vaddr)) :
+            StoreForwardResult{data: 0, byteEn: 0};
           if (memOp == Cacop) dCache.cacop(cacheReq);
           else dCache.req(cacheReq);
           rob.updateMemInfo(entry.robTag, vaddr, dTrans.pa, memUseCache);
@@ -161,12 +173,14 @@ function Action doCollectMemDirectBody(
     Reg#(RSEntry) memExecEntry,
     Reg#(Addr) memVaddr,
     Reg#(Addr) memPaddr,
+    Reg#(StoreForwardResult) memForward,
     CsrFile csrf,
     ICache iCache,
     DCache dCache,
     ROB rob,
     ResStation#(16) memRS,
-    StoreBuf#(16) storeBuf
+    StoreBuf#(16) storeBuf,
+    StoreForwardBuf#(16) committedStoreBuf
 );
   action
     let entry = memExecEntry;
@@ -212,6 +226,9 @@ function Action doCollectMemDirectBody(
           data: wData, byteEn: byteEn,
           cacheOp: isCacop ? cacheOp : 5'b0
         };
+        memForward <= entry.isLoad ?
+          mergeForward(committedStoreBuf.forward(vaddr), storeBuf.forward(vaddr)) :
+          StoreForwardResult{data: 0, byteEn: 0};
         if (memOp == Cacop) dCache.cacop(cacheReq);
         else dCache.req(cacheReq);
         rob.updateMemInfo(entry.robTag, vaddr, paddr, memUseCache);
@@ -225,6 +242,7 @@ function Action doCollectMemCacheBody(
     Reg#(MemExecState) memState,
     Reg#(RSEntry) memExecEntry,
     Reg#(Addr) memVaddr,
+    Reg#(StoreForwardResult) memForward,
     DCache dCache,
     CDB cdb,
     ROB rob,
@@ -237,11 +255,13 @@ function Action doCollectMemCacheBody(
 
     if (entry.isLoad) begin
       ByteMask m = fromMaybe(5'b00000, entry.mask);
+      StoreForwardResult fwd = memForward;
+      Data rawData = coreApplyByteMask(d.data, fwd.data, truncate(fwd.byteEn));
       Data loadData = ?;
       if (entry.iType == Ll)
-        loadData = d.data;
+        loadData = rawData;
       else
-        loadData = selectLoadData(d.data, memVaddr[1:0], m[3:0], m[4] == 1'b1);
+        loadData = selectLoadData(rawData, memVaddr[1:0], m[3:0], m[4] == 1'b1);
       if (entry.pDst matches tagged Valid .pd) begin
         cdb.sendLoad(pd, loadData);
       end

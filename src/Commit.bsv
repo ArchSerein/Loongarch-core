@@ -178,6 +178,7 @@ function Action doCommitBody(
     ResStation#(4) muldivRS,
     ResStation#(16) memRS,
     StoreBuf#(16) storeBuf,
+    StoreForwardBuf#(16) committedStoreBuf,
     Reg#(Bool) idleLock,
     Reg#(Bool) aluBusy,
     Reg#(Bool) mulInFlight,
@@ -545,6 +546,7 @@ function Action doCommitBody(
         // Store commit: write to D-Cache
         commitStoreEntry = storeBuf.first;
         storeBuf.deq;
+        committedStoreBuf.enq(commitStoreEntry);
         dCache.req(MemReq{
           op: St, addr: commitStoreEntry.addr, paddr: head.memPaddr,
           useCache: head.memUseCache,

@@ -14,6 +14,8 @@ interface ResStation#(numeric type size);
   method Bool notFull;
   method Action wakeup(CDBMessage cdb);  // CDB broadcast listener
   method Maybe#(RSEntry) selectOldestReady;  // issue selection
+  method Maybe#(RSEntry) selectOldestReadyFrom(RobTag headTag);
+  method Bool hasOlderStore(RobTag tag, RobTag headTag);
   method Action remove(RobTag tag);      // remove issued entry
   method Action flushAfter(RobTag tag);  // invalidate younger entries
   method Action clear;                   // full reset
@@ -164,6 +166,36 @@ module mkResStation(ResStation#(size))
       if (!found && e.valid && !isValid(e.qj) && !isValid(e.qk)) begin
         ret = tagged Valid e;
         found = True;
+      end
+    end
+    return ret;
+  endmethod
+
+  method Maybe#(RSEntry) selectOldestReadyFrom(RobTag headTag);
+    Maybe#(RSEntry) ret = tagged Invalid;
+    Bit#(5) bestAge = 0;
+    Bool found = False;
+    for (Integer i = 0; i < valueOf(size); i = i + 1) begin
+      RSEntry e = entries[fromInteger(i)];
+      Bit#(5) entryAge = e.robTag - headTag;
+      if (e.valid && !isValid(e.qj) && !isValid(e.qk) &&
+          (!found || entryAge < bestAge)) begin
+        ret = tagged Valid e;
+        bestAge = entryAge;
+        found = True;
+      end
+    end
+    return ret;
+  endmethod
+
+  method Bool hasOlderStore(RobTag tag, RobTag headTag);
+    Bool ret = False;
+    Bit#(5) tagAge = tag - headTag;
+    for (Integer i = 0; i < valueOf(size); i = i + 1) begin
+      RSEntry e = entries[fromInteger(i)];
+      Bit#(5) entryAge = e.robTag - headTag;
+      if (e.valid && e.isStore && e.robTag != tag && entryAge < tagAge) begin
+        ret = True;
       end
     end
     return ret;

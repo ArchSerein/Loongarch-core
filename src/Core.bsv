@@ -69,6 +69,7 @@ module mkCore(Core);
   ResStation#(4)   muldivRS <- mkResStation;
   ResStation#(16)      memRS <- mkResStation;
   StoreBuf#(16)     storeBuf <- mkStoreBuf;
+  StoreForwardBuf#(16) committedStoreBuf <- mkStoreForwardBuf;
 
 `ifdef CONFIG_DIFFTEST
   // Shadow ARF for Difftest and debug
@@ -108,6 +109,7 @@ module mkCore(Core);
   Wire#(Bool) mulUsingCDB  <- mkDWire(False);
   Reg#(Addr)        memVaddr  <- mkRegU;
   Reg#(Addr)        memPaddr  <- mkRegU;
+  Reg#(StoreForwardResult) memForward <- mkReg(StoreForwardResult{data: 0, byteEn: 0});
 
   // Commit state
   Reg#(CommitState) commitState <- mkReg(CommitIdle);
@@ -322,23 +324,24 @@ module mkCore(Core);
   Reg#(Bool) memNeedTlb <- mkReg(False);
 
   rule doIssueMem (memState == MemIdle && !isCsrTlbSpecial(rob.headIType) &&&
-      memRS.selectOldestReady matches tagged Valid .entry);
+      memRS.selectOldestReadyFrom(rob.headTag) matches tagged Valid .entry &&&
+      (!entry.isLoad || !memRS.hasOlderStore(entry.robTag, rob.headTag)));
     doIssueMemBody(entry, memExecEntry, memVaddr, memPaddr, memNeedTlb,
       memState, csrf, tlb, iCache, rob, memRS, storeBuf);
   endrule
 
   rule doCollectMemTLB (memState == MemTLBWait && memNeedTlb);
     doCollectMemTLBBody(memState, memNeedTlb, memExecEntry, memVaddr,
-      memPaddr, csrf, tlb, iCache, dCache, rob, memRS, storeBuf);
+      memPaddr, memForward, csrf, tlb, iCache, dCache, rob, memRS, storeBuf, committedStoreBuf);
   endrule
 
   rule doCollectMemDirect (memState == MemTLBWait && !memNeedTlb);
     doCollectMemDirectBody(memState, memExecEntry, memVaddr, memPaddr,
-      csrf, iCache, dCache, rob, memRS, storeBuf);
+      memForward, csrf, iCache, dCache, rob, memRS, storeBuf, committedStoreBuf);
   endrule
 
   rule doCollectMemCache (memState == MemCacheWait);
-    doCollectMemCacheBody(memState, memExecEntry, memVaddr, dCache, cdb,
+    doCollectMemCacheBody(memState, memExecEntry, memVaddr, memForward, dCache, cdb,
       rob, memRS);
     // Load has the highest CDB priority. Claim the bus so ALU/Mul/Div
     // stall when we have a destination register to write back.
@@ -383,7 +386,7 @@ module mkCore(Core);
 `endif
       commitCsrSnapReg, prf, rat, freeList, tlb, pcReg[2], iCache, dCache,
       if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
-      aluRS, muldivRS, memRS, storeBuf, idleLock, aluBusy, mulInFlight,
+      aluRS, muldivRS, memRS, storeBuf, committedStoreBuf, idleLock, aluBusy, mulInFlight,
       divInFlight, memState
 `ifdef CONFIG_BSIM
       , toHostFifo

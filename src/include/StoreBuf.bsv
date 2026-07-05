@@ -21,6 +21,12 @@ interface StoreBuf#(numeric type n);
   method Action clear;
 endinterface
 
+interface StoreForwardBuf#(numeric type n);
+  method Action enq(StoreBufEntry x);
+  method StoreForwardResult forward(Addr addr);
+  method Action clear;
+endinterface
+
 module mkStoreBuf(StoreBuf#(n)) provisos (Bits#(StoreBufEntry, entrySz));
   Vector#(n, Reg#(StoreBufEntry)) data <- replicateM(mkRegU);
   Reg#(Bit#(TLog#(n))) enqP <- mkReg(0);
@@ -163,5 +169,55 @@ module mkStoreBuf(StoreBuf#(n)) provisos (Bits#(StoreBufEntry, entrySz));
     enqReq[1] <= tagged Invalid;
     deqReq[1] <= tagged Invalid;
     clearReq[0] <= tagged Valid True;
+  endmethod
+endmodule
+
+module mkStoreForwardBuf(StoreForwardBuf#(n)) provisos (Bits#(StoreBufEntry, entrySz));
+  Vector#(n, Reg#(StoreBufEntry)) data <- replicateM(mkRegU);
+  Vector#(n, Reg#(Bool)) valid <- replicateM(mkReg(False));
+  Reg#(Bit#(TLog#(n))) enqP <- mkReg(0);
+  Reg#(Bit#(TAdd#(TLog#(n), 1))) count <- mkReg(0);
+
+  Bit#(TLog#(n)) maxIndex = fromInteger(valueOf(n) - 1);
+  Bit#(TAdd#(TLog#(n), 1)) depth = fromInteger(valueOf(n));
+
+  function Bit#(TLog#(n)) nextPtr(Bit#(TLog#(n)) ptr);
+    return (ptr == maxIndex) ? 0 : ptr + 1;
+  endfunction
+
+  method Action enq(StoreBufEntry x);
+    data[enqP] <= x;
+    valid[enqP] <= True;
+    enqP <= nextPtr(enqP);
+    if (count != depth) begin
+      count <= count + 1;
+    end
+  endmethod
+
+  method StoreForwardResult forward(Addr addr);
+    StoreForwardResult ret = StoreForwardResult{data: 0, byteEn: 0};
+    Bit#(TLog#(n)) ptr = (count == depth) ? enqP : 0;
+
+    for (Integer i = 0; i < valueOf(n); i = i + 1) begin
+      Bit#(TAdd#(TLog#(n), 1)) offset = fromInteger(i);
+      if (offset < count) begin
+        let e = data[ptr];
+        if (valid[ptr] && coreSameWordAddr(e.addr, addr)) begin
+          ret.data = coreApplyByteMask(ret.data, e.data, truncate(e.byteEn));
+          ret.byteEn = ret.byteEn | e.byteEn;
+        end
+      end
+      ptr = nextPtr(ptr);
+    end
+
+    return ret;
+  endmethod
+
+  method Action clear;
+    enqP <= 0;
+    count <= 0;
+    for (Integer i = 0; i < valueOf(n); i = i + 1) begin
+      valid[fromInteger(i)] <= False;
+    end
   endmethod
 endmodule
