@@ -19,6 +19,7 @@ interface FreeList;
   method Action checkpoint(RobTag tag); // snapshot for branch recovery
   method Action restore(RobTag tag);    // restore branch snapshot
   method Action clear;               // reset to initial state
+  method Action restoreFromRetRAT(Vector#(32, PIndx) ret); // rebuild from retirement RAT
 endinterface
 
 module mkFreeList(FreeList);
@@ -40,6 +41,7 @@ module mkFreeList(FreeList);
   Ehr#(2, Maybe#(Bool)) clearReq <- mkEhr(tagged Invalid);
   Ehr#(2, Maybe#(RobTag)) restoreReq <- mkEhr(tagged Invalid);
   Ehr#(2, Maybe#(RobTag)) checkpointReq <- mkEhr(tagged Invalid);
+  Ehr#(2, Maybe#(Vector#(32, PIndx))) restoreRetReq <- mkEhr(tagged Invalid);
 
   Bit#(5) maxIndex = fromInteger(valueOf(32) - 1);
   Bit#(6) depth = fromInteger(valueOf(32));
@@ -68,6 +70,33 @@ module mkFreeList(FreeList);
       count <= 0;
       initialized <= False;
       initIdx <= 0;
+      for (Integer i = 0; i < 32; i = i + 1) begin
+        cpValid[i] <= False;
+      end
+    end else if (restoreRetReq[1] matches tagged Valid .ret) begin
+      // Rebuild free list as complement of retirement RAT:
+      // every physical register not mapped by retRAT is free.
+      Vector#(64, Bit#(64)) oneHot = ?;
+      for (Integer i = 0; i < 64; i = i + 1) begin
+        oneHot[i] = 1 << i;
+      end
+      Bit#(64) mappedBits = 0;
+      for (Integer i = 0; i < 32; i = i + 1) begin
+        PIndx idx = ret[i];
+        mappedBits = mappedBits | oneHot[idx];
+      end
+      Bit#(6) freeIdx = 0;
+      for (Integer p = 0; p < 64; p = p + 1) begin
+        if (mappedBits[p] == 0 && freeIdx < fromInteger(32)) begin
+          Bit#(5) dIdx = truncate(freeIdx);
+          PIndx pReg = fromInteger(p);
+          data[dIdx] <= pReg;
+          freeIdx = freeIdx + 1;
+        end
+      end
+      enqP <= 0;
+      deqP <= 0;
+      count <= freeIdx;
       for (Integer i = 0; i < 32; i = i + 1) begin
         cpValid[i] <= False;
       end
@@ -116,6 +145,7 @@ module mkFreeList(FreeList);
 
     clearReq[1] <= tagged Invalid;
     restoreReq[1] <= tagged Invalid;
+    restoreRetReq[1] <= tagged Invalid;
     checkpointReq[1] <= tagged Invalid;
     enqReq[2] <= tagged Invalid;
     deqReq[2] <= tagged Invalid;
@@ -153,6 +183,15 @@ module mkFreeList(FreeList);
     deqReq[1] <= tagged Invalid;
     restoreReq[0] <= tagged Invalid;
     checkpointReq[1] <= tagged Invalid;
+    restoreRetReq[0] <= tagged Invalid;
     clearReq[0] <= tagged Valid True;
+  endmethod
+
+  method Action restoreFromRetRAT(Vector#(32, PIndx) ret) if (initialized);
+    enqReq[1] <= tagged Invalid;
+    deqReq[1] <= tagged Invalid;
+    restoreReq[0] <= tagged Invalid;
+    checkpointReq[1] <= tagged Invalid;
+    restoreRetReq[0] <= tagged Valid ret;
   endmethod
 endmodule

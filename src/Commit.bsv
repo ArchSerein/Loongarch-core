@@ -277,7 +277,7 @@ function Action doCommitBody(
       storeBuf.clear;
       rob.clear;
       rat.restoreFromRetirement;
-      freeList.clear;
+      freeList.restoreFromRetRAT(rat.allRetRAT);
       aluBusy <= False;
       mulInFlight <= False;
       divInFlight <= False;
@@ -375,6 +375,12 @@ function Action doCommitBody(
         if (head.pDst matches tagged Valid .pd) begin
           prf.commitWrite(pd, csrVal);
           prf.setReadyCommit(pd);
+          // CSR results are written at commit, not via the CDB, so wake up
+          // any RS entry waiting on this destination directly.
+          let csrWakeup = CDBMessage{tag: pd, value: csrVal, valid: True};
+          aluRS.commitWakeup(csrWakeup);
+          muldivRS.commitWakeup(csrWakeup);
+          memRS.commitWakeup(csrWakeup);
         end
 		`ifdef CONFIG_DIFFTEST
         archRegs[dst] <= csrVal;
@@ -427,7 +433,7 @@ function Action doCommitBody(
       storeBuf.clear;
       rob.clear;
       rat.restoreFromRetirement;
-      freeList.clear;
+      freeList.restoreFromRetRAT(rat.allRetRAT);
       aluBusy <= False;
       mulInFlight <= False;
       divInFlight <= False;
@@ -513,7 +519,7 @@ function Action doCommitBody(
       storeBuf.clear;
       rob.clear;
       rat.restoreFromRetirement;
-      freeList.clear;
+      freeList.restoreFromRetRAT(rat.allRetRAT);
       aluBusy <= False;
       mulInFlight <= False;
       divInFlight <= False;

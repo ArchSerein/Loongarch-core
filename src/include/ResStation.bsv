@@ -13,6 +13,7 @@ interface ResStation#(numeric type size);
   method Action enq(RSEntry e);           // dispatch entry (DI stage)
   method Bool notFull;
   method Action wakeup(CDBMessage cdb);  // CDB broadcast listener
+  method Action commitWakeup(CDBMessage cdb); // commit-stage (CSR) result wakeup
   method Maybe#(RSEntry) selectOldestReady;  // issue selection
   method Maybe#(RSEntry) selectOldestReadyFrom(RobTag headTag);
   method Bool hasOlderStore(RobTag tag, RobTag headTag);
@@ -33,6 +34,10 @@ module mkResStation(ResStation#(size))
   Wire#(Maybe#(RSEntry)) enqReq  <- mkDWire(tagged Invalid);
   Wire#(Maybe#(RobTag)) removeReq <- mkDWire(tagged Invalid);
   Wire#(CDBMessage) cdbReq       <- mkDWire(CDBMessage{tag: 0, value: 0, valid: False});
+  // Commit-stage wakeup: CSR/rdtime results are written to the PRF at commit,
+  // not broadcast on the CDB, so they need a separate wakeup path to clear
+  // dependent RS entries' qj/qk.
+  Wire#(CDBMessage) commitCdbReq <- mkDWire(CDBMessage{tag: 0, value: 0, valid: False});
   Wire#(Maybe#(RobTag)) flushReq <- mkDWire(tagged Invalid);
   Wire#(Bool) clearReq           <- mkDWire(False);
 
@@ -101,23 +106,39 @@ module mkResStation(ResStation#(size))
           // Remove invalidates this entry
           entries[idx] <= invalidRSEntry;
         end else begin
-          // CDB wakeup: clear dependencies and capture values
+          // CDB / commit-stage wakeup: clear dependencies and capture values
           RSEntry e = entries[idx];
-          if (e.valid && cdbReq.valid) begin
+          if (e.valid && (cdbReq.valid || commitCdbReq.valid)) begin
             Maybe#(PIndx) newQj = e.qj;
             Maybe#(PIndx) newQk = e.qk;
             Data newVj = e.vj;
             Data newVk = e.vk;
             Bool modified = False;
-            if (e.qj matches tagged Valid .q &&& q == cdbReq.tag) begin
-              newQj = tagged Invalid;
-              newVj = cdbReq.value;
-              modified = True;
+            // CDB broadcast (FU writeback)
+            if (cdbReq.valid) begin
+              if (e.qj matches tagged Valid .q &&& q == cdbReq.tag) begin
+                newQj = tagged Invalid;
+                newVj = cdbReq.value;
+                modified = True;
+              end
+              if (e.qk matches tagged Valid .q &&& q == cdbReq.tag) begin
+                newQk = tagged Invalid;
+                newVk = cdbReq.value;
+                modified = True;
+              end
             end
-            if (e.qk matches tagged Valid .q &&& q == cdbReq.tag) begin
-              newQk = tagged Invalid;
-              newVk = cdbReq.value;
-              modified = True;
+            // Commit-stage broadcast (CSR/rdtime results written at commit)
+            if (commitCdbReq.valid) begin
+              if (newQj matches tagged Valid .q &&& q == commitCdbReq.tag) begin
+                newQj = tagged Invalid;
+                newVj = commitCdbReq.value;
+                modified = True;
+              end
+              if (newQk matches tagged Valid .q &&& q == commitCdbReq.tag) begin
+                newQk = tagged Invalid;
+                newVk = commitCdbReq.value;
+                modified = True;
+              end
             end
             if (modified) begin
               entries[idx] <= RSEntry {
@@ -154,6 +175,10 @@ module mkResStation(ResStation#(size))
 
   method Action wakeup(CDBMessage cdb);
     cdbReq <= cdb;
+  endmethod
+
+  method Action commitWakeup(CDBMessage cdb);
+    commitCdbReq <= cdb;
   endmethod
 
   method Maybe#(RSEntry) selectOldestReady;

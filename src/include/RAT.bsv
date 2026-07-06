@@ -31,6 +31,7 @@ interface RAT;
   method Action checkpoint(RobTag tag);            // snapshot speculative RAT
   method Action restore(RobTag tag);               // restore from checkpoint
   method Action restoreFromRetirement();           // restore specRAT from retRAT
+  method Vector#(32, PIndx) allRetRAT;             // full retirement RAT (for free list rebuild)
 endinterface
 
 module mkRAT(RAT);
@@ -91,5 +92,13 @@ module mkRAT(RAT);
     for (Integer i = 0; i < 32; i = i + 1) begin
       specRAT[i][4] <= retRAT[i];
     end
+  endmethod
+
+  method Vector#(32, PIndx) allRetRAT;
+    Vector#(32, PIndx) ret = ?;
+    for (Integer i = 0; i < 32; i = i + 1) begin
+      ret[i] = retRAT[i];
+    end
+    return ret;
   endmethod
 endmodule
