@@ -410,6 +410,15 @@ void run_pending_difftest() {
 
   const int state = difftest->step(diff_main_time);
   ++diff_main_time;
+  instr_commit_t* commit_info = difftest->get_instr_commit(0);
+  std::uint32_t pc 	 = commit_info->pc;
+  std::uint32_t inst = commit_info->inst;
+  std::uint8_t wen 	 = commit_info->wen;
+  std::uint8_t wdest = commit_info->wdest;
+  std::uint32_t wdata= commit_info->wdata;
+  std::fprintf(stderr,
+	"[BDPIDIFF] diff info pc=0x%08x inst=0x%08x wen=%u wdest=%u wdata=0x%08x\n",
+	pc, inst, wen, wdest, wdata);
   if (state == STATE_ABORT) {
     std::cerr << "\nbsim: DIFFTEST MISMATCH\n";
     difftest->display();
@@ -591,10 +600,6 @@ extern "C" void bdpi_difftest_instr_commit(unsigned char valid, unsigned int pc,
   }
   (void)skip;
 
-  std::fprintf(stderr,
-               "[BDPIDIFF] commit valid=%u pc=0x%08x inst=0x%08x wen=%u wdest=%u wdata=0x%08x\n",
-               valid, pc, inst, wen, wdest, wdata);
-
   instr_commit_t* commit = difftest->get_instr_commit(0);
   commit->valid = valid;
   commit->pc = pc;
@@ -631,8 +636,8 @@ extern "C" void bdpi_difftest_instr_commit(unsigned char valid, unsigned int pc,
   }
   if (valid != 0) {
     trigger_difftest();
-    run_pending_difftest();
   }
+  run_pending_difftest();
 }
 #endif
 
