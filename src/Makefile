@@ -6,17 +6,19 @@ BUILD_DIR      := $(ROOT_DIR)/build
 BDIR           := $(BUILD_DIR)/bdir
 IDIR           := $(BUILD_DIR)/info
 VDIR           := $(BUILD_DIR)/verilog
-BDPI_BDIR      := $(BUILD_DIR)/bdpi_bdir
-BDPI_IDIR      := $(BUILD_DIR)/bdpi_info
-BDPI_SIMDIR    := $(BUILD_DIR)/bdpi_sim
-BDPI_CSRC_DIR  := $(BUILD_DIR)/bdpi_csrc
+
+# Only create directories if 'core-verilog' is among the goals
+ifneq ($(filter core-verilog,$(MAKECMDGOALS)),)
+$(shell mkdir -p $(BDIR) $(IDIR) $(VDIR))
+endif
+
 EXAMPLES_DIR   := $(abspath $(ROOT_DIR)/../chiplab/software/examples)
-CHIPLAB_BSP_COMMON := $(abspath $(ROOT_DIR)/../chiplab/software/bsp/common.mk)
-SYNC_CHIPLAB_CACHE_SCRIPT := $(ROOT_DIR)/scripts/sync_chiplab_cache_config.py
 BSIM_RUNNER    := $(BUILD_DIR)/bsim
 BSIM_RAW_RUNNER := $(BUILD_DIR)/bsim.raw
 BSIM_COMPAT_RUNNER := $(BUILD_DIR)/bsim-bdpi
 BSIM_COMPAT_RAW_RUNNER := $(BUILD_DIR)/bsim-bdpi.raw
+CHIPLAB_BSP_COMMON := $(abspath $(ROOT_DIR)/../chiplab/software/bsp/common.mk)
+SYNC_CHIPLAB_CACHE_SCRIPT := $(ROOT_DIR)/scripts/sync_chiplab_cache_config.py
 BDPI_RUNNER    := $(BSIM_RUNNER)
 BDPI_RAW_RUNNER := $(BSIM_RAW_RUNNER)
 TEST_NAME      := $(strip $(TEST))
@@ -51,11 +53,11 @@ CONFIG_BSIM ?= $(shell if grep -q '^# CONFIG_BSIM is not set' "$(ROOT_DIR)/.conf
 # ==========================================
 # 3. Simulator Configuration
 # ==========================================
-BDPI_TOP       := mkTbBDPI
 CORE_AXI_TOP   := mkCoreAxiTop
 BSC            := bsc
 BSC_RTS_FLAGS  := +RTS -K256M -RTS
 CXX            ?= c++
+JOBS           ?= $(shell nproc)
 BSC_RESOLVED   := $(shell command -v $(BSC) 2>/dev/null)
 BSC_PREFIX     := $(if $(BSC_RESOLVED),$(abspath $(dir $(BSC_RESOLVED))/..),/opt/bsc)
 BSC_LIB_DIR    := $(BSC_PREFIX)/lib
@@ -65,13 +67,23 @@ MAX_CYCLES     ?= 100000000
 START_PC       ?= 0
 RUN_START_PC   ?= 0x1c000000
 
+BSC_STEPS_FLAGS  := -steps-warn-interval 1000000 -steps-max-intervals 8
+
 BSC_CORE_FLAGS := -u -verilog -g $(CORE_AXI_TOP) \
                   -p +:$(ROOT_DIR)/include \
                   -bdir $(BDIR) \
                   -info-dir $(IDIR) \
-                  -vdir $(VDIR)
+                  -vdir $(VDIR) \
+                   -verilog-filter $(ROOT_DIR)/scripts/filter_bsv.sh
+
+BDPI_TOP       := mkTbBDPI
+BDPI_BDIR      := $(BUILD_DIR)/bdpi_bdir
+BDPI_IDIR      := $(BUILD_DIR)/bdpi_info
+BDPI_SIMDIR    := $(BUILD_DIR)/bdpi_sim
+BDPI_CSRC_DIR  := $(BUILD_DIR)/bdpi_csrc
 
 BDPI_BSC_FLAGS := -u -sim -g $(BDPI_TOP) \
+				  -steps-warn-interval 1000000 -steps-max-intervals 8	\
                   -p +:$(ROOT_DIR)/include \
                   -bdir $(BDPI_BDIR) \
                   -info-dir $(BDPI_IDIR) \
@@ -99,7 +111,7 @@ BDPI_BSC_CPPFILES = $(patsubst $(ROOT_DIR)/csrc/%.cpp,$(BDPI_CSRC_DIR)/%.cpp,$(B
 # Default target must be first
 default: bsim
 
-.PHONY: default bsim bsim-bdpi core-verilog run run-bdpi test-bin list-tests clean sync-chiplab-cache-config
+.PHONY: default bsim bsim-bdpi core-verilog run run-bdpi test-bin list-tests clean sync_chiplab_cache_config
 
 ifeq ($(CONFIG_BSIM),y)
 bsim: $(BSIM_RUNNER)
@@ -115,8 +127,6 @@ bsim-bdpi: $(BSIM_COMPAT_RUNNER)
 core-verilog: $(VDIR)/$(CORE_AXI_TOP).v
 	find build/verilog -type f -name "*.v" \
 		-exec sed -i '/`ifdef BSV_NO_INITIAL_BLOCKS/,/`endif/d' {} +
-# 	find build/verilog -type f -name "*.v" \
-# 		-exec sed -i '/`ifdef BSV_ASSIGNMENT_DELAY/,/`endif/d' {} +
 	find build/verilog -type f -name "*.v" \
 		-exec sed -i '/`ifdef BSV_POSITIVE_RESET/,/`endif/c\
 `define BSV_RESET_VALUE 1'\''b1\
@@ -128,8 +138,7 @@ core-verilog: $(VDIR)/$(CORE_AXI_TOP).v
     	/opt/bsc/lib/Verilog/FIFO*.v \
     	/opt/bsc/lib/Verilog/RegFile*.v \
     	/opt/bsc/lib/Verilog/CReg*.v $(ROOT_DIR)/../chiplab/IP/myCPU/
-# Branch predictor SRAM IP (referenced via BVI under CONFIG_FPGA)
-	cp $(ROOT_DIR)/vsrc/sram_128x64_wrap.v $(ROOT_DIR)/../chiplab/IP/myCPU/
+	find $(ROOT_DIR)/../chiplab/IP/myCPU/ -type f -name "*.v" -exec $(ROOT_DIR)/scripts/filter_bsv.sh {} +
 	python3 $(ROOT_DIR)/scripts/gen_axi_wrapper.py
 
 # Build a software test image and record the resolved bin path in build/test-bin.<test>.path.
@@ -153,7 +162,7 @@ run:
 		echo "Examples: hello_world, func/func_lab3, nscscc_perf/coremark"; \
 		exit 2; \
 	fi
-	@$(MAKE) "$(BSIM_RUNNER)" "$(TEST_BIN_INFO)" TEST="$(TEST)" TEST_FORCE_CLEAN=1
+	@$(MAKE) "$(BSIM_RUNNER)" "$(TEST_BIN_INFO)" TEST="$(TEST)"
 	@set -e; \
 	mem_image=$$(cat "$(TEST_BIN_INFO)"); \
 	if [ ! -f "$$mem_image" ]; then \
@@ -176,7 +185,7 @@ sync-chiplab-cache-config: $(SYNC_CHIPLAB_CACHE_SCRIPT) $(ROOT_DIR)/.config $(CH
 		--config "$(ROOT_DIR)/.config" \
 		--common-mk "$(CHIPLAB_BSP_COMMON)"
 
-$(TEST_EXPECTED_BIN): sync-chiplab-cache-config
+$(TEST_EXPECTED_BIN): sync_chiplab_cache_config
 	@if [ -z "$(TEST)" ]; then \
 		echo "Usage: make test-bin TEST=<example>"; \
 		exit 2; \
@@ -244,8 +253,79 @@ $(BDPI_SIMDIR)/%.o: $(ROOT_DIR)/csrc/%.cpp | $(BDPI_SIMDIR)
 $(BDPI_CSRC_DIR)/%.cpp: $(ROOT_DIR)/csrc/%.cpp | $(BDPI_CSRC_DIR)
 	@printf '#include "%s"\n' "$<" > "$@"
 
-$(VDIR)/$(CORE_AXI_TOP).v: $(ROOT_DIR)/include/CoreAxiTop.bsv $(BDPI_BSV_DEPS) $(BUILD_DIR) $(BDIR) $(IDIR) $(VDIR)
-	$(BSC) $(BSC_RTS_FLAGS) $(BSC_CORE_FLAGS) $<
+# 1. Generate dependencies
+DEP_FILE      := $(BUILD_DIR)/.depends
+BDPI_DEP_FILE := $(BUILD_DIR)/.bdpi_depends
+GEN_BSV_DEPS  := $(firstword $(wildcard $(ROOT_DIR)/gen_bsv_deps.py $(ROOT_DIR)/scripts/gen_bsv_deps.py))
+
+DEP_ROOTS :=
+ifneq ($(filter core-verilog,$(MAKECMDGOALS)),)
+DEP_ROOTS += $(ROOT_DIR)/include/CoreAxiTop.bsv
+endif
+ifeq ($(DEP_ROOTS),)
+DEP_ROOTS := $(ROOT_DIR)/include/SimBDPI.bsv
+endif
+ALL_BSV_SRCS := $(wildcard $(ROOT_DIR)/*.bsv $(ROOT_DIR)/include/*.bsv)
+
+$(DEP_FILE): $(ALL_BSV_SRCS) $(GEN_BSV_DEPS) | $(BUILD_DIR) $(BDIR)
+	@echo "Generating Verilog dependencies..."
+	python3 $(GEN_BSV_DEPS) --order-var VERILOG_BSV_BOS $(BDIR) "$(ROOT_DIR):$(ROOT_DIR)/include" $(DEP_ROOTS) > $@
+
+$(BDPI_DEP_FILE): $(ALL_BSV_SRCS) $(GEN_BSV_DEPS) | $(BUILD_DIR) $(BDPI_BDIR)
+	@echo "Generating Bluesim dependencies..."
+	python3 $(GEN_BSV_DEPS) --order-var BDPI_BSV_BOS $(BDPI_BDIR) "$(ROOT_DIR):$(ROOT_DIR)/include" $(ROOT_DIR)/include/SimBDPI.bsv > $@
+
+-include $(DEP_FILE)
+-include $(BDPI_DEP_FILE)
+
+BDPI_MODEL_HEADER := $(BDPI_SIMDIR)/model_$(BDPI_TOP).h
+BDPI_MODEL_HEADER_STAMP := $(BDPI_SIMDIR)/.model_header.stamp
+
+# The Bluesim link step materializes model_*.h and the generated simulator
+# objects under $(BDPI_SIMDIR). bsim_bdpi.cpp must wait for that phase.
+$(BDPI_RAW_RUNNER): $(BDPI_BSV_BOS) $(BDPI_BSC_CPPFILES) | $(BUILD_DIR) $(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR) $(BDPI_CSRC_DIR)
+	@echo "Generating Bluesim raw runner..."
+	$(BSC) $(BSC_RTS_FLAGS) $(BSC_STEPS_FLAGS) $(BDPI_LINK_FLAGS) -o $@ \
+		-Xc++ -std=c++14 \
+		-Xc++ -I$(BDPI_SIMDIR) \
+		-Xc++ -I$(BLUESIM_DIR) \
+		-Xl -ldl \
+		$$(find "$(BDPI_BDIR)" -maxdepth 1 -name '*.ba' | sort) \
+		$(BDPI_BSC_CPPFILES)
+
+$(BDPI_MODEL_HEADER_STAMP): $(BDPI_RAW_RUNNER)
+	@test -f "$(BDPI_MODEL_HEADER)" || { \
+		echo "Missing generated Bluesim model header: $(BDPI_MODEL_HEADER)"; \
+		exit 1; \
+	}
+	@touch $@
+
+$(BDPI_SIMDIR)/bsim_bdpi.o: $(BDPI_MODEL_HEADER_STAMP)
+
+# 2. Parallel BO compilation rules
+# For Verilog
+$(BDIR)/%.bo: | $(BDIR) $(IDIR) $(VDIR)
+	@src="$(firstword $(wildcard $(ROOT_DIR)/$*.bsv $(ROOT_DIR)/include/$*.bsv))"; \
+	if [ -z "$$src" ]; then \
+		echo "Missing Verilog BSV source for $@"; \
+		exit 1; \
+	fi; \
+	echo "Compiling $$src to .bo (Verilog)"; \
+	$(BSC) $(BSC_RTS_FLAGS) $(BSC_STEPS_FLAGS) -verilog -p +:$(ROOT_DIR)/include -bdir $(BDIR) -info-dir $(IDIR) -vdir $(VDIR) "$$src"
+
+# For Bluesim (.bo and .ba are generated)
+$(BDPI_BDIR)/%.bo: | $(BDPI_BDIR) $(BDPI_IDIR)
+	@src="$(firstword $(wildcard $(ROOT_DIR)/$*.bsv $(ROOT_DIR)/include/$*.bsv))"; \
+	if [ -z "$$src" ]; then \
+		echo "Missing Bluesim BSV source for $@"; \
+		exit 1; \
+	fi; \
+	echo "Compiling $$src to .ba (Bluesim)"; \
+	$(BSC) $(BSC_RTS_FLAGS) $(BSC_STEPS_FLAGS) -sim -p +:$(ROOT_DIR)/include -bdir $(BDPI_BDIR) -info-dir $(BDPI_IDIR) "$$src"
+
+# 3. Generate Verilog for core
+$(VDIR)/$(CORE_AXI_TOP).v: $(VERILOG_BSV_BOS) | $(VDIR)
+	$(BSC) $(BSC_RTS_FLAGS) $(BSC_STEPS_FLAGS) $(BSC_CORE_FLAGS) $(ROOT_DIR)/include/CoreAxiTop.bsv
 
 $(BSIM_COMPAT_RUNNER): $(BSIM_RUNNER) | $(BUILD_DIR)
 	cp $< $@
@@ -256,15 +336,9 @@ $(BSIM_COMPAT_RAW_RUNNER): $(BSIM_RAW_RUNNER) | $(BUILD_DIR)
 BDPI_BSV_DEPS = $(wildcard $(ROOT_DIR)/*.bsv) \
                 $(wildcard $(ROOT_DIR)/include/*.bsv)
 
-$(BDPI_RUNNER): $(BDPI_BSV_DEPS) $(BDPI_OBJS) $(BDPI_BSC_CPPFILES) | $(BUILD_DIR) $(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR) $(BDPI_CSRC_DIR)
-	$(BSC) $(BSC_RTS_FLAGS) $(BDPI_BSC_FLAGS) $(ROOT_DIR)/include/SimBDPI.bsv
-	$(BSC) $(BSC_RTS_FLAGS) $(BDPI_LINK_FLAGS) -o $(BDPI_RAW_RUNNER) \
-		-Xc++ -std=c++14 \
-		-Xc++ -I$(BDPI_SIMDIR) \
-		-Xc++ -I$(BLUESIM_DIR) \
-		-Xl -ldl \
-		$$(find "$(BDPI_BDIR)" -maxdepth 1 -name '*.ba' | sort) \
-		$(BDPI_BSC_CPPFILES)
+# Main Bluesim runner target
+$(BDPI_RUNNER): $(BDPI_RAW_RUNNER) $(BDPI_OBJS) | $(BUILD_DIR) $(BDPI_SIMDIR)
+	@echo "Linking Bluesim runner with $(JOBS) parallel C++ jobs..."
 	$(CXX) -std=c++14 -O2 -Wall -Wno-unused \
 		-I$(BDPI_SIMDIR) \
 		-I$(BLUESIM_DIR) \
@@ -280,6 +354,7 @@ $(BDPI_RUNNER): $(BDPI_BSV_DEPS) $(BDPI_OBJS) $(BDPI_BSC_CPPFILES) | $(BUILD_DIR
 clean:
 	rm -rf $(BDIR) $(IDIR) $(VDIR) \
 		$(BDPI_BDIR) $(BDPI_IDIR) $(BDPI_SIMDIR) $(BDPI_CSRC_DIR) \
+		$(DEP_FILE) $(BDPI_DEP_FILE) \
 		$(BDPI_RUNNER) $(BDPI_RAW_RUNNER) $(BDPI_RAW_RUNNER).so \
 		$(BSIM_COMPAT_RUNNER) $(BSIM_COMPAT_RAW_RUNNER) $(BSIM_COMPAT_RAW_RUNNER).so \
 		$(TEST_BIN_INFO)
