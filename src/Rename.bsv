@@ -36,8 +36,7 @@ function Action doRenameBody(
     PIndx oldPdst = 0;
     Maybe#(RIndx) normDst = normalizeReg(dInst.dst);
     if (!excp.valid &&& normDst matches tagged Valid .d) begin
-      pDst = freeList.first;
-      freeList.deq;
+      pDst <- freeList.alloc;
       oldPdst = rat.lookup(d);
       rat.update(d, pDst);
       prf.clearReady(pDst);
