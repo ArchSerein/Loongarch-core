@@ -112,9 +112,25 @@ module mkFreeList(FreeList);
       Bit#(5) nextEnqP = enqP;
       Bit#(5) nextDeqP = deqP;
       Bit#(6) nextCount = count;
+      PIndx enqVal = 0;
+      Bool hasEnqReq = False;
+      Bool enqAlreadyFree = False;
 
       if (enqReq[2] matches tagged Valid .p) begin
-        data[enqP] <= p;
+        enqVal = p;
+        hasEnqReq = True;
+        for (Integer i = 0; i < 32; i = i + 1) begin
+          Bit#(6) off = fromInteger(i);
+          Bit#(5) idx = deqP + truncate(off);
+          if (off < count && data[idx] == p) begin
+            enqAlreadyFree = True;
+          end
+        end
+      end
+
+      Bool doRealEnq = hasEnqReq && !enqAlreadyFree;
+      if (doRealEnq) begin
+        data[enqP] <= enqVal;
         nextEnqP = nextPtr(enqP);
         nextCount = nextCount + 1;
       end
@@ -128,8 +144,8 @@ module mkFreeList(FreeList);
         for (Integer i = 0; i < 32; i = i + 1) begin
           snap[fromInteger(i)] = data[fromInteger(i)];
         end
-        if (enqReq[2] matches tagged Valid .p) begin
-          snap[enqP] = p;
+        if (doRealEnq) begin
+          snap[enqP] = enqVal;
         end
         checkpoints[tag] <= snap;
         cpEnqP[tag] <= nextEnqP;
@@ -152,7 +168,8 @@ module mkFreeList(FreeList);
   endrule
 
   method PIndx first if (initialized && count != 0);
-    return data[deqP];
+    Bit#(5) firstPtr = isValid(deqReq[2]) ? nextPtr(deqP) : deqP;
+    return data[firstPtr];
   endmethod
 
   method Bool notEmpty = initialized && (count != 0);

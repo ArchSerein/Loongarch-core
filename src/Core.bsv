@@ -88,6 +88,7 @@ module mkCore(Core);
 
   // Execution state
   Reg#(Bool)         aluBusy <- mkReg(False);
+  Reg#(Bool)   aluBranchBusy <- mkReg(False);
   Reg#(RSEntry)   aluExecEntry <- mkRegU;
 
   Reg#(Bool)     mulInFlight <- mkReg(False);
@@ -191,7 +192,7 @@ module mkCore(Core);
   // ============================================================
   // IF2 Stage (unchanged)
   // ============================================================
-  rule doIF2if2WaitRefill (if2WaitRefill);
+  rule doIF2if2WaitRefill (!aluBranchBusy && if2WaitRefill);
     let req = if2PendingReq;
     let iResp <- iCache.refillResp;
     if (iResp.addr == if2MissPaddr) begin
@@ -207,12 +208,12 @@ module mkCore(Core);
     end
   endrule
 
-  rule doIF2NoFetchTlb (!if2WaitRefill &&
+  rule doIF2NoFetchTlb (!aluBranchBusy && !if2WaitRefill &&
       f1f2Fifo.first.transType != Translate);
     doIF2Body(noTlbLookup, f1f2Fifo, f2dFifo, iCache, if2PendingReq, if2MissPaddr, if2WaitRefill);
   endrule
 
-  rule doIF2WithFetchTlb (!if2WaitRefill &&
+  rule doIF2WithFetchTlb (!aluBranchBusy && !if2WaitRefill &&
       f1f2Fifo.first.transType == Translate);
     let tlbRes <- tlb.fetchLookupResp;
     doIF2Body(tlbRes, f1f2Fifo, f2dFifo, iCache, if2PendingReq, if2MissPaddr, if2WaitRefill);
@@ -228,7 +229,7 @@ module mkCore(Core);
   // ============================================================
   // RN Stage: Rename - RAT lookup, FreeList alloc, ROB enq
   // ============================================================
-  rule doRename (!idleLock &&
+  rule doRename (!aluBranchBusy && !idleLock &&
       d2rnFifo.notEmpty && rn2diFifo.notFull && rob.notFull &&
       (!renameNeedsFree(d2rnFifo.first) || freeList.notEmpty));
     doRenameBody(d2rnFifo, rn2diFifo, rat, freeList, prf, rob);
@@ -273,16 +274,27 @@ module mkCore(Core);
   // IS/EX Stage: ALU issue and execute
   // ============================================================
   rule doIssueALU (!aluBusy && !isCsrTlbSpecial(rob.headIType) &&&
-      aluRS.selectOldestReady matches tagged Valid .entry &&&
-      (!isBranch(entry.iType) || (rob.headValid && rob.headTag == entry.robTag)));
+      aluRS.selectOldestReadyForAlu(rob.headTag, rob.headValid) matches tagged Valid .entry);
     doIssueALUBody(entry, aluExecEntry, aluRS, aluBusy);
+    aluBranchBusy <= isBranch(entry.iType);
   endrule
 
-  rule doExecALU (aluBusy && (!isValid(aluExecEntry.pDst) || !loadUsingCDB));
+  rule doExecALUBranch (aluBusy && aluBranchBusy);
     doExecALUBody(aluExecEntry, aluBusy, cdb, rob, pcReg[1], iCache, tlb,
       f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo, aluRS, muldivRS, memRS,
       if2WaitRefill, rat, freeList, branchPred);
-    // Claim the CDB so Mul/Div stall when we have a destination.
+    aluBranchBusy <= False;
+    if (isValid(aluExecEntry.pDst)) begin
+      aluUsingCDB <= True;
+    end
+  endrule
+
+  rule doExecALUNonBranch (aluBusy && !aluBranchBusy &&
+      (!isValid(aluExecEntry.pDst) || !loadUsingCDB));
+    doExecALUBody(aluExecEntry, aluBusy, cdb, rob, pcReg[1], iCache, tlb,
+      f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo, aluRS, muldivRS, memRS,
+      if2WaitRefill, rat, freeList, branchPred);
+    aluBranchBusy <= False;
     if (isValid(aluExecEntry.pDst)) begin
       aluUsingCDB <= True;
     end

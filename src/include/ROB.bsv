@@ -49,6 +49,19 @@ module mkROB(ROB);
     return (ptr == maxIndex) ? 0 : ptr + 1;
   endfunction
 
+  function RobEntry invalidRobEntry;
+    return RobEntry {
+      valid: False, state: RobIssued, pc: 0, inst: 0,
+      pDst: tagged Invalid, oldPdst: tagged Invalid, dst: tagged Invalid,
+      pSrc1: 0, pSrc2: 0, iType: Alu,
+      excp: ExcpInfo{valid: False, ecode: 0, esubcode: 0, badv: 0},
+      isBranch: False, isStore: False, isCsr: False,
+      isTlb: False, isSpecial: False,
+      mispredict: False, correctTarget: 0,
+      memVaddr: 0, memPaddr: 0, memUseCache: False
+    };
+  endfunction
+
   (* fire_when_enabled *)
   (* no_implicit_conditions *)
   rule canonicalize;
@@ -60,8 +73,16 @@ module mkROB(ROB);
     // Process entry writes: updates + enq (one write per entry max)
     for (Integer i = 0; i < 32; i = i + 1) begin
       Bit#(5) idx = fromInteger(i);
+      Bool keepOnFlush = True;
+      if (flushReq matches tagged Valid .tag) begin
+        Bit#(5) flushAge = tag - headPtr;
+        Bit#(5) idxAge = idx - headPtr;
+        keepOnFlush = !doFlush || idxAge <= flushAge;
+      end
 
-      if (doEnq && tail == idx) begin
+      if (doFlush && !keepOnFlush) begin
+        entries[idx] <= invalidRobEntry;
+      end else if (doEnq && tail == idx) begin
         entries[idx] <= fromMaybe(?, enqReq);
       end else begin
         RobEntry e = entries[idx];

@@ -16,6 +16,7 @@ interface ResStation#(numeric type size);
   method Action commitWakeup(CDBMessage cdb); // commit-stage (CSR) result wakeup
   method Maybe#(RSEntry) selectOldestReady;  // issue selection
   method Maybe#(RSEntry) selectOldestReadyFrom(RobTag headTag);
+  method Maybe#(RSEntry) selectOldestReadyForAlu(RobTag headTag, Bool headValid);
   method Bool hasOlderStore(RobTag tag, RobTag headTag);
   method Action remove(RobTag tag);      // remove issued entry
   method Action flushAfter(RobTag tag);  // invalidate younger entries
@@ -95,6 +96,29 @@ module mkResStation(ResStation#(size))
       Bool hasEnq = isValid(enqReq);
       RSEntry enqEntry = fromMaybe(?, enqReq);
 
+      if (hasEnq && (cdbReq.valid || commitCdbReq.valid)) begin
+        if (cdbReq.valid) begin
+          if (enqEntry.qj matches tagged Valid .q &&& q == cdbReq.tag) begin
+            enqEntry.qj = tagged Invalid;
+            enqEntry.vj = cdbReq.value;
+          end
+          if (enqEntry.qk matches tagged Valid .q &&& q == cdbReq.tag) begin
+            enqEntry.qk = tagged Invalid;
+            enqEntry.vk = cdbReq.value;
+          end
+        end
+        if (commitCdbReq.valid) begin
+          if (enqEntry.qj matches tagged Valid .q &&& q == commitCdbReq.tag) begin
+            enqEntry.qj = tagged Invalid;
+            enqEntry.vj = commitCdbReq.value;
+          end
+          if (enqEntry.qk matches tagged Valid .q &&& q == commitCdbReq.tag) begin
+            enqEntry.qk = tagged Invalid;
+            enqEntry.vk = commitCdbReq.value;
+          end
+        end
+      end
+
       // Process all entries: one write per entry max
       for (Integer i = 0; i < valueOf(size); i = i + 1) begin
         Bit#(TLog#(size)) idx = fromInteger(i);
@@ -171,6 +195,24 @@ module mkResStation(ResStation#(size))
 
   method Action enq(RSEntry e) if (count != depth);
     enqReq <= tagged Valid e;
+  endmethod
+
+  method Maybe#(RSEntry) selectOldestReadyForAlu(RobTag headTag, Bool headValid);
+    Maybe#(RSEntry) ret = tagged Invalid;
+    Bit#(5) bestAge = 0;
+    Bool found = False;
+    for (Integer i = 0; i < valueOf(size); i = i + 1) begin
+      RSEntry e = entries[fromInteger(i)];
+      Bit#(5) entryAge = e.robTag - headTag;
+      Bool branchOk = !isBranch(e.iType) || (headValid && e.robTag == headTag);
+      if (e.valid && !isValid(e.qj) && !isValid(e.qk) && branchOk &&
+          (!found || entryAge < bestAge)) begin
+        ret = tagged Valid e;
+        bestAge = entryAge;
+        found = True;
+      end
+    end
+    return ret;
   endmethod
 
   method Action wakeup(CDBMessage cdb);
