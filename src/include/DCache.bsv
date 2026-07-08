@@ -77,6 +77,18 @@ function Data applyByteMask(Data oldData, Data newData, Bit#(WordSz) byteEn);
   return merged;
 endfunction
 
+function Bit#(3) axiSizeFromByteEn(Bit#(WordSz) byteEn);
+  case (byteEn)
+    4'b0001: return 3'd0;
+    4'b0010: return 3'd0;
+    4'b0100: return 3'd0;
+    4'b1000: return 3'd0;
+    4'b0011: return 3'd1;
+    4'b1100: return 3'd1;
+    default: return 3'd2;
+  endcase
+endfunction
+
 interface DCache;
   method Action req(MemReq r);
   method Action cacop(MemReq r);
@@ -757,18 +769,19 @@ module mkDCache(DCache);
 
   rule doSendUncacheReq (state == SendUncacheReq);
     let r = missReq;
+    let axiSize = axiSizeFromByteEn(r.byteEn);
     if (r.op == Ld || r.op == Ll) begin
       arQ.enq(AxiReadAddr{
         addr: r.paddr,
         len: 'b0,
-        size: 3'd2,
+        size: axiSize,
         burst: AxiBurstFixed
       });
     end else if (r.op == St || r.op == Sc) begin
       awQ.enq(AxiWriteAddr{
         addr: r.paddr,
         len: 'b0,
-        size: 3'd2,
+        size: axiSize,
         burst: AxiBurstFixed
       });
       wQ.enq(AxiWriteData{

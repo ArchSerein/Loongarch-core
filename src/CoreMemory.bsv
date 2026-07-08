@@ -116,6 +116,7 @@ function Action doMemoryStage1Body(
         Data wData = 0;
         MemOp memOp = Ld;
         if (isLoad) begin
+          byteEn = coreLoadByteEn(eInst.addr[1:0], m[3:0]);
           memOp = (eInst.iType == Ll) ? Ll : Ld;
         end else if (isStore || isSc) begin
           byteEn = storeByteEn;
