@@ -16,12 +16,14 @@ function Action doDispatchAluBody(
   action
     let rInst = rn2diFifo.first;
     rn2diFifo.deq;
+    Bool src1Ready = prf.isReady(rInst.pSrc1);
+    Bool src2Ready = prf.isReady2(rInst.pSrc2);
     let entry = RSEntry{
       valid: True, iType: rInst.dInst.iType,
       aluFunc: rInst.dInst.aluFunc, muldivFunc: rInst.dInst.muldivFunc,
       brFunc: rInst.dInst.brFunc,
-      qj: prf.isReady(rInst.pSrc1) ? tagged Invalid : tagged Valid rInst.pSrc1,
-      qk: prf.isReady2(rInst.pSrc2) ? tagged Invalid : tagged Valid rInst.pSrc2,
+      qj: src1Ready ? tagged Invalid : tagged Valid rInst.pSrc1,
+      qk: src2Ready ? tagged Invalid : tagged Valid rInst.pSrc2,
       vj: prf.rd1(rInst.pSrc1), vk: prf.rd2(rInst.pSrc2),
       pDst: (rInst.pDst == 0) ? tagged Invalid : tagged Valid rInst.pDst,
       robTag: rInst.robTag,
@@ -41,12 +43,14 @@ function Action doDispatchMulDivBody(
   action
     let rInst = rn2diFifo.first;
     rn2diFifo.deq;
+    Bool src1Ready = prf.isReady(rInst.pSrc1);
+    Bool src2Ready = prf.isReady2(rInst.pSrc2);
     let entry = RSEntry{
       valid: True, iType: rInst.dInst.iType,
       aluFunc: rInst.dInst.aluFunc, muldivFunc: rInst.dInst.muldivFunc,
       brFunc: rInst.dInst.brFunc,
-      qj: prf.isReady(rInst.pSrc1) ? tagged Invalid : tagged Valid rInst.pSrc1,
-      qk: prf.isReady2(rInst.pSrc2) ? tagged Invalid : tagged Valid rInst.pSrc2,
+      qj: src1Ready ? tagged Invalid : tagged Valid rInst.pSrc1,
+      qk: src2Ready ? tagged Invalid : tagged Valid rInst.pSrc2,
       vj: prf.rd1(rInst.pSrc1), vk: prf.rd2(rInst.pSrc2),
       pDst: (rInst.pDst == 0) ? tagged Invalid : tagged Valid rInst.pDst,
       robTag: rInst.robTag,

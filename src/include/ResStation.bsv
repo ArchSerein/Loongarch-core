@@ -199,17 +199,29 @@ module mkResStation(ResStation#(size))
 
   method Maybe#(RSEntry) selectOldestReadyForAlu(RobTag headTag, Bool headValid);
     Maybe#(RSEntry) ret = tagged Invalid;
-    Bit#(5) bestAge = 0;
-    Bool found = False;
+    Bool foundHeadBranch = False;
+
     for (Integer i = 0; i < valueOf(size); i = i + 1) begin
       RSEntry e = entries[fromInteger(i)];
-      Bit#(5) entryAge = e.robTag - headTag;
-      Bool branchOk = !isBranch(e.iType) || (headValid && e.robTag == headTag);
-      if (e.valid && !isValid(e.qj) && !isValid(e.qk) && branchOk &&
-          (!found || entryAge < bestAge)) begin
+      if (e.valid && isBranch(e.iType) && headValid && e.robTag == headTag &&
+          !isValid(e.qj) && !isValid(e.qk)) begin
         ret = tagged Valid e;
-        bestAge = entryAge;
-        found = True;
+        foundHeadBranch = True;
+      end
+    end
+
+    if (!foundHeadBranch) begin
+      Bit#(5) bestAge = 0;
+      Bool found = False;
+      for (Integer i = 0; i < valueOf(size); i = i + 1) begin
+        RSEntry e = entries[fromInteger(i)];
+        Bit#(5) entryAge = e.robTag - headTag;
+        if (e.valid && !isBranch(e.iType) && !isValid(e.qj) && !isValid(e.qk) &&
+            (!found || entryAge < bestAge)) begin
+          ret = tagged Valid e;
+          bestAge = entryAge;
+          found = True;
+        end
       end
     end
     return ret;

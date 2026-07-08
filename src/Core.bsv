@@ -8,6 +8,7 @@ import Mmu::*;
 import Tlb::*;
 import Fifo::*;
 import Ehr::*;
+import ConfigReg::*;
 import Vector::*;
 import ICache::*;
 import DCache::*;
@@ -113,7 +114,7 @@ module mkCore(Core);
   Reg#(StoreForwardResult) memForward <- mkReg(StoreForwardResult{data: 0, byteEn: 0});
 
   // Commit state
-  Reg#(CommitState) commitState <- mkReg(CommitIdle);
+  ConfigReg#(CommitState) commitState <- mkConfigReg(CommitIdle);
 `ifdef CONFIG_DIFFTEST
   Reg#(DiffArchCsrState) csrSnapReg <- mkRegU;
 `endif
@@ -273,7 +274,7 @@ module mkCore(Core);
   // ============================================================
   // IS/EX Stage: ALU issue and execute
   // ============================================================
-  rule doIssueALU (!aluBusy && !isCsrTlbSpecial(rob.headIType) &&&
+  rule doIssueALU (commitState == CommitIdle && !aluBusy && !isCsrTlbSpecial(rob.headIType) &&&
       aluRS.selectOldestReadyForAlu(rob.headTag, rob.headValid) matches tagged Valid .entry);
     doIssueALUBody(entry, aluExecEntry, aluRS, aluBusy);
     aluBranchBusy <= isBranch(entry.iType);
@@ -304,7 +305,7 @@ module mkCore(Core);
   // IS/EX Stage: MulDiv issue and collect
   // ============================================================
 
-  rule doIssueMul (!mulInFlight && !isCsrTlbSpecial(rob.headIType) &&&
+  rule doIssueMul (commitState == CommitIdle && !mulInFlight && !isCsrTlbSpecial(rob.headIType) &&&
       muldivRS.selectOldestReady matches tagged Valid .entry &&&
       isMulFunc(fromMaybe(?, entry.muldivFunc)));
     doIssueMulBody(entry, mulUnit, mulExecEntry, muldivRS, mulInFlight);
@@ -335,7 +336,7 @@ module mkCore(Core);
   // ============================================================
   Reg#(Bool) memNeedTlb <- mkReg(False);
 
-  rule doIssueMem (memState == MemIdle && !isCsrTlbSpecial(rob.headIType) &&&
+  rule doIssueMem (commitState == CommitIdle && memState == MemIdle && !isCsrTlbSpecial(rob.headIType) &&&
       memRS.selectOldestReadyFrom(rob.headTag) matches tagged Valid .entry &&&
       (!entry.isLoad || !memRS.hasOlderStore(entry.robTag, rob.headTag)));
     doIssueMemBody(entry, memExecEntry, memVaddr, memPaddr, memNeedTlb,

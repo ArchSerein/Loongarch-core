@@ -37,11 +37,11 @@ module mkPRF(PRF);
   end
 
   // Ready bits: EHR with 5 ports for conflict-free concurrent access
-  // Port [0]: clearReady (rename stage allocates new pDst)
-  // Port [1]: setReady (CDB writeback completes a pDst)
-  // Port [2]: setReadyCommit (commit write for CSR results)
-  // Port [3]: isReady read 1 (DI stage checks, sees same-cycle writes)
-  // Port [4]: isReady read 2 (second operand check in same rule)
+  // Port [0]: setReady (CDB writeback completes a pDst) (rename stage allocates new pDst)
+  // Port [1]: setReadyCommit (commit write for CSR results)
+  // Port [2]: isReady read 1 (DI stage checks, sees same-cycle writes but not same-cycle alloc clears) (commit write for CSR results)
+  // Port [3]: isReady read 2 (second operand check in same rule)
+  // Port [4]: clearReady (rename stage allocates new pDst) (second operand check in same rule)
   Vector#(64, Ehr#(5, Bool)) ready = newVector;
   for (Integer i = 0; i < 64; i = i + 1) begin
     if (i < 32)
@@ -78,24 +78,24 @@ module mkPRF(PRF);
     end
   endmethod
 
-  method Bool isReady(PIndx p) = ready[p][3];
-  method Bool isReady2(PIndx p) = ready[p][4];
+  method Bool isReady(PIndx p) = ready[p][2];
+  method Bool isReady2(PIndx p) = ready[p][3];
 
   method Action setReady(PIndx p);
     if (p != 0) begin
-      ready[p][1] <= True;
+      ready[p][0] <= True;
     end
   endmethod
 
   method Action setReadyCommit(PIndx p);
     if (p != 0) begin
-      ready[p][2] <= True;
+      ready[p][1] <= True;
     end
   endmethod
 
   method Action clearReady(PIndx p);
     if (p != 0) begin
-      ready[p][0] <= False;
+      ready[p][4] <= False;
     end
   endmethod
 endmodule

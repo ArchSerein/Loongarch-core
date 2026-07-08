@@ -108,8 +108,9 @@ function ExecInst exec(DecodedInst dInst, Data rVal1, Data rVal2, Addr pc, Addr 
     endcase);
   end
 
-  // CSR write-like ops repurpose addr; never mispredict for them
-  eInst.mispredict = (dInst.iType == Csrw || dInst.iType == Csrxchg) ? False : (brAddr != ppc);
+  // Only control-flow instructions can redirect fetch.
+  Bool isControlFlow = dInst.iType == Br || dInst.iType == J || dInst.iType == Jr;
+  eInst.mispredict = isControlFlow && (brAddr != ppc);
   eInst.brTaken = brTaken;
   eInst.targetAddr = brAddr;
 
