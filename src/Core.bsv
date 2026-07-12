@@ -311,7 +311,7 @@ module mkCore(Core);
     doIssueMulBody(entry, mulUnit, mulExecEntry, muldivRS, mulInFlight);
   endrule
 
-  rule doIssueDiv (!divInFlight && !isCsrTlbSpecial(rob.headIType) &&&
+  rule doIssueDiv (commitState == CommitIdle && !divInFlight && !isCsrTlbSpecial(rob.headIType) &&&
       muldivRS.selectOldestReady matches tagged Valid .entry &&&
       isDivFunc(fromMaybe(?, entry.muldivFunc)));
     doIssueDivBody(entry, divUnit, divExecEntry, muldivRS, divInFlight);
