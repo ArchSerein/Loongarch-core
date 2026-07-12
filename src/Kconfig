@@ -64,7 +64,7 @@ config DCACHE_WAYS
 config DCACHE_LINE_WORDS
     hex "BLOCKS"
     default 0x4
-
+endmenu
 
 menu "ICACHE"
 config ICACHE_SETS
