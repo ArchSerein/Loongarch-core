@@ -10,3 +10,7 @@ include/Autoconf.bsv
 include/config/
 include/generated/
 tests/
+deprecated/*
+.qoder
+run.sh
+docs/*
