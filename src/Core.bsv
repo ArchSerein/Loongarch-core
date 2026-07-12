@@ -101,14 +101,10 @@ module mkCore(Core);
   Reg#(MemExecState) memState <- mkReg(MemIdle);
   Reg#(RSEntry)   memExecEntry <- mkRegU;
 
-  // CDB arbitration wires. Set by an FU completion rule when it
-  // drives the bus (has a pDst). Lower-priority FU rules read these
-  // in their guards to stall when a higher-priority FU is using the
-  // bus, preventing the CDB from silently dropping their result.
-  // Priority: Load > ALU > Mul > Div.
+  // CDB arbitration wires. A completed long-latency operation is given
+  // priority so it cannot be starved by a stream of one-cycle operations.
+  // Among the remaining producers the priority is Load > ALU.
   Wire#(Bool) loadUsingCDB <- mkDWire(False);
-  Wire#(Bool) aluUsingCDB  <- mkDWire(False);
-  Wire#(Bool) mulUsingCDB  <- mkDWire(False);
   Reg#(Addr)        memVaddr  <- mkRegU;
   Reg#(Addr)        memPaddr  <- mkRegU;
   Reg#(StoreForwardResult) memForward <- mkReg(StoreForwardResult{data: 0, byteEn: 0});
@@ -193,7 +189,7 @@ module mkCore(Core);
   // ============================================================
   // IF2 Stage (unchanged)
   // ============================================================
-  rule doIF2if2WaitRefill (!aluBranchBusy && if2WaitRefill);
+  rule doIF2if2WaitRefill (!aluBranchBusy && if2WaitRefill && f2dFifo.notFull);
     let req = if2PendingReq;
     let iResp <- iCache.refillResp;
     if (iResp.addr == if2MissPaddr) begin
@@ -209,12 +205,12 @@ module mkCore(Core);
     end
   endrule
 
-  rule doIF2NoFetchTlb (!aluBranchBusy && !if2WaitRefill &&
+  rule doIF2NoFetchTlb (!aluBranchBusy && !if2WaitRefill && f2dFifo.notFull &&
       f1f2Fifo.first.transType != Translate);
     doIF2Body(noTlbLookup, f1f2Fifo, f2dFifo, iCache, if2PendingReq, if2MissPaddr, if2WaitRefill);
   endrule
 
-  rule doIF2WithFetchTlb (!aluBranchBusy && !if2WaitRefill &&
+  rule doIF2WithFetchTlb (!aluBranchBusy && !if2WaitRefill && f2dFifo.notFull &&
       f1f2Fifo.first.transType == Translate);
     let tlbRes <- tlb.fetchLookupResp;
     doIF2Body(tlbRes, f1f2Fifo, f2dFifo, iCache, if2PendingReq, if2MissPaddr, if2WaitRefill);
@@ -239,15 +235,15 @@ module mkCore(Core);
   // ============================================================
   // DI Stage: Dispatch to RS based on instruction type
   // ============================================================
-  rule doDispatchAlu (rn2diFifo.notEmpty && dispIsAlu(rn2diFifo.first));
+  rule doDispatchAlu (rn2diFifo.notEmpty && aluRS.notFull && dispIsAlu(rn2diFifo.first));
     doDispatchAluBody(rn2diFifo, prf, aluRS);
   endrule
 
-  rule doDispatchMulDiv (rn2diFifo.notEmpty && dispIsMul(rn2diFifo.first));
+  rule doDispatchMulDiv (rn2diFifo.notEmpty && muldivRS.notFull && dispIsMul(rn2diFifo.first));
     doDispatchMulDivBody(rn2diFifo, prf, muldivRS);
   endrule
 
-  rule doDispatchMem (rn2diFifo.notEmpty && dispIsMem(rn2diFifo.first));
+  rule doDispatchMem (rn2diFifo.notEmpty && memRS.notFull && dispIsMem(rn2diFifo.first));
     doDispatchMemBody(rn2diFifo, prf, memRS);
   endrule
 
@@ -281,25 +277,24 @@ module mkCore(Core);
     aluBranchBusy <= isBranch(entry.iType);
   endrule
 
-  rule doExecALUBranch (aluBusy && aluBranchBusy);
+  rule doExecALUBranch (aluBusy && aluBranchBusy &&
+      (!isValid(aluExecEntry.pDst) ||
+       (!loadUsingCDB && !(mulInFlight && mulUnit.finish && isValid(mulExecEntry.pDst)) &&
+        !(divInFlight && divUnit.finish && isValid(divExecEntry.pDst)))));
     doExecALUBody(aluExecEntry, aluBusy, cdb, rob, pcReg[1], iCache, tlb,
       f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo, aluRS, muldivRS, memRS,
       if2WaitRefill, rat, freeList, branchPred);
     aluBranchBusy <= False;
-    if (isValid(aluExecEntry.pDst)) begin
-      aluUsingCDB <= True;
-    end
   endrule
 
   rule doExecALUNonBranch (aluBusy && !aluBranchBusy &&
-      (!isValid(aluExecEntry.pDst) || !loadUsingCDB));
+      (!isValid(aluExecEntry.pDst) ||
+       (!loadUsingCDB && !(mulInFlight && mulUnit.finish && isValid(mulExecEntry.pDst)) &&
+        !(divInFlight && divUnit.finish && isValid(divExecEntry.pDst)))));
     doExecALUBody(aluExecEntry, aluBusy, cdb, rob, pcReg[1], iCache, tlb,
       f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo, aluRS, muldivRS, memRS,
       if2WaitRefill, rat, freeList, branchPred);
     aluBranchBusy <= False;
-    if (isValid(aluExecEntry.pDst)) begin
-      aluUsingCDB <= True;
-    end
   endrule
 
   // ============================================================
@@ -321,16 +316,12 @@ module mkCore(Core);
   endrule
 
   rule doCollectMul (mulInFlight && mulUnit.finish &&&
-      (!isValid(mulExecEntry.pDst) || (!loadUsingCDB && !aluUsingCDB)));
+      (!isValid(mulExecEntry.pDst) ||
+       !(divInFlight && divUnit.finish && isValid(divExecEntry.pDst))));
     doCollectMulBody(mulInFlight, mulExecEntry, mulUnit, cdb, rob);
-    if (isValid(mulExecEntry.pDst)) begin
-      mulUsingCDB <= True;
-    end
   endrule
 
-  rule doCollectDiv (divInFlight && divUnit.finish &&&
-      (!isValid(divExecEntry.pDst) ||
-       (!loadUsingCDB && !aluUsingCDB && !mulUsingCDB)));
+  rule doCollectDiv (divInFlight && divUnit.finish &&& True);
     doCollectDivBody(divInFlight, divExecEntry, divUnit, cdb, rob);
   endrule
 
@@ -368,11 +359,13 @@ module mkCore(Core);
       memForward, dCache, storeBuf, committedStoreBuf);
   endrule
 
-  rule doCollectMemCache (memState == MemCacheWait);
+  rule doCollectMemCache (memState == MemCacheWait &&
+      (!isValid(memExecEntry.pDst) ||
+       (!(mulInFlight && mulUnit.finish && isValid(mulExecEntry.pDst)) &&
+        !(divInFlight && divUnit.finish && isValid(divExecEntry.pDst)))));
     doCollectMemCacheBody(memState, memExecEntry, memVaddr, memForward, dCache, cdb,
       rob, memRS);
-    // Load has the highest CDB priority. Claim the bus so ALU/Mul/Div
-    // stall when we have a destination register to write back.
+    // Claim the bus so ALU waits when this load writes a destination.
     if (isValid(memExecEntry.pDst)) begin
       loadUsingCDB <= True;
     end

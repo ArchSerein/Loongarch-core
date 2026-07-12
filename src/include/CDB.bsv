@@ -6,10 +6,10 @@ import OoOTypes::*;
 // Common Data Bus (CDB)
 // Arbitrates among completing functional units and broadcasts
 // {tag, value} to all listeners (RS, PRF, ROB)
-// Priority: Load > ALU > Mul > Div
+// Core-side guards guarantee that at most one producer drives the bus.
 //
 // Arbitration is enforced by the Core module via rule guards
-// (loadUsingCDB/aluUsingCDB/mulUsingCDB wires), NOT inside this
+// (completion-state guards and loadUsingCDB), NOT inside this
 // module. The CDB itself simply latches the highest-priority
 // request. This avoids BSV same-rule read-after-write conflicts
 // on the request wires.
