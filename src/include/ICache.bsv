@@ -9,11 +9,7 @@ import RegFile::*;
 // ============================================================
 // Configurable parameters (values provided by Kconfig -D flags)
 // ============================================================
-`ifdef CONFIG_FPGA
-typedef 256                       ICacheSets;      // matches cache_sram.v depth
-`else
 typedef `CONFIG_ICACHE_SETS       ICacheSets;      // number of sets
-`endif
 typedef `CONFIG_ICACHE_WAYS       ICacheWays;      // set associativity
 typedef `CONFIG_ICACHE_LINE_WORDS ICacheLineWords; // words per cache line
 
@@ -86,7 +82,6 @@ interface ICache;
   method Action refillReq(Addr pa, Bool useCache);
   method ActionValue#(ICacheRefillResp) refillResp;
   method Action commitHit(Addr va, ICacheWayIdx way);
-  method Action flush;
   method Action squash;
   method Action invalidate;
   method Action cacop(Bit#(5) op, Addr va, Data ctag);
@@ -389,19 +384,6 @@ module mkICache(ICache);
 
   method Action commitHit(Addr va, ICacheWayIdx way);
     replacer.access(getIIndex(va), way);
-  endmethod
-
-  method Action flush;
-    refillReqQ.clear();
-    cacopRespQ.clear();
-    refillMayWrite <= False;
-    if (state != Ready) begin
-      squashPending <= True;
-    end
-    flushIdx <= 0;
-    flushWay <= 0;
-    state <= FlushAll;
-    epoch <= !epoch;
   endmethod
 
   method Action squash;
