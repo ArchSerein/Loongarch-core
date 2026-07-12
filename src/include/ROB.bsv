@@ -19,7 +19,10 @@ interface ROB;
   method Action deq;                 // advance head (CM)
   method Bool headValid;             // head slot occupied
   method Bool notFull;               // space available
-  method Action update(RobTag tag, RobState state);
+  method Action updateALU(RobTag tag, RobState state);
+  method Action updateMul(RobTag tag, RobState state);
+  method Action updateDiv(RobTag tag, RobState state);
+  method Action updateMem(RobTag tag, RobState state);
   method Action updateExcp(RobTag tag, ExcpInfo excp);
   method Action updateBranch(RobTag tag, Bool mispred, Addr target);
   method Action updateMemInfo(RobTag tag, Addr vaddr, Addr paddr, Bool useCache);
@@ -35,7 +38,10 @@ module mkROB(ROB);
 
   Wire#(Maybe#(RobEntry)) enqReq <- mkDWire(tagged Invalid);
   Wire#(Bool) deqReq <- mkDWire(False);
-  Wire#(Maybe#(Tuple2#(RobTag, RobState))) updateReq <- mkDWire(tagged Invalid);
+  // Each execution pipeline has an independent ROB completion port.  A single
+  // DWire here would serialize otherwise independent writebacks.
+  Vector#(4, Wire#(Maybe#(Tuple2#(RobTag, RobState)))) updateReqs <-
+    replicateM(mkDWire(tagged Invalid));
   Wire#(Maybe#(Tuple2#(RobTag, ExcpInfo))) updateExcpReq <- mkDWire(tagged Invalid);
   Wire#(Maybe#(Tuple3#(RobTag, Bool, Addr))) updateBranchReq <- mkDWire(tagged Invalid);
   Wire#(Maybe#(Tuple4#(RobTag, Addr, Addr, Bool))) updateMemInfoReq <- mkDWire(tagged Invalid);
@@ -73,16 +79,9 @@ module mkROB(ROB);
     // Process entry writes: updates + enq (one write per entry max)
     for (Integer i = 0; i < 32; i = i + 1) begin
       Bit#(5) idx = fromInteger(i);
-      Bool keepOnFlush = True;
-      if (flushReq matches tagged Valid .tag) begin
-        Bit#(5) flushAge = tag - headPtr;
-        Bit#(5) idxAge = idx - headPtr;
-        keepOnFlush = !doFlush || idxAge <= flushAge;
-      end
-
-      if (doFlush && !keepOnFlush) begin
-        entries[idx] <= invalidRobEntry;
-      end else if (doEnq && tail == idx) begin
+      // A flush makes younger entries unreachable by moving tail/count; they
+      // need not be physically cleared and will be overwritten by later enqs.
+      if (doEnq && tail == idx) begin
         entries[idx] <= fromMaybe(?, enqReq);
       end else begin
         RobEntry e = entries[idx];
@@ -95,9 +94,11 @@ module mkROB(ROB);
         Bool newMemUseCache = e.memUseCache;
         Bool modified = False;
 
-        if (updateReq matches tagged Valid .req &&& tpl_1(req) == idx) begin
-          newState = tpl_2(req);
-          modified = True;
+        for (Integer p = 0; p < 4; p = p + 1) begin
+          if (updateReqs[p] matches tagged Valid .req &&& tpl_1(req) == idx) begin
+            newState = tpl_2(req);
+            modified = True;
+          end
         end
         if (updateExcpReq matches tagged Valid .req &&& tpl_1(req) == idx) begin
           newExcp = tpl_2(req);
@@ -139,8 +140,10 @@ module mkROB(ROB);
       count <= 0;
     end else if (doFlush) begin
       let tag = fromMaybe(?, flushReq);
+      Bit#(5) effectiveHead = doDeq ? nextPtr(headPtr) : headPtr;
       tail <= nextPtr(tag);
-      count <= zeroExtend(tag - headPtr) + 1;
+      headPtr <= effectiveHead;
+      count <= zeroExtend(tag - headPtr) + (doDeq ? 0 : 1);
     end else begin
       Bit#(5) nextHead = headPtr;
       Bit#(5) nextTail = tail;
@@ -183,8 +186,20 @@ module mkROB(ROB);
     deqReq <= True;
   endmethod
 
-  method Action update(RobTag tag, RobState state);
-    updateReq <= tagged Valid tuple2(tag, state);
+  method Action updateALU(RobTag tag, RobState state);
+    updateReqs[0] <= tagged Valid tuple2(tag, state);
+  endmethod
+
+  method Action updateMul(RobTag tag, RobState state);
+    updateReqs[1] <= tagged Valid tuple2(tag, state);
+  endmethod
+
+  method Action updateDiv(RobTag tag, RobState state);
+    updateReqs[2] <= tagged Valid tuple2(tag, state);
+  endmethod
+
+  method Action updateMem(RobTag tag, RobState state);
+    updateReqs[3] <= tagged Valid tuple2(tag, state);
   endmethod
 
   method Action updateExcp(RobTag tag, ExcpInfo excp);

@@ -97,7 +97,7 @@ function Action doExecALUBody(
     end
 
     // Update ROB
-    rob.update(entry.robTag, RobCompleted);
+    rob.updateALU(entry.robTag, RobCompleted);
     rob.updateBranch(entry.robTag, eInst.mispredict, eInst.targetAddr);
 
     // Train the predictor for every resolved control-flow instruction.
@@ -201,7 +201,7 @@ function Action doIssueMemBody(
 
     if (excp.valid) begin
       rob.updateExcp(entry.robTag, excp);
-      rob.update(entry.robTag, RobCompleted);
+      rob.updateMem(entry.robTag, RobCompleted);
       memRS.remove(entry.robTag);
     end else if (entry.iType == Ibar) begin
       iCache.invalidate;

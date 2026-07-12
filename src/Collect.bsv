@@ -56,7 +56,7 @@ function Action doCollectMulBody(
     if (entry.pDst matches tagged Valid .pd) begin
       cdb.sendMul(pd, result);
     end
-    rob.update(entry.robTag, RobCompleted);
+    rob.updateMul(entry.robTag, RobCompleted);
   endaction
 endfunction
 
@@ -81,7 +81,7 @@ function Action doCollectDivBody(
     if (entry.pDst matches tagged Valid .pd) begin
       cdb.sendDiv(pd, result);
     end
-    rob.update(entry.robTag, RobCompleted);
+    rob.updateDiv(entry.robTag, RobCompleted);
   endaction
 endfunction
 
@@ -110,7 +110,7 @@ function Action doCollectMemTLBBody(
     if (dTrans.excValid) begin
       ExcpInfo memExcp = mkExcp(dTrans.ecode, dTrans.esubcode, dTrans.badv);
       rob.updateExcp(entry.robTag, memExcp);
-      rob.update(entry.robTag, RobCompleted);
+      rob.updateMem(entry.robTag, RobCompleted);
       memRS.remove(entry.robTag);
       memState <= MemIdle;
     end else begin
@@ -130,7 +130,7 @@ function Action doCollectMemTLBBody(
             byteEn: extend(tpl_1(storePkt))
           });
           rob.updateMemInfo(entry.robTag, vaddr, dTrans.pa, memUseCache);
-          rob.update(entry.robTag, RobCompleted);
+          rob.updateMem(entry.robTag, RobCompleted);
           memRS.remove(entry.robTag);
           memState <= MemIdle;
         end else begin
@@ -206,7 +206,7 @@ function Action doCollectMemDirectBody(
           byteEn: extend(tpl_1(storePkt))
         });
         rob.updateMemInfo(entry.robTag, vaddr, paddr, memUseCache);
-        rob.update(entry.robTag, RobCompleted);
+        rob.updateMem(entry.robTag, RobCompleted);
         memRS.remove(entry.robTag);
         memState <= MemIdle;
       end else begin
@@ -298,15 +298,15 @@ function Action doCollectMemCacheBody(
       if (entry.pDst matches tagged Valid .pd) begin
         cdb.sendLoad(pd, loadData);
       end
-      rob.update(entry.robTag, RobCompleted);
+      rob.updateMem(entry.robTag, RobCompleted);
     end else if (entry.iType == Sc) begin
       if (entry.pDst matches tagged Valid .pd) begin
         cdb.sendLoad(pd, d.data);
       end
-      rob.update(entry.robTag, RobCompleted);
+      rob.updateMem(entry.robTag, RobCompleted);
     end else begin
       // Dbar, Cacop: no PRF write
-      rob.update(entry.robTag, RobCompleted);
+      rob.updateMem(entry.robTag, RobCompleted);
     end
     memRS.remove(entry.robTag);
   endaction
@@ -323,7 +323,7 @@ function Action doCollectMemCacopIBody(
     let done <- iCache.cacopResp;
     let entry = memExecEntry;
     memState <= MemIdle;
-    rob.update(entry.robTag, RobCompleted);
+    rob.updateMem(entry.robTag, RobCompleted);
     memRS.remove(entry.robTag);
   endaction
 endfunction
@@ -339,7 +339,7 @@ function Action doCollectMemIbarBody(
     let done <- iCache.invalidateResp;
     let entry = memExecEntry;
     memState <= MemIdle;
-    rob.update(entry.robTag, RobCompleted);
+    rob.updateMem(entry.robTag, RobCompleted);
     memRS.remove(entry.robTag);
   endaction
 endfunction
