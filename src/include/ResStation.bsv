@@ -19,13 +19,14 @@ interface ResStation#(numeric type size);
   method Maybe#(RSEntry) selectOldestReadyForAlu(RobTag headTag, Bool headValid);
   method Bool hasOlderStore(RobTag tag, RobTag headTag);
   method Action remove(RobTag tag);      // remove issued entry
-  method Action flushAfter(RobTag tag);  // invalidate younger entries
+  method Action flushAfter(RobTag tag, RobTag headTag); // invalidate younger entries
   method Action clear;                   // full reset
 endinterface
 
 module mkResStation(ResStation#(size))
   provisos(
-    Bits#(RSEntry, rsSz)
+    Bits#(RSEntry, rsSz),
+    Log#(TAdd#(1, size), TAdd#(TLog#(size), 1))
   );
 
   Vector#(size, Reg#(RSEntry)) entries <- replicateM(mkRegU);
@@ -39,7 +40,7 @@ module mkResStation(ResStation#(size))
   // not broadcast on the CDB, so they need a separate wakeup path to clear
   // dependent RS entries' qj/qk.
   Wire#(CDBMessage) commitCdbReq <- mkDWire(CDBMessage{tag: 0, value: 0, valid: False});
-  Wire#(Maybe#(RobTag)) flushReq <- mkDWire(tagged Invalid);
+  Wire#(Maybe#(Tuple2#(RobTag, RobTag))) flushReq <- mkDWire(tagged Invalid);
   Wire#(Bool) clearReq           <- mkDWire(False);
 
   Bit#(TLog#(size)) maxIndex = fromInteger(valueOf(size) - 1);
@@ -58,26 +59,38 @@ module mkResStation(ResStation#(size))
       for (Integer i = 0; i < valueOf(size); i = i + 1) begin
         entries[fromInteger(i)] <= invalidRSEntry;
       end
-    end else if (flushReq matches tagged Valid .tag) begin
-      // Find the flush point (entry with matching RobTag)
-      Maybe#(Bit#(TLog#(size))) flushPos = tagged Invalid;
+    end else if (flushReq matches tagged Valid .req) begin
+      RobTag tag = tpl_1(req);
+      RobTag headTag = tpl_2(req);
+      Bit#(5) flushAge = tag - headTag;
+      Bit#(size) keepMask = 0;
+      Bit#(size) flushMask = 0;
+
+      // Every comparison is independent; the loop elaborates into parallel
+      // per-entry subtract/compare logic and produces two bit masks.
       for (Integer i = 0; i < valueOf(size); i = i + 1) begin
-        Bit#(TLog#(size)) idx = fromInteger(i);
-        if (entries[idx].valid && entries[idx].robTag == tag) begin
-          flushPos = tagged Valid idx;
+        RSEntry e = entries[fromInteger(i)];
+        Bit#(5) entryAge = e.robTag - headTag;
+        Bool isYounger = e.valid && entryAge > flushAge;
+        keepMask[i] = pack(e.valid && !isYounger);
+        flushMask[i] = pack(isYounger);
+      end
+
+      // Entry updates are driven directly by the flush mask.
+      for (Integer i = 0; i < valueOf(size); i = i + 1) begin
+        if (flushMask[i] == 1) begin
+          entries[fromInteger(i)] <= invalidRSEntry;
         end
       end
 
-      if (flushPos matches tagged Valid .fp) begin
-        // Invalidate all entries after fp (circular, up to enqP)
-        for (Integer i = 0; i < valueOf(size); i = i + 1) begin
-          Bit#(TLog#(size)) idx = fp + fromInteger(i) + 1;
-          if (idx != enqP) begin
-            entries[idx] <= invalidRSEntry;
-          end
-        end
-        enqP <= fp + 1;
-        count <= zeroExtend(fp - enqP) + 1;
+      // countOnes is implemented as a balanced population-count tree.
+      count <= pack(countOnes(keepMask));
+
+      // Allocation does not require age ordering: choose the lowest-indexed
+      // free slot with a standard priority encoder.
+      Bit#(size) freeMask = ~keepMask;
+      if (freeMask != 0) begin
+        enqP <= truncate(pack(countZerosLSB(freeMask)));
       end
     end else begin
       // Normal operation: CDB wakeup + enq + remove
@@ -284,8 +297,8 @@ module mkResStation(ResStation#(size))
     removeReq <= tagged Valid tag;
   endmethod
 
-  method Action flushAfter(RobTag tag);
-    flushReq <= tagged Valid tag;
+  method Action flushAfter(RobTag tag, RobTag headTag);
+    flushReq <= tagged Valid tuple2(tag, headTag);
   endmethod
 
   method Action clear;

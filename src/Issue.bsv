@@ -116,9 +116,9 @@ function Action doExecALUBody(
       f2dFifo.clear;
       d2rnFifo.clear;
       rn2diFifo.clear;
-      aluRS.clear;
-      muldivRS.clear;
-      memRS.clear;
+      aluRS.flushAfter(entry.robTag, rob.headTag);
+      muldivRS.flushAfter(entry.robTag, rob.headTag);
+      memRS.flushAfter(entry.robTag, rob.headTag);
       if2WaitRefill <= False;
       rob.flushAfter(entry.robTag);
       rat.restore(entry.robTag);
