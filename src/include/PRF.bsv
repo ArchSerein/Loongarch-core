@@ -3,99 +3,60 @@ import ProcTypes::*;
 import Vector::*;
 import Ehr::*;
 import OoOTypes::*;
-
-// ============================================================
-// Physical Register File (PRF)
-// 64 x 32-bit registers with ready bits
-// EHR ports organized to avoid scheduling conflicts:
-//   pregfile: [0]=cdbWrite, [1]=commitWrite, [2]=rd1/rd2 (DI), [3]=rd3/rd4 (CM src), [4]=rd5 (CM dst)
-//   ready:    [0]=clearReady, [1]=setReady(CDB), [2]=setReadyCommit, [3]=isReady, [4]=isReady2
-// ============================================================
-
 interface PRF;
-  method Data rd1(PIndx p);                  // read port 1 (DI stage)
-  method Data rd2(PIndx p);                  // read port 2 (DI stage)
-  method Data rd3(PIndx p);                  // read port 3 (CM stage, pSrc1)
-  method Data rd4(PIndx p);                  // read port 4 (CM stage, pSrc2)
-  method Data rd5(PIndx p);                  // read port 5 (CM stage, pDst result)
-  method Action cdbWrite(PIndx p, Data v);   // CDB write port (writebackToPRF)
-  method Action commitWrite(PIndx p, Data v); // commit write port (CM stage CSR)
-  method Bool isReady(PIndx p);              // ready bit query 1 (DI stage)
-  method Bool isReady2(PIndx p);             // ready bit query 2 (DI stage)
-  method Action setReady(PIndx p);           // mark ready (after CDB writeback)
-  method Action setReadyCommit(PIndx p);     // mark ready (after commit write)
-  method Action clearReady(PIndx p);         // mark not ready (on alloc, RN stage)
+  method Data rd1(PIndx p);
+  method Data rd2(PIndx p);
+  method Data rd3(PIndx p);
+  method Data rd4(PIndx p);
+  method Data rd5(PIndx p);
+  method Action cdbWrite(PIndx p, Data v);
+  method Action commitWrite(PIndx p, Data v);
+  method Bool 	isReady(PIndx p);
+  method Bool 	isReady2(PIndx p);
+  method Action setReady(PIndx p);
+  method Action setReadyCommit(PIndx p);
+  method Action clearReady(PIndx p);
 endinterface
 
 (* synthesize *)
 module mkPRF(PRF);
-  // 64 physical registers, EHR for write-before-read
-  // port [0] = CDB write, port [1] = commit write, port [2] = DI read, port [3] = CM src read, port [4] = CM dst read
-  Vector#(64, Ehr#(5, Data)) pregfile = newVector;
+  // 只需 3 端口：[0]=Commit(释放/CSR), [1]=CDB(写回), [2]=所有读取
+  Vector#(64, Ehr#(3, Data)) pregfile <- replicateM(mkEhr(0));
+  
+  // 对于 Ready 位：[0]=Commit / Allocate(Rename), [1]=CDB(写回), [2]=所有读取
+  Vector#(64, Ehr#(3, Bool)) ready = newVector;
   for (Integer i = 0; i < 64; i = i + 1) begin
-    pregfile[i] <- mkEhr(0);
+    ready[i] <- mkEhr(i < 32 ? True : False);
   end
 
-  // Ready bits: EHR with 5 ports for conflict-free concurrent access
-  // Port [0]: setReady (CDB writeback completes a pDst) (rename stage allocates new pDst)
-  // Port [1]: setReadyCommit (commit write for CSR results)
-  // Port [2]: isReady read 1 (DI stage checks, sees same-cycle writes but not same-cycle alloc clears) (commit write for CSR results)
-  // Port [3]: isReady read 2 (second operand check in same rule)
-  // Port [4]: clearReady (rename stage allocates new pDst) (second operand check in same rule)
-  Vector#(64, Ehr#(5, Bool)) ready = newVector;
-  for (Integer i = 0; i < 64; i = i + 1) begin
-    if (i < 32)
-      ready[i] <- mkEhr(True);   // P0-P31: initial arch mapping, ready
-    else
-      ready[i] <- mkEhr(False);  // P32-P63: speculative, not ready until written
-  end
-
-  function Data read(PIndx p);
-    return pregfile[p][2];
-  endfunction
-  function Data readCm(PIndx p);
-    return pregfile[p][3];
-  endfunction
-  function Data readCm2(PIndx p);
-    return pregfile[p][4];
-  endfunction
-
+  // ---------- 所有的读取都映射到最高的只读端口 2 ----------
+  function Data read(PIndx p) = pregfile[p][2];
   method Data rd1(PIndx p) = read(p);
   method Data rd2(PIndx p) = read(p);
-  method Data rd3(PIndx p) = readCm(p);
-  method Data rd4(PIndx p) = readCm(p);
-  method Data rd5(PIndx p) = readCm2(p);
-
-  method Action cdbWrite(PIndx p, Data v);
-    if (p != 0) begin
-      pregfile[p][0] <= v;
-    end
-  endmethod
-
-  method Action commitWrite(PIndx p, Data v);
-    if (p != 0) begin
-      pregfile[p][1] <= v;
-    end
-  endmethod
-
+  method Data rd3(PIndx p) = read(p);
+  method Data rd4(PIndx p) = read(p);
+  method Data rd5(PIndx p) = read(p);
   method Bool isReady(PIndx p) = ready[p][2];
-  method Bool isReady2(PIndx p) = ready[p][3];
+  method Bool isReady2(PIndx p) = ready[p][2];
 
-  method Action setReady(PIndx p);
-    if (p != 0) begin
-      ready[p][0] <= True;
-    end
+  // ---------- 写入逻辑分配 ----------
+  // Commit 阶段放在端口 0 (优先调度，反向流水线)
+  method Action commitWrite(PIndx p, Data v);
+    if (p != 0) pregfile[p][0] <= v;
   endmethod
-
   method Action setReadyCommit(PIndx p);
-    if (p != 0) begin
-      ready[p][1] <= True;
-    end
+    if (p != 0) ready[p][0] <= True;
+  endmethod
+  // Rename 阶段 (Allocate) 也放在端口 0，因为一个物理寄存器不可能同周期既被Commit写又被Rename分配
+  method Action clearReady(PIndx p);
+    if (p != 0) ready[p][0] <= False;
   endmethod
 
-  method Action clearReady(PIndx p);
-    if (p != 0) begin
-      ready[p][4] <= False;
-    end
+  // CDB 写回放在端口 1
+  method Action cdbWrite(PIndx p, Data v);
+    if (p != 0) pregfile[p][1] <= v;
+  endmethod
+  method Action setReady(PIndx p);
+    if (p != 0) ready[p][1] <= True;
   endmethod
 endmodule
