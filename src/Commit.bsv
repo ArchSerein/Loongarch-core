@@ -557,6 +557,7 @@ function Action doCommitBody(
           op: St, addr: commitStoreEntry.addr, paddr: head.memPaddr,
           useCache: head.memUseCache,
           data: commitStoreEntry.data, byteEn: truncate(commitStoreEntry.byteEn),
+          size: memByteEnToAxiSize(truncate(commitStoreEntry.byteEn)),
           cacheOp: 5'b0
         });
       end

@@ -153,6 +153,7 @@ function Action doCollectMemTLBBody(
             op: memOp, addr: vaddr, paddr: dTrans.pa,
             useCache: (memOp == Cacop || memOp == Barrier) ? True : memUseCache,
             data: wData, byteEn: byteEn,
+            size: memByteEnToAxiSize(truncate(fromMaybe(5'b0, entry.mask))),
             cacheOp: isCacop ? cacheOp : 5'b0
           };
           memForward <= entry.isLoad ?
@@ -224,6 +225,7 @@ function Action doCollectMemDirectBody(
           op: memOp, addr: vaddr, paddr: paddr,
           useCache: (memOp == Cacop || memOp == Barrier) ? True : memUseCache,
           data: wData, byteEn: byteEn,
+            size: memByteEnToAxiSize(truncate(fromMaybe(5'b0, entry.mask))),
           cacheOp: isCacop ? cacheOp : 5'b0
         };
         memForward <= entry.isLoad ?

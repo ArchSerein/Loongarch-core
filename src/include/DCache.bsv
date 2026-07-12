@@ -755,14 +755,14 @@ module mkDCache(DCache);
       arQ.enq(AxiReadAddr{
         addr: r.paddr,
         len: 'b0,
-        size: 3'd2,
+        size: r.size,
         burst: AxiBurstFixed
       });
     end else if (r.op == St || r.op == Sc) begin
       awQ.enq(AxiWriteAddr{
         addr: r.paddr,
         len: 'b0,
-        size: 3'd2,
+        size: r.size,
         burst: AxiBurstFixed
       });
       wQ.enq(AxiWriteData{
