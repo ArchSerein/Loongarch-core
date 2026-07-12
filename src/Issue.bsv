@@ -100,6 +100,22 @@ function Action doExecALUBody(
     rob.update(entry.robTag, RobCompleted);
     rob.updateBranch(entry.robTag, eInst.mispredict, eInst.targetAddr);
 
+    // Train the predictor for every resolved control-flow instruction.
+    // Misprediction only controls recovery; correct predictions must still
+    // train the BTB and direction counter.
+    CfiType cfiType = CFI_NONE;
+    case (entry.iType)
+      Br: cfiType = CFI_COND;
+      J:  cfiType = CFI_JAL;
+      Jr: cfiType = CFI_JALR;
+    endcase
+    if (cfiType != CFI_NONE) begin
+      // For a conditional branch, targetAddr is the resolved next PC and is
+      // pc+4 when not taken.  The BTB must retain the static taken target.
+      Addr bpuTarget = (entry.iType == Br) ? (entry.pc + immVal) : eInst.targetAddr;
+      branchPred.executeUpdate(entry.pc, bpuTarget, eInst.brTaken, cfiType);
+    end
+
     // Branch mispredict recovery
     if (eInst.mispredict) begin
 `ifdef CONFIG_TRACE_PERFORMANCE
@@ -124,16 +140,6 @@ function Action doExecALUBody(
       rat.restore(entry.robTag);
       freeList.restore(entry.robTag);
 
-      // Train BPU
-      CfiType cfiType = CFI_NONE;
-      case (entry.iType)
-        Br: cfiType = CFI_COND;
-        J:  cfiType = CFI_JAL;
-        Jr: cfiType = CFI_JALR;
-      endcase
-      if (cfiType != CFI_NONE) begin
-        branchPred.executeUpdate(entry.pc, eInst.targetAddr, eInst.brTaken, cfiType);
-      end
     end
   endaction
 endfunction

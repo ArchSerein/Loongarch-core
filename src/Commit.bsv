@@ -22,6 +22,8 @@ import Vector::*;
 import ICache::*;
 import DCache::*;
 import CoreTypes::*;
+import BranchPredictor::*;
+import BranchPredTypes::*;
 import CoreFunc::*;
 import OoOTypes::*;
 import PRF::*;
@@ -183,7 +185,8 @@ function Action doCommitBody(
     Reg#(Bool) aluBusy,
     Reg#(Bool) mulInFlight,
     Reg#(Bool) divInFlight,
-    Reg#(MemExecState) memState
+    Reg#(MemExecState) memState,
+    BranchPredictor branchPred
 `ifdef CONFIG_BSIM
     , Fifo#(2, CpuToHostData) toHostFifo
 `endif
@@ -677,7 +680,16 @@ function Action doCommitBody(
       commitState <= CommitIdle;
     end
 
-    if (doDeq) rob.deq;
+    if (doDeq) begin
+      // Update branch history in architectural (ROB commit) order.
+      if (head.isBranch) begin
+        Bool actualTaken = (head.iType == Br) ? (head.correctTarget != head.pc + 4) : True;
+        CfiType cfiType = (head.iType == Br) ? CFI_COND :
+                          ((head.iType == J) ? CFI_JAL : CFI_JALR);
+        branchPred.commitHistory(actualTaken, head.correctTarget, cfiType);
+      end
+      rob.deq;
+    end
   endaction
 endfunction
 

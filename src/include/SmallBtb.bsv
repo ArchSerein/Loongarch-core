@@ -115,14 +115,21 @@ module mkSmallBtb(SmallBtb);
         Bit#(LogSmallBtbEntries) idx = getIndex(pc);
         Bit#(SmallBtbTagSz) tag = getTag(pc);
         SmallBtbEntry entry = entries[idx];
+        Bool sameEntry = entry.valid && (entry.tag == tag);
 
         entry.valid    = True;
         entry.tag      = tag;
         entry.target   = target;
         entry.cfi_type = cfi;
 
-        if (cfi == CFI_COND)
-            entry.ctr = updateCtr(entry.ctr, taken);
+        if (cfi == CFI_COND) begin
+            // A tag replacement must not inherit an unrelated branch's
+            // direction counter.  Start from weak-not-taken and train once.
+            Bit#(2) oldCtr = sameEntry ? entry.ctr : 2'b01;
+            entry.ctr = updateCtr(oldCtr, taken);
+        end else if (!sameEntry) begin
+            entry.ctr = 2'b01;
+        end
 
         entries[idx] <= entry;
     endmethod

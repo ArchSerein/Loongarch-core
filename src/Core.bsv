@@ -419,7 +419,7 @@ module mkCore(Core);
       commitCsrSnapReg, prf, rat, freeList, tlb, pcReg[2], iCache, dCache,
       if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
       aluRS, muldivRS, memRS, storeBuf, committedStoreBuf, idleLock, aluBusy, mulInFlight,
-      divInFlight, memState
+      divInFlight, memState, branchPred
 `ifdef CONFIG_BSIM
       , toHostFifo
 `endif
