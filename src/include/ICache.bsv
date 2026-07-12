@@ -84,6 +84,7 @@ interface ICache;
   method Action commitHit(Addr va, ICacheWayIdx way);
   method Action squash;
   method Action invalidate;
+  method ActionValue#(Bool) invalidateResp;
   method Action cacop(Bit#(5) op, Addr va, Data ctag);
   method ActionValue#(Bool) cacopResp;
   interface AxiMemMaster axiMem;
@@ -213,10 +214,12 @@ module mkICache(ICache);
   Reg#(Data)            cacopTagReg    <- mkRegU;
   Reg#(ICacheIndex)     flushIdx       <- mkReg(0);
   Reg#(ICacheWayIdx)    flushWay       <- mkReg(0);
+  Reg#(Bool)            invalidatePending <- mkReg(False);
 
   Fifo#(2, ICacheRefillReq)  refillReqQ  <- mkCFFifo;
   Fifo#(2, ICacheRefillResp) refillRespQ <- mkCFFifo;
   Fifo#(2, Bool)             cacopRespQ  <- mkCFFifo;
+  Fifo#(2, Bool)             invalidateRespQ <- mkCFFifo;
 
   Fifo#(2, AxiReadAddr) arQ <- mkCFFifo;
   Fifo#(4, AxiReadData) rQ  <- mkCFFifo;
@@ -352,6 +355,10 @@ module mkICache(ICache);
     Bool lastIdx = flushIdx == fromInteger(valueOf(ICacheSets) - 1);
     if (lastWay && lastIdx) begin
       state <= Ready;
+      if (invalidatePending) begin
+        invalidateRespQ.enq(True);
+        invalidatePending <= False;
+      end
     end else if (lastWay) begin
       flushWay <= 0;
       flushIdx <= flushIdx + 1;
@@ -389,6 +396,8 @@ module mkICache(ICache);
   method Action squash;
     refillReqQ.clear();
     cacopRespQ.clear();
+    invalidateRespQ.clear();
+    invalidatePending <= False;
     refillMayWrite <= False;
     if (state != Ready) begin
       squashPending <= True;
@@ -399,7 +408,14 @@ module mkICache(ICache);
   method Action invalidate if (state == Ready && !refillReqQ.notEmpty);
     flushIdx <= 0;
     flushWay <= 0;
+    invalidatePending <= True;
     state <= FlushAll;
+  endmethod
+
+  method ActionValue#(Bool) invalidateResp if (invalidateRespQ.notEmpty);
+    let done = invalidateRespQ.first;
+    invalidateRespQ.deq;
+    return done;
   endmethod
 
   method Action cacop(Bit#(5) op, Addr va, Data ctag)

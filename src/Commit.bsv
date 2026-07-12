@@ -548,6 +548,29 @@ function Action doCommitBody(
 `endif
     end else if (head.state == RobCompleted) begin
       // Normal commit (ALU, Ld, MulDiv, St, etc.)
+      if (head.iType == Ibar) begin
+        // Discard instructions fetched before invalidation completed and
+        // restart at IBAR architectural successor.
+        pcReg <= head.pc + 4;
+        iCache.squash;
+        tlb.squashFetchLookup;
+        if2WaitRefill <= False;
+        f1f2Fifo.clear;
+        f2dFifo.clear;
+        d2rnFifo.clear;
+        rn2diFifo.clear;
+        aluRS.clear;
+        muldivRS.clear;
+        memRS.clear;
+        storeBuf.clear;
+        rob.clear;
+        rat.restoreFromRetirement;
+        freeList.restoreFromRetRAT(rat.allRetRAT);
+        aluBusy <= False;
+        mulInFlight <= False;
+        divInFlight <= False;
+        memState <= MemIdle;
+      end
       if (head.isStore) begin
         // Store commit: write to D-Cache
         commitStoreEntry = storeBuf.first;

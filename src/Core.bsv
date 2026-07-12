@@ -274,7 +274,8 @@ module mkCore(Core);
   // ============================================================
   // IS/EX Stage: ALU issue and execute
   // ============================================================
-  rule doIssueALU (commitState == CommitIdle && !aluBusy && !isCsrTlbSpecial(rob.headIType) &&&
+  rule doIssueALU (commitState == CommitIdle && !aluBusy && !isCsrTlbSpecial(rob.headIType) &&
+      !coreIsBarrier(rob.headIType) &&&
       aluRS.selectOldestReadyForAlu(rob.headTag, rob.headValid) matches tagged Valid .entry);
     doIssueALUBody(entry, aluExecEntry, aluRS, aluBusy);
     aluBranchBusy <= isBranch(entry.iType);
@@ -305,13 +306,15 @@ module mkCore(Core);
   // IS/EX Stage: MulDiv issue and collect
   // ============================================================
 
-  rule doIssueMul (commitState == CommitIdle && !mulInFlight && !isCsrTlbSpecial(rob.headIType) &&&
+  rule doIssueMul (commitState == CommitIdle && !mulInFlight && !isCsrTlbSpecial(rob.headIType) &&
+      !coreIsBarrier(rob.headIType) &&&
       muldivRS.selectOldestReady matches tagged Valid .entry &&&
       isMulFunc(fromMaybe(?, entry.muldivFunc)));
     doIssueMulBody(entry, mulUnit, mulExecEntry, muldivRS, mulInFlight);
   endrule
 
-  rule doIssueDiv (commitState == CommitIdle && !divInFlight && !isCsrTlbSpecial(rob.headIType) &&&
+  rule doIssueDiv (commitState == CommitIdle && !divInFlight && !isCsrTlbSpecial(rob.headIType) &&
+      !coreIsBarrier(rob.headIType) &&&
       muldivRS.selectOldestReady matches tagged Valid .entry &&&
       isDivFunc(fromMaybe(?, entry.muldivFunc)));
     doIssueDivBody(entry, divUnit, divExecEntry, muldivRS, divInFlight);
@@ -338,6 +341,7 @@ module mkCore(Core);
 
   rule doIssueMem (commitState == CommitIdle && memState == MemIdle && !isCsrTlbSpecial(rob.headIType) &&&
       memRS.selectOldestReadyFrom(rob.headTag) matches tagged Valid .entry &&&
+      (entry.iType != Ibar || entry.robTag == rob.headTag) &&
       (!entry.isLoad || !memRS.hasOlderStore(entry.robTag, rob.headTag)));
     doIssueMemBody(entry, memExecEntry, memVaddr, memPaddr, memNeedTlb,
       memState, csrf, tlb, iCache, rob, memRS, storeBuf);
@@ -365,6 +369,10 @@ module mkCore(Core);
 
   rule doCollectMemCacopI (memState == MemCacopIWait);
     doCollectMemCacopIBody(memState, memExecEntry, iCache, rob, memRS);
+  endrule
+
+  rule doCollectMemIbar (memState == MemIbarWait);
+    doCollectMemIbarBody(memState, memExecEntry, iCache, rob, memRS);
   endrule
 
   // ============================================================

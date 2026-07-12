@@ -166,6 +166,7 @@ typedef enum {
   MemTLBWait,     // waiting for TLB data lookup response
   MemCacheWait,   // waiting for D-Cache response
   MemCacopIWait,  // waiting for I-Cache cacop response
+  MemIbarWait,    // waiting for full I-Cache invalidation
   MemTLBOpWait    // waiting for TLB operation response (Tlbrd/Tlbwr/etc.)
 } MemExecState deriving(Bits, Eq);
 

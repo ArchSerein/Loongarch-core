@@ -199,8 +199,8 @@ function Action doIssueMemBody(
       memRS.remove(entry.robTag);
     end else if (entry.iType == Ibar) begin
       iCache.invalidate;
-      rob.update(entry.robTag, RobCompleted);
-      memRS.remove(entry.robTag);
+      memExecEntry <= entry;
+      memState <= MemIbarWait;
     end else begin
       memExecEntry <= entry;
       memVaddr <= vaddr;

@@ -297,4 +297,20 @@ function Action doCollectMemCacopIBody(
   endaction
 endfunction
 
+function Action doCollectMemIbarBody(
+    Reg#(MemExecState) memState,
+    Reg#(RSEntry) memExecEntry,
+    ICache iCache,
+    ROB rob,
+    ResStation#(16) memRS
+);
+  action
+    let done <- iCache.invalidateResp;
+    let entry = memExecEntry;
+    memState <= MemIdle;
+    rob.update(entry.robTag, RobCompleted);
+    memRS.remove(entry.robTag);
+  endaction
+endfunction
+
 endpackage
