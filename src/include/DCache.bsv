@@ -160,81 +160,19 @@ interface DCacheReplace;
   method Action       access(DCacheIndex setIdx, DCacheWayIdx wayIdx);
 endinterface
 
-module mkDCacheReplaceLRU(DCacheReplace);
-  RegFile#(DCacheIndex, Vector#(DCacheWays, DCacheWayIdx)) ages <- mkRegFileFull;
-
-  method DCacheWayIdx replace(DCacheIndex setIdx);
-    Vector#(DCacheWays, DCacheWayIdx) ageVec = ages.sub(setIdx);
-    DCacheWayIdx victim = 0;
-    DCacheWayIdx maxAge = ageVec[0];
-    for (Integer i = 1; i < valueOf(DCacheWays); i = i + 1) begin
-      if (ageVec[i] > maxAge) begin
-        victim = fromInteger(i);
-        maxAge = ageVec[i];
-      end
-    end
-    return victim;
-  endmethod
-
-  method Action access(DCacheIndex setIdx, DCacheWayIdx wayIdx);
-    Vector#(DCacheWays, DCacheWayIdx) ageVec = ages.sub(setIdx);
-    Vector#(DCacheWays, DCacheWayIdx) nextAgeVec = ageVec;
-    for (Integer i = 0; i < valueOf(DCacheWays); i = i + 1) begin
-      if (fromInteger(i) == wayIdx)
-        nextAgeVec = update(nextAgeVec, fromInteger(i), 0);
-      else if (ageVec[i] < fromInteger(valueOf(DCacheWays) - 1))
-        nextAgeVec = update(nextAgeVec, fromInteger(i), ageVec[i] + 1);
-    end
-    ages.upd(setIdx, nextAgeVec);
-  endmethod
-endmodule
-
-module mkDCacheReplacePLRU(DCacheReplace);
-  RegFile#(DCacheIndex, Bit#(TSub#(DCacheWays, 1))) treeBits <- mkRegFileFull;
-
-  method DCacheWayIdx replace(DCacheIndex setIdx);
-    Bit#(TSub#(DCacheWays, 1)) t = treeBits.sub(setIdx);
-    DCacheWayIdx victim = 0;
-    DCacheWayIdx node = 0;
-    for (Integer lv = 0; lv < valueOf(TLog#(DCacheWays)); lv = lv + 1) begin
-      if (t[node] == 0) begin
-        victim = victim << 1;
-        node = (node << 1) | 1;
-      end else begin
-        victim = (victim << 1) | 1;
-        node = (node << 1) + 2;
-      end
-    end
-    return victim;
-  endmethod
-
-  method Action access(DCacheIndex setIdx, DCacheWayIdx wayIdx);
-    Bit#(TSub#(DCacheWays, 1)) t = treeBits.sub(setIdx);
-    DCacheWayIdx node = 0;
-    for (Integer lv = 0; lv < valueOf(TLog#(DCacheWays)); lv = lv + 1) begin
-      Integer bitPos = valueOf(TLog#(DCacheWays)) - 1 - lv;
-      Bit#(TSub#(DCacheWays, 1)) mask = 1 << node;
-      if (wayIdx[bitPos] == 0) begin
-        t = t | mask;
-        node = (node << 1) | 1;
-      end else begin
-        t = t & ~mask;
-        node = (node << 1) + 2;
-      end
-    end
-    treeBits.upd(setIdx, t);
-  endmethod
-endmodule
-
 module mkDCacheReplaceRandom(DCacheReplace);
-  Reg#(DCacheWayIdx) cnt <- mkReg(0);
+  // 16-bit maximal-length Fibonacci LFSR: x^16 + x^14 + x^13 + x^11 + 1.
+  // Keep the state wider than the way index so successive replacement choices
+  // are taken from a pseudo-random sequence instead of round-robin order.
+  Reg#(Bit#(16)) lfsr <- mkReg(16'hACE1);
 
   method DCacheWayIdx replace(DCacheIndex setIdx);
-    return cnt;
+    return truncate(lfsr);
   endmethod
 
   method Action access(DCacheIndex setIdx, DCacheWayIdx wayIdx);
-    cnt <= cnt + 1;
+    Bit#(1) feedback = lfsr[0] ^ lfsr[2] ^ lfsr[3] ^ lfsr[5];
+    lfsr <= {feedback, lfsr[15:1]};
   endmethod
 endmodule
 
@@ -287,15 +225,7 @@ module mkDCache(DCache);
   Fifo#(4, AxiWriteData)  wQ  <- mkCFFifo;
   Fifo#(2, AxiWriteResp)  bQ  <- mkCFFifo;
 
-  `ifdef DCACHE_REPLACE_RANDOM
   DCacheReplace replacer <- mkDCacheReplaceRandom;
-  `else
-  `ifdef DCACHE_REPLACE_PLRU
-  DCacheReplace replacer <- mkDCacheReplacePLRU;
-  `else
-  DCacheReplace replacer <- mkDCacheReplaceLRU;
-  `endif
-  `endif
 
   function Action issueRead(DCacheIndex idx);
     action
