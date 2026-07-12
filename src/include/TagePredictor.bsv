@@ -216,10 +216,9 @@ module mkTagePredictor(TagePredictor);
     // Read SRAM outputs, re-derive provider/alt, compute the final provider
     // entry (new ctr + new usefulness, written once), issue any allocation /
     // usefulness-decrement writes.
-    rule finishUpdate (updState == TageRead);
+	rule finishUpdate_Correct (updState == TageRead && !updMis);
         Addr        pc    = updPc;
         Bool        taken = updTaken;
-        Bool        mispr = updMis;
         Bit#(GhrSz) ghr   = updGhr;
 
         Bit#(4) bIdx = getBimodalIndex(pc);
@@ -227,6 +226,7 @@ module mkTagePredictor(TagePredictor);
         Integer alt  = -1;
         Bit#(LogTageEntries) pIdx = 0;
 
+        // 1. 寻找 Provider 和 Alternate
         for (Integer t = valueOf(NumTageTables) - 1; t >= 0; t = t - 1) begin
             Integer hLen = getHistoryLen(t);
             Bit#(TageTagSz) tag = getTageTag(ghr, pc, hLen);
@@ -241,12 +241,10 @@ module mkTagePredictor(TagePredictor);
             end
         end
 
-        // ---- Provider: compute new ctr + new usefulness, write once ----
+        // 2. 更新 Provider 或 Bimodal
         if (prov >= 0) begin
             TageEntry provEntry = unpackTageWord(srams[prov].read);
 
-            // Usefulness update uses the OLD counter (the prediction that was
-            // actually made), compared against the alternate's prediction.
             Bool provPred = ctrToPrediction(provEntry.ctr);
             Bool altPred;
             if (alt >= 0) begin
@@ -258,15 +256,11 @@ module mkTagePredictor(TagePredictor);
 
             Bit#(TageUseSz) newU = provEntry.u;
             if (taken) begin
-                if (provPred && !altPred)
-                    newU = updateUsefulness(provEntry.u, True);
-                else if (!provPred && altPred)
-                    newU = updateUsefulness(provEntry.u, False);
+                if (provPred && !altPred)      newU = updateUsefulness(provEntry.u, True);
+                else if (!provPred && altPred) newU = updateUsefulness(provEntry.u, False);
             end else begin
-                if (!provPred && altPred)
-                    newU = updateUsefulness(provEntry.u, True);
-                else if (provPred && !altPred)
-                    newU = updateUsefulness(provEntry.u, False);
+                if (!provPred && altPred)      newU = updateUsefulness(provEntry.u, True);
+                else if (provPred && !altPred) newU = updateUsefulness(provEntry.u, False);
             end
 
             TageEntry newProvEntry = TageEntry{
@@ -276,44 +270,102 @@ module mkTagePredictor(TagePredictor);
             };
             srams[prov].put(8'hFF, padTageAddr(pIdx), packTageWord(newProvEntry));
         end else begin
-            // No provider: update bimodal counter.
             bimodal[bIdx] <= updateBimodalCtr(bimodal[bIdx], taken);
         end
 
-        // ---- On misprediction: allocate in a longer table ----
-        if (mispr) begin
-            Integer allocTarget = -1;
-            Integer startTable = (prov >= 0) ? prov + 1 : 0;
-            for (Integer t = startTable; t < valueOf(NumTageTables); t = t + 1) begin
-                if (allocTarget < 0) begin
-                    TageEntry e = unpackTageWord(srams[t].read);
-                    if (e.u == 0)
-                        allocTarget = t;
+        updState <= TageIdle;
+	endrule
+	rule finishUpdate_Mispredict (updState == TageRead && updMis);
+        Addr        pc    = updPc;
+        Bool        taken = updTaken;
+        Bit#(GhrSz) ghr   = updGhr;
+
+        Bit#(4) bIdx = getBimodalIndex(pc);
+        Integer prov = -1;
+        Integer alt  = -1;
+        Bit#(LogTageEntries) pIdx = 0;
+
+        // 1. 寻找 Provider 和 Alternate
+        for (Integer t = valueOf(NumTageTables) - 1; t >= 0; t = t - 1) begin
+            Integer hLen = getHistoryLen(t);
+            Bit#(TageTagSz) tag = getTageTag(ghr, pc, hLen);
+            TageEntry entry = unpackTageWord(srams[t].read);
+            if (entry.tag == tag) begin
+                if (prov == -1) begin
+                    prov = t;
+                    pIdx = getTageIndex(ghr, pc, hLen);
+                end else if (alt == -1) begin
+                    alt = t;
                 end
             end
+        end
 
-            if (allocTarget >= 0) begin
-                Integer t = allocTarget;
+        // 2. 更新 Provider 或 Bimodal
+        if (prov >= 0) begin
+            TageEntry provEntry = unpackTageWord(srams[prov].read);
+
+            Bool provPred = ctrToPrediction(provEntry.ctr);
+            Bool altPred;
+            if (alt >= 0) begin
+                TageEntry altEntry = unpackTageWord(srams[alt].read);
+                altPred = ctrToPrediction(altEntry.ctr);
+            end else begin
+                altPred = (bimodal[bIdx][1] == 1'b1);
+            end
+
+            Bit#(TageUseSz) newU = provEntry.u;
+            if (taken) begin
+                if (provPred && !altPred)      newU = updateUsefulness(provEntry.u, True);
+                else if (!provPred && altPred) newU = updateUsefulness(provEntry.u, False);
+            end else begin
+                if (!provPred && altPred)      newU = updateUsefulness(provEntry.u, True);
+                else if (provPred && !altPred) newU = updateUsefulness(provEntry.u, False);
+            end
+
+            TageEntry newProvEntry = TageEntry{
+                tag: provEntry.tag,
+                ctr: updateCtr(provEntry.ctr, taken),
+                u:   newU
+            };
+            srams[prov].put(8'hFF, padTageAddr(pIdx), packTageWord(newProvEntry));
+        end else begin
+            bimodal[bIdx] <= updateBimodalCtr(bimodal[bIdx], taken);
+        end
+
+        // 3. 预测错误处理：分配新表项 或 降低更长历史表的 usefulness
+        Integer allocTarget = -1;
+        Integer startTable = (prov >= 0) ? prov + 1 : 0;
+        
+        for (Integer t = startTable; t < valueOf(NumTageTables); t = t + 1) begin
+            if (allocTarget < 0) begin
+                TageEntry e = unpackTageWord(srams[t].read);
+                if (e.u == 0)
+                    allocTarget = t;
+            end
+        end
+
+        if (allocTarget >= 0) begin
+            // 找到空闲槽，进行分配
+            Integer t = allocTarget;
+            Integer hLen = getHistoryLen(t);
+            Bit#(LogTageEntries) idx = getTageIndex(ghr, pc, hLen);
+            Bit#(TageTagSz) tag = getTageTag(ghr, pc, hLen);
+            Int#(TageCtrSz) initCtr = taken ? 1 : -1;
+            srams[t].put(8'hFF, padTageAddr(idx),
+                packTageWord(TageEntry{tag: tag, ctr: initCtr, u: 1}));
+        end else if (prov >= 0) begin
+            // 无空闲槽，执行老化策略 (Decrement usefulness)
+            for (Integer t = prov + 1; t < valueOf(NumTageTables); t = t + 1) begin
+                TageEntry e = unpackTageWord(srams[t].read);
+                e.u = updateUsefulness(e.u, False);
                 Integer hLen = getHistoryLen(t);
                 Bit#(LogTageEntries) idx = getTageIndex(ghr, pc, hLen);
-                Bit#(TageTagSz) tag = getTageTag(ghr, pc, hLen);
-                Int#(TageCtrSz) initCtr = taken ? 1 : -1;
-                srams[t].put(8'hFF, padTageAddr(idx),
-                    packTageWord(TageEntry{tag: tag, ctr: initCtr, u: 1}));
-            end else if (prov >= 0) begin
-                // No free slot: decrement usefulness in longer tables.
-                for (Integer t = prov + 1; t < valueOf(NumTageTables); t = t + 1) begin
-                    TageEntry e = unpackTageWord(srams[t].read);
-                    e.u = updateUsefulness(e.u, False);
-                    Integer hLen = getHistoryLen(t);
-                    Bit#(LogTageEntries) idx = getTageIndex(ghr, pc, hLen);
-                    srams[t].put(8'hFF, padTageAddr(idx), packTageWord(e));
-                end
+                srams[t].put(8'hFF, padTageAddr(idx), packTageWord(e));
             end
         end
 
         updState <= TageIdle;
-    endrule
+	endrule
 
     // ---- startPredict: issue 7 SRAM reads, latch pc+ghr ----
     method Action startPredict(Addr pc, Bit#(GhrSz) ghr) if (updState == TageIdle);
