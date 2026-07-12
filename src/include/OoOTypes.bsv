@@ -165,6 +165,7 @@ typedef enum {
   MemIdle,        // no memory operation in flight
   MemTLBWait,     // waiting for TLB data lookup response
   MemCacheWait,   // waiting for D-Cache response
+  MemUncacheWait, // translated MMIO load waiting to reach ROB head
   MemCacopIWait,  // waiting for I-Cache cacop response
   MemIbarWait,    // waiting for full I-Cache invalidation
   MemTLBOpWait    // waiting for TLB operation response (Tlbrd/Tlbwr/etc.)

@@ -87,7 +87,6 @@ endfunction
 
 function Action doCollectMemTLBBody(
     Reg#(MemExecState) memState,
-    Reg#(Bool) memNeedTlb,
     Reg#(RSEntry) memExecEntry,
     Reg#(Addr) memVaddr,
     Reg#(Addr) memPaddr,
@@ -105,7 +104,7 @@ function Action doCollectMemTLBBody(
     let tlbRes <- tlb.dataLookupResp;
     let entry = memExecEntry;
     Addr vaddr = memVaddr;
-    MmuAccessType accessType = (entry.isStore || entry.iType == Sc) ? MmuStore : MmuLoad;
+    MmuAccessType accessType = entry.isStore ? MmuStore : MmuLoad;
     MmuResult dTrans = mmuTranslate(vaddr, accessType, csrf.crmd, csrf.asid,
       csrf.dmw0, csrf.dmw1, tlbRes);
     if (dTrans.excValid) begin
@@ -159,10 +158,14 @@ function Action doCollectMemTLBBody(
           memForward <= entry.isLoad ?
             mergeForward(committedStoreBuf.forward(vaddr), storeBuf.forward(vaddr)) :
             StoreForwardResult{data: 0, byteEn: 0};
-          if (memOp == Cacop) dCache.cacop(cacheReq);
-          else dCache.req(cacheReq);
           rob.updateMemInfo(entry.robTag, vaddr, dTrans.pa, memUseCache);
-          memState <= MemCacheWait;
+          if (entry.iType == Ld && !memUseCache && entry.robTag != rob.headTag) begin
+            memState <= MemUncacheWait;
+          end else begin
+            if (memOp == Cacop) dCache.cacop(cacheReq);
+            else dCache.req(cacheReq);
+            memState <= MemCacheWait;
+          end
         end
       end
     end
@@ -193,7 +196,7 @@ function Action doCollectMemDirectBody(
       iCache.cacop(cacheOp, vaddr, paddr);
       memState <= MemCacopIWait;
     end else begin
-      MmuAccessType accessType = (entry.isStore || entry.iType == Sc) ? MmuStore : MmuLoad;
+      MmuAccessType accessType = entry.isStore ? MmuStore : MmuLoad;
       Bool memUseCache = matUseCache(Direct, Cc, csrf.crmd, accessType);
       if (entry.iType == St) begin
         ByteMask m = fromMaybe(5'b00000, entry.mask);
@@ -231,12 +234,40 @@ function Action doCollectMemDirectBody(
         memForward <= entry.isLoad ?
           mergeForward(committedStoreBuf.forward(vaddr), storeBuf.forward(vaddr)) :
           StoreForwardResult{data: 0, byteEn: 0};
-        if (memOp == Cacop) dCache.cacop(cacheReq);
-        else dCache.req(cacheReq);
         rob.updateMemInfo(entry.robTag, vaddr, paddr, memUseCache);
-        memState <= MemCacheWait;
+        if (entry.iType == Ld && !memUseCache && entry.robTag != rob.headTag) begin
+          memState <= MemUncacheWait;
+        end else begin
+          if (memOp == Cacop) dCache.cacop(cacheReq);
+          else dCache.req(cacheReq);
+          memState <= MemCacheWait;
+        end
       end
     end
+  endaction
+endfunction
+
+function Action doIssueMemUncacheBody(
+    Reg#(MemExecState) memState,
+    Reg#(RSEntry) memExecEntry,
+    Reg#(Addr) memVaddr,
+    Reg#(Addr) memPaddr,
+    Reg#(StoreForwardResult) memForward,
+    DCache dCache,
+    StoreBuf#(16) storeBuf,
+    StoreForwardBuf#(16) committedStoreBuf
+);
+  action
+    let entry = memExecEntry;
+    Addr vaddr = memVaddr;
+    ByteMask mask = fromMaybe(5'b0, entry.mask);
+    memForward <= mergeForward(committedStoreBuf.forward(vaddr), storeBuf.forward(vaddr));
+    dCache.req(MemReq{
+      op: Ld, addr: vaddr, paddr: memPaddr, useCache: False,
+      data: 0, byteEn: 0,
+      size: memByteEnToAxiSize(truncate(mask)), cacheOp: 0
+    });
+    memState <= MemCacheWait;
   endaction
 endfunction
 

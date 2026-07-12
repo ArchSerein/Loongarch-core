@@ -341,20 +341,31 @@ module mkCore(Core);
 
   rule doIssueMem (commitState == CommitIdle && memState == MemIdle && !isCsrTlbSpecial(rob.headIType) &&&
       memRS.selectOldestReadyFrom(rob.headTag) matches tagged Valid .entry &&&
-      (entry.iType != Ibar || entry.robTag == rob.headTag) &&
+      // Only ordinary loads may execute away from the ROB head.  Stores,
+      // LL/SC, barriers and cache maintenance have architectural side
+      // effects and are serialized.  A translated MMIO load is delayed
+      // again below until it reaches the head.
+      (entry.iType == Ld || entry.robTag == rob.headTag) &&
+      (entry.iType != St || storeBuf.notFull) &&
       (!entry.isLoad || !memRS.hasOlderStore(entry.robTag, rob.headTag)));
     doIssueMemBody(entry, memExecEntry, memVaddr, memPaddr, memNeedTlb,
       memState, csrf, tlb, iCache, rob, memRS, storeBuf);
   endrule
 
   rule doCollectMemTLB (memState == MemTLBWait && memNeedTlb);
-    doCollectMemTLBBody(memState, memNeedTlb, memExecEntry, memVaddr,
+    doCollectMemTLBBody(memState, memExecEntry, memVaddr,
       memPaddr, memForward, csrf, tlb, iCache, dCache, rob, memRS, storeBuf, committedStoreBuf);
   endrule
 
   rule doCollectMemDirect (memState == MemTLBWait && !memNeedTlb);
     doCollectMemDirectBody(memState, memExecEntry, memVaddr, memPaddr,
       memForward, csrf, iCache, dCache, rob, memRS, storeBuf, committedStoreBuf);
+  endrule
+
+  rule doIssueMemUncache (memState == MemUncacheWait &&
+      memExecEntry.robTag == rob.headTag);
+    doIssueMemUncacheBody(memState, memExecEntry, memVaddr, memPaddr,
+      memForward, dCache, storeBuf, committedStoreBuf);
   endrule
 
   rule doCollectMemCache (memState == MemCacheWait);

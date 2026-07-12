@@ -571,7 +571,7 @@ function Action doCommitBody(
         divInFlight <= False;
         memState <= MemIdle;
       end
-      if (head.isStore) begin
+      if (head.iType == St) begin
         // Store commit: write to D-Cache
         commitStoreEntry = storeBuf.first;
         storeBuf.deq;
