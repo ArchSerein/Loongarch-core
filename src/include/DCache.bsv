@@ -364,9 +364,6 @@ module mkDCache(DCache);
       end else if (opType == 2'b00) begin
         writeTagValid(way, idx, DCacheTagValid{valid: False, tag: 0});
         writeDirty(idx, way, False);
-        if (writeBufferValid && writeBuffer.idx == idx && writeBuffer.way == way) begin
-          writeBufferValid <= False;
-        end
         if (llValid && getDBlockBase(llAddr) == getDBlockBase(r.paddr)) begin
           llValid <= False;
         end
@@ -410,9 +407,6 @@ module mkDCache(DCache);
         end else begin
           writeTagValid(targetWay, idx, DCacheTagValid{valid: False, tag: 0});
           writeDirty(idx, targetWay, False);
-          if (writeBufferValid && writeBuffer.idx == idx && writeBuffer.way == targetWay) begin
-            writeBufferValid <= False;
-          end
           if (llValid && getDBlockBase(llAddr) == targetBlockAddr) begin
             llValid <= False;
           end
@@ -461,27 +455,27 @@ module mkDCache(DCache);
 
     if (r.op == Barrier) begin
       Bool hit = False;
-      Data hitData = 0;
       DCacheWayIdx hitWay = 0;
       for (Integer w = 0; w < valueOf(DCacheWays); w = w + 1) begin
         if (tagValids[w].valid && tagValids[w].tag == tag) begin
           hit = True;
-          hitData = lines[w][wsel];
           hitWay = fromInteger(w);
         end
       end
       if (hit && dirtyLine[hitWay]) begin
-        missReq <= MemReq{
-          op: St,
-          addr: r.addr,
-          paddr: r.paddr,
-          useCache: False,
-          data: hitData,
-          byteEn: 4'b1111,
-          cacheOp: 5'b0
-        };
+        Bit#(DCacheOffsetSz) zeroOff = 0;
+        wbLine <= lines[hitWay];
+        awQ.enq(AxiWriteAddr{
+          addr: { tagValids[hitWay].tag, idx, zeroOff },
+          len: fromInteger(valueOf(DCacheLineWords) - 1),
+          size: 3'd2,
+          burst: AxiBurstIncr
+        });
+        beatIdx <= 0;
+        cacheMaintIdx <= idx;
+        cacheMaintWay <= hitWay;
         fenceFlushWait <= True;
-        state <= SendUncacheReq;
+        state <= SendWbData;
       end else begin
         // Barrier completes immediately if no dirty line needs writeback.
         respQ.enq(DCacheResp{data: 0});
@@ -553,11 +547,16 @@ module mkDCache(DCache);
           missReq <= r;
           let way = replacer.replace(idx);
           victimWay <= way;
+          Bit#(DCacheOffsetSz) zeroOff = 0;
+          Addr victimBlockAddr = { tagValids[way].tag, idx, zeroOff };
+          if (tagValids[way].valid && llValid &&
+              getDBlockBase(llAddr) == victimBlockAddr) begin
+            llValid <= False;
+          end
 `ifdef CONFIG_TRACE_PERFORMANCE
           perf_dcache_miss();
 `endif
           if (tagValids[way].valid && dirtyLine[way]) begin
-            Bit#(DCacheOffsetSz) zeroOff = 0;
             wbLine <= lines[way];
             awQ.enq(AxiWriteAddr{
               addr: { tagValids[way].tag, idx, zeroOff },
@@ -592,13 +591,17 @@ module mkDCache(DCache);
 
   rule doWaitWbResp (state == WaitWbResp && bQ.notEmpty);
     bQ.deq;
-    if (cacheMaintWait) begin
+    if (fenceFlushWait) begin
+      writeDirty(cacheMaintIdx, cacheMaintWay, False);
+      fenceFlushWait <= False;
+      if (!squashPending) begin
+        respQ.enq(DCacheResp{data: 0});
+      end
+      squashPending <= False;
+      state <= Ready;
+    end else if (cacheMaintWait) begin
       writeTagValid(cacheMaintWay, cacheMaintIdx, DCacheTagValid{valid: False, tag: 0});
       writeDirty(cacheMaintIdx, cacheMaintWay, False);
-      if (writeBufferValid && writeBuffer.idx == cacheMaintIdx &&
-          writeBuffer.way == cacheMaintWay) begin
-        writeBufferValid <= False;
-      end
       if (llValid && getDBlockBase(llAddr) == cacheMaintBlockAddr) begin
         llValid <= False;
       end
@@ -652,6 +655,8 @@ module mkDCache(DCache);
           writeLine(way, idx, nextLine);
           writeDirty(idx, way, False);
         end
+        // Stores enter DCache only after ROB commit, so a later squash must not
+        // discard their fill or dirty data.
         St: begin
           Data mergedWord = applyByteMask(nextLine[wsel], r.data, r.byteEn);
           DCacheLine newLine = update(nextLine, wsel, mergedWord);
@@ -770,8 +775,6 @@ module mkDCache(DCache);
     if (state != Ready) begin
       squashPending <= True;
     end
-    writeBufferValid <= False;
-    fenceFlushWait <= False;
   endmethod
 
   interface AxiMemMaster axiMem;
