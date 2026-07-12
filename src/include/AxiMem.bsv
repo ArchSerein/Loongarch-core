@@ -10,11 +10,15 @@ typedef enum {
 } AxiOwner deriving(Bits, Eq);
 
 typedef enum {
-  ArbIdle,
-  ArbReadResp,
-  ArbWriteData,
-  ArbWriteResp
-} AxiArbState deriving(Bits, Eq);
+  RdIdle,
+  RdResp
+} AxiRdArbState deriving(Bits, Eq);
+
+typedef enum {
+  WrIdle,
+  WrData,
+  WrResp
+} AxiWrArbState deriving(Bits, Eq);
 
 // Merge I/D AXI masters into a single memory-facing AXI master.
 // At most one outstanding transaction is supported (no ID interleave).
@@ -23,44 +27,67 @@ module mkAxiArbiter2#(AxiMemMaster iMem, AxiMemMaster dMem)(AxiMemMaster);
   Fifo#(2, AxiWriteAddr)  awQ <- mkCFFifo;
   Fifo#(4, AxiWriteData)  wQ  <- mkCFFifo;
 
-  Reg#(AxiArbState) state <- mkReg(ArbIdle);
-  Reg#(AxiOwner) owner <- mkReg(AxiOwnerI);
-  rule startDWriteTxn (state == ArbIdle && dMem.wrAddrValid);
+  Reg#(AxiRdArbState) rdState <- mkReg(RdIdle);
+  Reg#(AxiOwner)      rdOwner <- mkReg(AxiOwnerI);
+
+  Reg#(AxiWrArbState) wrState <- mkReg(WrIdle);
+  Reg#(AxiOwner)      wrOwner <- mkReg(AxiOwnerD);
+
+  // ====================================================================
+  // WRITE CHANNEL ARBITRATION (AW, W, B)
+  // ====================================================================
+  
+  rule startDWriteTxn (wrState == WrIdle && dMem.wrAddrValid);
     let aw <- dMem.wrAddr;
     awQ.enq(aw);
-    owner <= AxiOwnerD;
-    state <= ArbWriteData;
+    wrOwner <= AxiOwnerD;
+    wrState <= WrData;
   endrule
 
-  rule startDReadTxn (state == ArbIdle && !dMem.wrAddrValid && dMem.rdAddrValid);
-    let ar <- dMem.rdAddr;
-    arQ.enq(ar);
-    owner <= AxiOwnerD;
-    state <= ArbReadResp;
+  rule startIWriteTxn (wrState == WrIdle && !dMem.wrAddrValid && iMem.wrAddrValid);
+    let aw <- iMem.wrAddr;
+    awQ.enq(aw);
+    wrOwner <= AxiOwnerI;
+    wrState <= WrData;
   endrule
 
-  rule startIReadTxn (state == ArbIdle && !dMem.wrAddrValid && !dMem.rdAddrValid && iMem.rdAddrValid);
-    let ar <- iMem.rdAddr;
-    arQ.enq(ar);
-    owner <= AxiOwnerI;
-    state <= ArbReadResp;
-  endrule
-
-  rule drainWriteDataD (state == ArbWriteData && owner == AxiOwnerD && dMem.wrDataValid);
+  rule drainWriteDataD (wrState == WrData && wrOwner == AxiOwnerD && dMem.wrDataValid);
     let wd <- dMem.wrData;
     wQ.enq(wd);
     if (wd.last) begin
-      state <= ArbWriteResp;
+      wrState <= WrResp;
     end
   endrule
 
-  rule drainWriteDataI (state == ArbWriteData && owner == AxiOwnerI && iMem.wrDataValid);
+  rule drainWriteDataI (wrState == WrData && wrOwner == AxiOwnerI && iMem.wrDataValid);
     let wd <- iMem.wrData;
     wQ.enq(wd);
     if (wd.last) begin
-      state <= ArbWriteResp;
+      wrState <= WrResp;
     end
   endrule
+
+  // ====================================================================
+  // READ CHANNEL ARBITRATION (AR, R)
+  // ====================================================================
+  
+  rule startDReadTxn (rdState == RdIdle && dMem.rdAddrValid);
+    let ar <- dMem.rdAddr;
+    arQ.enq(ar);
+    rdOwner <= AxiOwnerD;
+    rdState <= RdResp;
+  endrule
+
+  rule startIReadTxn (rdState == RdIdle && !dMem.rdAddrValid && iMem.rdAddrValid);
+    let ar <- iMem.rdAddr;
+    arQ.enq(ar);
+    rdOwner <= AxiOwnerI;
+    rdState <= RdResp;
+  endrule
+
+  // ====================================================================
+  // AXI MASTER INTERFACE METHODS (Downstream)
+  // ====================================================================
 
   method Bool rdAddrValid = arQ.notEmpty;
 
@@ -70,14 +97,14 @@ module mkAxiArbiter2#(AxiMemMaster iMem, AxiMemMaster dMem)(AxiMemMaster);
     return x;
   endmethod
 
-  method Action rdData(AxiReadData d) if (state == ArbReadResp);
-    if (owner == AxiOwnerD) begin
+  method Action rdData(AxiReadData d) if (rdState == RdResp);
+    if (rdOwner == AxiOwnerD) begin
       dMem.rdData(d);
     end else begin
       iMem.rdData(d);
     end
     if (d.last) begin
-      state <= ArbIdle;
+      rdState <= RdIdle;
     end
   endmethod
 
@@ -97,13 +124,13 @@ module mkAxiArbiter2#(AxiMemMaster iMem, AxiMemMaster dMem)(AxiMemMaster);
     return x;
   endmethod
 
-  method Action wrResp(AxiWriteResp r) if (state == ArbWriteResp);
-    if (owner == AxiOwnerD) begin
+  method Action wrResp(AxiWriteResp r) if (wrState == WrResp);
+    if (wrOwner == AxiOwnerD) begin
       dMem.wrResp(r);
     end else begin
       iMem.wrResp(r);
     end
-    state <= ArbIdle;
+    wrState <= WrIdle;
   endmethod
 endmodule
 
