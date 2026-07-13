@@ -164,7 +164,7 @@ endmodule
 // Replacement policy interface
 // ============================================================
 interface ICacheReplace;
-  method ICacheWayIdx replace(ICacheIndex setIdx);
+  method ICacheWayIdx replace(ICacheIndex setIdx, Vector#(ICacheWays, ICacheTagValid) tagValids);
   method Action       access(ICacheIndex setIdx, ICacheWayIdx wayIdx);
 endinterface
 
@@ -175,8 +175,19 @@ module mkICacheReplaceRandom(ICacheReplace);
   // are taken from a pseudo-random sequence instead of round-robin order.
   Reg#(Bit#(16)) lfsr <- mkReg(16'hACE1);
 
-  method ICacheWayIdx replace(ICacheIndex setIdx);
-    return truncate(lfsr);
+  method ICacheWayIdx replace(ICacheIndex setIdx, Vector#(ICacheWays, ICacheTagValid) tagValids);
+    ICacheWayIdx replWay = truncate(lfsr);
+    ICacheWayIdx invalidWay = 0;
+    Bool hasInvalid = False;
+
+    for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
+      if (!tagValids[w].valid && !hasInvalid) begin
+        invalidWay = fromInteger(w);
+        hasInvalid = True;
+      end
+    end
+
+    return hasInvalid ? invalidWay : replWay;
   endmethod
 
   method Action access(ICacheIndex setIdx, ICacheWayIdx wayIdx);
@@ -275,6 +286,14 @@ module mkICache(ICache);
     return setWays;
   endfunction
 
+  function Vector#(ICacheWays, ICacheTagValid) currentTagValids;
+    Vector#(ICacheWays, ICacheTagValid) tags = replicate(ICacheTagValid{valid: False, tag: 0});
+    for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
+      tags = update(tags, fromInteger(w), unpackICacheTagValid(tagValidStore[w].read));
+    end
+    return tags;
+  endfunction
+
   rule doAcceptRefillReq (state == Ready && refillReqQ.notEmpty);
     let req = refillReqQ.first;
     refillReqQ.deq;
@@ -302,7 +321,8 @@ module mkICache(ICache);
     let idx  = getIIndex(missReq.addr);
     let tag  = getITag(missReq.addr);
     let wsel = getIWordSel(missReq.addr);
-    let way  = replacer.replace(idx);
+    let tagValids = currentTagValids;
+    let way  = replacer.replace(idx, tagValids);
 
     Bit#(ICacheWordSelSz) lineIdx = truncate(beatIdx);
     ICacheLine nextLine = update(refillLine, lineIdx, beat.data);

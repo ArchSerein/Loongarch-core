@@ -156,7 +156,7 @@ endmodule
 `endif
 
 interface DCacheReplace;
-  method DCacheWayIdx replace(DCacheIndex setIdx);
+  method DCacheWayIdx replace(DCacheIndex setIdx, Vector#(DCacheWays, DCacheTagValid) tagValids);
   method Action       access(DCacheIndex setIdx, DCacheWayIdx wayIdx);
 endinterface
 
@@ -166,8 +166,19 @@ module mkDCacheReplaceRandom(DCacheReplace);
   // are taken from a pseudo-random sequence instead of round-robin order.
   Reg#(Bit#(16)) lfsr <- mkReg(16'hACE1);
 
-  method DCacheWayIdx replace(DCacheIndex setIdx);
-    return truncate(lfsr);
+  method DCacheWayIdx replace(DCacheIndex setIdx, Vector#(DCacheWays, DCacheTagValid) tagValids);
+    DCacheWayIdx replWay = truncate(lfsr);
+    DCacheWayIdx invalidWay = 0;
+    Bool hasInvalid = False;
+
+    for (Integer w = 0; w < valueOf(DCacheWays); w = w + 1) begin
+      if (!tagValids[w].valid && !hasInvalid) begin
+        invalidWay = fromInteger(w);
+        hasInvalid = True;
+      end
+    end
+
+    return hasInvalid ? invalidWay : replWay;
   endmethod
 
   method Action access(DCacheIndex setIdx, DCacheWayIdx wayIdx);
@@ -545,7 +556,7 @@ module mkDCache(DCache);
           state <= Ready;
         end else begin
           missReq <= r;
-          let way = replacer.replace(idx);
+          let way = replacer.replace(idx, tagValids);
           victimWay <= way;
           Bit#(DCacheOffsetSz) zeroOff = 0;
           Addr victimBlockAddr = { tagValids[way].tag, idx, zeroOff };

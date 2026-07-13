@@ -192,6 +192,9 @@ module mkCore(Core);
   rule doIF2if2WaitRefill (!aluBranchBusy && if2WaitRefill && f2dFifo.notFull);
     let req = if2PendingReq;
     let iResp <- iCache.refillResp;
+`ifdef CONFIG_TRACE_PERFORMANCE
+    perf_icache_miss_cycle();
+`endif
     if (iResp.addr == if2MissPaddr) begin
       f2dFifo.enq(F2D{
         pc: req.pc,
