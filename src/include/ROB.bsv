@@ -25,7 +25,7 @@ interface ROB;
   method Action updateMem(RobTag tag, RobState state);
   method Action updateExcp(RobTag tag, ExcpInfo excp);
   method Action updateBranch(RobTag tag, Bool mispred, Addr target);
-  method Action updateMemInfo(RobTag tag, Addr vaddr, Addr paddr, Bool useCache);
+  method Action updateMemInfo(RobTag tag, Addr vaddr, Addr paddr, Bool useCache, Maybe#(ByteMask) mask);
   method Action flushAfter(RobTag tag);  // invalidate entries after tag
   method Action clear;               // full reset
 endinterface
@@ -44,7 +44,7 @@ module mkROB(ROB);
     replicateM(mkDWire(tagged Invalid));
   Wire#(Maybe#(Tuple2#(RobTag, ExcpInfo))) updateExcpReq <- mkDWire(tagged Invalid);
   Wire#(Maybe#(Tuple3#(RobTag, Bool, Addr))) updateBranchReq <- mkDWire(tagged Invalid);
-  Wire#(Maybe#(Tuple4#(RobTag, Addr, Addr, Bool))) updateMemInfoReq <- mkDWire(tagged Invalid);
+  Wire#(Maybe#(Tuple5#(RobTag, Addr, Addr, Bool, Maybe#(ByteMask)))) updateMemInfoReq <- mkDWire(tagged Invalid);
   Wire#(Maybe#(RobTag)) flushReq <- mkDWire(tagged Invalid);
   Wire#(Bool) clearReq <- mkDWire(False);
 
@@ -64,7 +64,8 @@ module mkROB(ROB);
       isBranch: False, isStore: False, isCsr: False,
       isTlb: False, isSpecial: False,
       mispredict: False, correctTarget: 0,
-      memVaddr: 0, memPaddr: 0, memUseCache: False
+      memVaddr: 0, memPaddr: 0, memUseCache: False,
+      memMask: tagged Invalid
     };
   endfunction
 
@@ -92,6 +93,7 @@ module mkROB(ROB);
         Addr newMemVaddr = e.memVaddr;
         Addr newMemPaddr = e.memPaddr;
         Bool newMemUseCache = e.memUseCache;
+        Maybe#(ByteMask) newMemMask = e.memMask;
         Bool modified = False;
 
         for (Integer p = 0; p < 4; p = p + 1) begin
@@ -113,6 +115,7 @@ module mkROB(ROB);
           newMemVaddr = tpl_2(req);
           newMemPaddr = tpl_3(req);
           newMemUseCache = tpl_4(req);
+          newMemMask = tpl_5(req);
           modified = True;
         end
 
@@ -127,7 +130,7 @@ module mkROB(ROB);
             isTlb: e.isTlb, isSpecial: e.isSpecial,
             mispredict: newMispredict, correctTarget: newCorrectTarget,
             memVaddr: newMemVaddr, memPaddr: newMemPaddr,
-            memUseCache: newMemUseCache
+            memUseCache: newMemUseCache, memMask: newMemMask
           };
         end
       end
@@ -210,8 +213,8 @@ module mkROB(ROB);
     updateBranchReq <= tagged Valid tuple3(tag, mispred, target);
   endmethod
 
-  method Action updateMemInfo(RobTag tag, Addr vaddr, Addr paddr, Bool useCache);
-    updateMemInfoReq <= tagged Valid tuple4(tag, vaddr, paddr, useCache);
+  method Action updateMemInfo(RobTag tag, Addr vaddr, Addr paddr, Bool useCache, Maybe#(ByteMask) mask);
+    updateMemInfoReq <= tagged Valid tuple5(tag, vaddr, paddr, useCache, mask);
   endmethod
 
   method Action flushAfter(RobTag tag);

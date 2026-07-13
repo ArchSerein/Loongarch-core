@@ -54,7 +54,7 @@ import Difftest::*;
 import Perf::*;
 `endif
 
-(* synthesize *)
+(* synthesize, descending_urgency = "doCommitErtn, doCommitRedirect, doCollectMemTLB, doCollectMemDirect, doIF2NoFetchTlb, doIF2WithFetchTlb, doRename, doDispatchAlu, doDispatchMulDiv, doDispatchMem, doExecALUBranch, doExecALUNonBranch, doIssueMemUncache, writebackToPRF" *)
 module mkCore(Core);
   // PC register: port[0]=IF1, port[1]=EX mispredict, port[2]=CM exception/ertn
   Ehr#(3, Addr)         pcReg <- mkEhr(startpc);
@@ -407,7 +407,75 @@ module mkCore(Core);
       commitCsrSnapReg, csrf, rob, commitState);
   endrule
 
-  rule doCommit (rob.headValid && commitState == CommitReady);
+`ifdef CONFIG_DIFFTEST
+  rule traceCommitDifftestBackpressure (rob.headValid && commitState == CommitReady &&
+      !difftest.enqTraceReady);
+    let head = rob.head;
+    $display("[CM_STALL] difftest_backpressure head.pc=0x%08x iType=%0d robState=%0d",
+      head.pc, pack(head.iType), pack(head.state));
+  endrule
+`endif
+
+  rule doCommitErtn (rob.headValid && commitState == CommitReady
+`ifdef CONFIG_DIFFTEST
+      && difftest.enqTraceReady
+`endif
+      && rob.head.iType == Ertn);
+    doCommitErtnBody(rob, commitState, csrf,
+`ifdef CONFIG_DIFFTEST
+      csrSnapReg,
+`endif
+      commitCsrSnapReg, rat, freeList, tlb, pcReg[2], iCache, dCache,
+      if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
+      aluRS, muldivRS, memRS, storeBuf, aluBusy, mulInFlight,
+      divInFlight, memState
+`ifdef CONFIG_DIFFTEST
+      , difftest, archRegs
+`endif
+`ifdef CONFIG_WB_DEBUG
+      , debugWsValidWire, debugWbPcWire
+`ifdef CONFIG_WB_DEBUG_INST
+      , debugWbInstWire
+`endif
+`endif
+    );
+  endrule
+
+  rule doCommitRedirect (rob.headValid && commitState == CommitReady
+`ifdef CONFIG_DIFFTEST
+      && difftest.enqTraceReady
+`endif
+      && (rob.head.excp.valid || rob.head.iType == Idle ||
+       rob.head.iType == Syscall || rob.head.iType == Break));
+    doCommitBody(rob, commitState, csrf,
+`ifdef CONFIG_DIFFTEST
+      csrSnapReg,
+`endif
+      commitCsrSnapReg, prf, rat, freeList, tlb, pcReg[2], iCache, dCache,
+      if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
+      aluRS, muldivRS, memRS, storeBuf, committedStoreBuf, idleLock, aluBusy, mulInFlight,
+      divInFlight, memState, branchPred
+`ifdef CONFIG_BSIM
+      , toHostFifo
+`endif
+`ifdef CONFIG_DIFFTEST
+      , difftest, archRegs
+`endif
+`ifdef CONFIG_WB_DEBUG
+      , debugWsValidWire, debugWbPcWire
+`ifdef CONFIG_WB_DEBUG_INST
+      , debugWbInstWire
+`endif
+`endif
+    );
+  endrule
+
+  rule doCommit (rob.headValid && commitState == CommitReady
+`ifdef CONFIG_DIFFTEST
+      && difftest.enqTraceReady
+`endif
+      && !(rob.head.excp.valid || rob.head.iType == Ertn || rob.head.iType == Idle ||
+       rob.head.iType == Syscall || rob.head.iType == Break));
     doCommitBody(rob, commitState, csrf,
 `ifdef CONFIG_DIFFTEST
       csrSnapReg,

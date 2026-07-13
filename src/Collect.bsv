@@ -129,7 +129,7 @@ function Action doCollectMemTLBBody(
             addr: vaddr, data: tpl_2(storePkt),
             byteEn: extend(tpl_1(storePkt))
           });
-          rob.updateMemInfo(entry.robTag, vaddr, dTrans.pa, memUseCache);
+          rob.updateMemInfo(entry.robTag, vaddr, dTrans.pa, memUseCache, entry.mask);
           rob.updateMem(entry.robTag, RobCompleted);
           memRS.remove(entry.robTag);
           memState <= MemIdle;
@@ -158,7 +158,7 @@ function Action doCollectMemTLBBody(
           memForward <= entry.isLoad ?
             mergeForward(committedStoreBuf.forward(vaddr), storeBuf.forward(vaddr)) :
             StoreForwardResult{data: 0, byteEn: 0};
-          rob.updateMemInfo(entry.robTag, vaddr, dTrans.pa, memUseCache);
+          rob.updateMemInfo(entry.robTag, vaddr, dTrans.pa, memUseCache, entry.mask);
           if (entry.iType == Ld && !memUseCache && entry.robTag != rob.headTag) begin
             memState <= MemUncacheWait;
           end else begin
@@ -205,7 +205,7 @@ function Action doCollectMemDirectBody(
           addr: vaddr, data: tpl_2(storePkt),
           byteEn: extend(tpl_1(storePkt))
         });
-        rob.updateMemInfo(entry.robTag, vaddr, paddr, memUseCache);
+        rob.updateMemInfo(entry.robTag, vaddr, paddr, memUseCache, entry.mask);
         rob.updateMem(entry.robTag, RobCompleted);
         memRS.remove(entry.robTag);
         memState <= MemIdle;
@@ -234,7 +234,7 @@ function Action doCollectMemDirectBody(
         memForward <= entry.isLoad ?
           mergeForward(committedStoreBuf.forward(vaddr), storeBuf.forward(vaddr)) :
           StoreForwardResult{data: 0, byteEn: 0};
-        rob.updateMemInfo(entry.robTag, vaddr, paddr, memUseCache);
+        rob.updateMemInfo(entry.robTag, vaddr, paddr, memUseCache, entry.mask);
         if (entry.iType == Ld && !memUseCache && entry.robTag != rob.headTag) begin
           memState <= MemUncacheWait;
         end else begin

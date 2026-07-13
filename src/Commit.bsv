@@ -156,6 +156,116 @@ function Action takeCsrSnapshotBody(
   endaction
 endfunction
 
+function Action doCommitErtnBody(
+    ROB rob,
+    Reg#(CommitState) commitState,
+    CsrFile csrf,
+`ifdef CONFIG_DIFFTEST
+    Reg#(DiffArchCsrState) csrSnapReg,
+`endif
+    Reg#(CommitCsrSnapshot) commitCsrSnapReg,
+    RAT rat,
+    FreeList freeList,
+    TlbArray tlb,
+    Reg#(Addr) pcReg,
+    ICache iCache,
+    DCache dCache,
+    Reg#(Bool) if2WaitRefill,
+    Fifo#(2, F1toF2) f1f2Fifo,
+    Fifo#(2, F2D) f2dFifo,
+    Fifo#(2, D2RN) d2rnFifo,
+    Fifo#(2, RenamedInst) rn2diFifo,
+    ResStation#(16) aluRS,
+    ResStation#(4) muldivRS,
+    ResStation#(16) memRS,
+    StoreBuf#(16) storeBuf,
+    Reg#(Bool) aluBusy,
+    Reg#(Bool) mulInFlight,
+    Reg#(Bool) divInFlight,
+    Reg#(MemExecState) memState
+`ifdef CONFIG_DIFFTEST
+    , Difftest difftest
+    , Vector#(32, Reg#(Data)) archRegs
+`endif
+`ifdef CONFIG_WB_DEBUG
+    , Wire#(Bool) debugWsValidWire
+    , Wire#(Addr) debugWbPcWire
+`ifdef CONFIG_WB_DEBUG_INST
+    , Wire#(Instruction) debugWbInstWire
+`endif
+`endif
+);
+  action
+    let head = rob.head;
+`ifdef CONFIG_DIFFTEST
+    DiffArchCsrState diffCsrSnap = csrSnapReg;
+    Bool llbctlKloVal = unpack(diffCsrSnap.llbctl[2]);
+`else
+    Bool llbctlKloVal = commitCsrSnapReg.llbctlKloVal;
+`endif
+
+`ifdef CONFIG_WB_DEBUG
+    debugWsValidWire <= True;
+    debugWbPcWire <= head.pc;
+`ifdef CONFIG_WB_DEBUG_INST
+    debugWbInstWire <= head.inst;
+`endif
+`endif
+
+    Bool clearLl = !llbctlKloVal;
+    Addr era <- csrf.returnFromException;
+    pcReg <= era;
+
+    iCache.squash;
+    tlb.squashReq;
+    tlb.squashFetchLookup;
+    tlb.squashDataLookup;
+    dCache.squash(clearLl);
+    if2WaitRefill <= False;
+    f1f2Fifo.clear;
+    f2dFifo.clear;
+    d2rnFifo.clear;
+    rn2diFifo.clear;
+    aluRS.clear;
+    muldivRS.clear;
+    memRS.clear;
+    storeBuf.clear;
+    rob.clear;
+    rat.restoreFromRetirement;
+    freeList.restoreFromRetRAT(rat.allRetRAT);
+    aluBusy <= False;
+    mulInFlight <= False;
+    divInFlight <= False;
+    memState <= MemIdle;
+    commitState <= CommitIdle;
+
+`ifdef CONFIG_TRACE_PERFORMANCE
+    inst_count();
+`endif
+
+`ifdef CONFIG_DIFFTEST
+    Vector#(32, Data) gpr = ?;
+    for (Integer i = 0; i < 32; i = i + 1) gpr[i] = archRegs[i];
+    DiffArchCsrState diffCsr = diffSnapshotAfterWriteFromState(diffCsrSnap,
+      tagged Invalid, 0, False, 0, 0, head.pc, 0, True);
+    difftest.enqTrace(DiffTrace{
+      commit: DiffCommit{
+        valid: True, pc: head.pc, nextPc: era,
+        inst: head.inst, wen: False, wdest: 0, wdata: 0, skip: False,
+        isTlbfill: False, tlbfillIndex: 0
+      },
+      regs: DiffArchGRegState{gpr: gpr},
+      csr: diffCsr,
+      excp: DiffExcpEvent{excpValid: False, eret: True,
+        interrupt: mkInterruptNo(diffCsr.estat),
+        exception: 0, exceptionPC: head.pc, exceptionInst: head.inst},
+      store: DiffStoreEvent{valid: 0, paddr: 0, vaddr: 0, data: 0},
+      load: DiffLoadEvent{valid: 0, paddr: 0, vaddr: 0}
+    });
+`endif
+  endaction
+endfunction
+
 function Action doCommitBody(
     ROB rob,
     Reg#(CommitState) commitState,
@@ -630,6 +740,7 @@ function Action doCommitBody(
       Addr commitNextPc = head.mispredict ? head.correctTarget : (head.pc + 4);
       // Store/load diff events
       Maybe#(DiffMemOp) diffMem = tagged Invalid;
+      Maybe#(ByteMask) diffMemMask = head.memMask;
       if (head.iType == Ld || head.iType == Ll) begin
         diffMem = tagged Valid DiffMemOp{
           isLoad: True, isStore: False, isSc: False,
@@ -642,14 +753,16 @@ function Action doCommitBody(
           storeData: commitStoreEntry.data
         };
       end else if (head.iType == Sc) begin
+        ByteMask scMask = fromMaybe(5'b0, head.memMask);
+        let scStorePkt = selectStoreData(cmRVal2, head.memVaddr[1:0], scMask[3:0]);
         diffMem = tagged Valid DiffMemOp{
           isLoad: False, isStore: True, isSc: True,
           paddr: head.memPaddr, vaddr: head.memVaddr,
-          storeData: wdata
+          storeData: tpl_2(scStorePkt)
         };
       end
-      DiffStoreEvent storeEvent = diffStoreEventOf(diffMem, head.iType, ?, wdata);
-      DiffLoadEvent loadEvent = diffLoadEventOf(diffMem, head.iType, ?);
+      DiffStoreEvent storeEvent = diffStoreEventOf(diffMem, head.iType, diffMemMask, wdata);
+      DiffLoadEvent loadEvent = diffLoadEventOf(diffMem, head.iType, diffMemMask);
       difftest.enqTrace(DiffTrace{
         commit: DiffCommit{
           valid: True, pc: head.pc, nextPc: commitNextPc,
