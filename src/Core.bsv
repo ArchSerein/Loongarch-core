@@ -54,7 +54,7 @@ import Difftest::*;
 import Perf::*;
 `endif
 
-(* synthesize, descending_urgency = "doCommitErtn, doCommitRedirect, doCollectMemTLB, doCollectMemDirect, doIF2NoFetchTlb, doIF2WithFetchTlb, doRename, doDispatchAlu, doDispatchMulDiv, doDispatchMem, doExecALUBranch, doExecALUNonBranch, doIssueMemUncache, writebackToPRF" *)
+(* synthesize, descending_urgency = "doCommitErtn, doCommitRedirect, doCommit, doCollectMemTLB, doCollectMemDirect, doIF2NoFetchTlb, doIF2WithFetchTlb, doRename, doDispatchAlu, doDispatchMulDiv, doDispatchMem, doExecALUBranch, doExecALUNonBranch, doIssueMemUncache, writebackToPRF" *)
 module mkCore(Core);
   // PC register: port[0]=IF1, port[1]=EX mispredict, port[2]=CM exception/ertn
   Ehr#(3, Addr)         pcReg <- mkEhr(startpc);
@@ -406,15 +406,6 @@ module mkCore(Core);
 `endif
       commitCsrSnapReg, csrf, rob, commitState);
   endrule
-
-`ifdef CONFIG_DIFFTEST
-  rule traceCommitDifftestBackpressure (rob.headValid && commitState == CommitReady &&
-      !difftest.enqTraceReady);
-    let head = rob.head;
-    $display("[CM_STALL] difftest_backpressure head.pc=0x%08x iType=%0d robState=%0d",
-      head.pc, pack(head.iType), pack(head.state));
-  endrule
-`endif
 
   rule doCommitErtn (rob.headValid && commitState == CommitReady
 `ifdef CONFIG_DIFFTEST
