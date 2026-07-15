@@ -54,7 +54,7 @@ import Difftest::*;
 import Perf::*;
 `endif
 
-(* synthesize, descending_urgency = "doCommitErtn, doCommitRedirect, doCommit, doCollectMemTLB, doCollectMemDirect, doIF2NoFetchTlb, doIF2WithFetchTlb, doRename, doDispatchAlu, doDispatchMulDiv, doDispatchMem, doExecALUBranch, doExecALUNonBranch, doIssueMemUncache, writebackToPRF" *)
+(* synthesize *)
 module mkCore(Core);
   // PC register: port[0]=IF1, port[1]=EX mispredict, port[2]=CM exception/ertn
   Ehr#(3, Addr)         pcReg <- mkEhr(startpc);
@@ -101,10 +101,6 @@ module mkCore(Core);
   Reg#(MemExecState) memState <- mkReg(MemIdle);
   Reg#(RSEntry)   memExecEntry <- mkRegU;
 
-  // CDB arbitration wires. A completed long-latency operation is given
-  // priority so it cannot be starved by a stream of one-cycle operations.
-  // Among the remaining producers the priority is Load > ALU.
-  Wire#(Bool) loadUsingCDB <- mkDWire(False);
   Reg#(Addr)        memVaddr  <- mkRegU;
   Reg#(Addr)        memPaddr  <- mkRegU;
   Reg#(StoreForwardResult) memForward <- mkReg(StoreForwardResult{data: 0, byteEn: 0});
@@ -257,17 +253,40 @@ module mkCore(Core);
   // ============================================================
   // CDB: Wakeup RS entries and writeback to PRF
   // ============================================================
-  rule wakeupOnCDB (cdb.valid);
-    let msg = cdb.msg;
-    aluRS.wakeup(msg);
-    muldivRS.wakeup(msg);
-    memRS.wakeup(msg);
+  rule wakeupAluRS (cdb.anyValid);
+    aluRS.wakeup(cdb.msgs);
   endrule
 
-  rule writebackToPRF (cdb.valid);
-    let msg = cdb.msg;
-    prf.cdbWrite(msg.tag, msg.value);
-    prf.setReady(msg.tag);
+  rule wakeupMuldivRS (cdb.anyValid);
+    muldivRS.wakeup(cdb.msgs);
+  endrule
+
+  rule wakeupMemRS (cdb.anyValid);
+    memRS.wakeup(cdb.msgs);
+  endrule
+
+  rule writebackLoad (cdb.msgs[0].valid);
+    let m = cdb.msgs[0];
+    prf.cdbWriteLoad(m.tag, m.value);
+    prf.setReadyLoad(m.tag);
+  endrule
+
+  rule writebackALU (cdb.msgs[1].valid);
+    let m = cdb.msgs[1];
+    prf.cdbWriteALU(m.tag, m.value);
+    prf.setReadyALU(m.tag);
+  endrule
+
+  rule writebackMul (cdb.msgs[2].valid);
+    let m = cdb.msgs[2];
+    prf.cdbWriteMul(m.tag, m.value);
+    prf.setReadyMul(m.tag);
+  endrule
+
+  rule writebackDiv (cdb.msgs[3].valid);
+    let m = cdb.msgs[3];
+    prf.cdbWriteDiv(m.tag, m.value);
+    prf.setReadyDiv(m.tag);
   endrule
 
   // ============================================================
@@ -280,20 +299,14 @@ module mkCore(Core);
     aluBranchBusy <= isBranch(entry.iType);
   endrule
 
-  rule doExecALUBranch (aluBusy && aluBranchBusy &&
-      (!isValid(aluExecEntry.pDst) ||
-       (!loadUsingCDB && !(mulInFlight && mulUnit.finish && isValid(mulExecEntry.pDst)) &&
-        !(divInFlight && divUnit.finish && isValid(divExecEntry.pDst)))));
+  rule doExecALUBranch (aluBusy && aluBranchBusy);
     doExecALUBody(aluExecEntry, aluBusy, cdb, rob, pcReg[1], iCache, tlb,
       f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo, aluRS, muldivRS, memRS,
       if2WaitRefill, rat, freeList, branchPred);
     aluBranchBusy <= False;
   endrule
 
-  rule doExecALUNonBranch (aluBusy && !aluBranchBusy &&
-      (!isValid(aluExecEntry.pDst) ||
-       (!loadUsingCDB && !(mulInFlight && mulUnit.finish && isValid(mulExecEntry.pDst)) &&
-        !(divInFlight && divUnit.finish && isValid(divExecEntry.pDst)))));
+  rule doExecALUNonBranch (aluBusy && !aluBranchBusy);
     doExecALUBody(aluExecEntry, aluBusy, cdb, rob, pcReg[1], iCache, tlb,
       f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo, aluRS, muldivRS, memRS,
       if2WaitRefill, rat, freeList, branchPred);
@@ -318,13 +331,11 @@ module mkCore(Core);
     doIssueDivBody(entry, divUnit, divExecEntry, muldivRS, divInFlight);
   endrule
 
-  rule doCollectMul (mulInFlight && mulUnit.finish &&&
-      (!isValid(mulExecEntry.pDst) ||
-       !(divInFlight && divUnit.finish && isValid(divExecEntry.pDst))));
+  rule doCollectMul (mulInFlight && mulUnit.finish);
     doCollectMulBody(mulInFlight, mulExecEntry, mulUnit, cdb, rob);
   endrule
 
-  rule doCollectDiv (divInFlight && divUnit.finish &&& True);
+  rule doCollectDiv (divInFlight && divUnit.finish);
     doCollectDivBody(divInFlight, divExecEntry, divUnit, cdb, rob);
   endrule
 
@@ -362,16 +373,9 @@ module mkCore(Core);
       memForward, dCache, storeBuf, committedStoreBuf);
   endrule
 
-  rule doCollectMemCache (memState == MemCacheWait &&
-      (!isValid(memExecEntry.pDst) ||
-       (!(mulInFlight && mulUnit.finish && isValid(mulExecEntry.pDst)) &&
-        !(divInFlight && divUnit.finish && isValid(divExecEntry.pDst)))));
+  rule doCollectMemCache (memState == MemCacheWait);
     doCollectMemCacheBody(memState, memExecEntry, memVaddr, memForward, dCache, cdb,
       rob, memRS);
-    // Claim the bus so ALU waits when this load writes a destination.
-    if (isValid(memExecEntry.pDst)) begin
-      loadUsingCDB <= True;
-    end
   endrule
 
   rule doCollectMemCacopI (memState == MemCacopIWait);

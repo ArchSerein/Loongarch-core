@@ -1,74 +1,77 @@
 import Types::*;
 import ProcTypes::*;
+import Vector::*;
 import OoOTypes::*;
 
 // ============================================================
-// Common Data Bus (CDB)
-// Arbitrates among completing functional units and broadcasts
-// {tag, value} to all listeners (RS, PRF, ROB)
-// Core-side guards guarantee that at most one producer drives the bus.
+// Common Data Bus (CDB) — multi-port
+// Each completing functional unit (Load, ALU, Mul, Div) owns a
+// dedicated port.  Producers drive their own port without
+// arbitration; all ports latch concurrently and broadcast in
+// parallel on the following cycle.  Consumers (reservation
+// stations, PRF) receive a Vector#(4, CDBMessage) and iterate
+// over every valid entry.
 //
-// Arbitration is enforced by the Core module via rule guards
-// (completion-state guards and loadUsingCDB), NOT inside this
-// module. The CDB itself simply latches the highest-priority
-// request. This avoids BSV same-rule read-after-write conflicts
-// on the request wires.
+// Port index layout (fixed):
+//   0 = Load    (doCollectMemCache)
+//   1 = ALU     (doExecALUBranch / doExecALUNonBranch)
+//   2 = Mul     (doCollectMul)
+//   3 = Div     (doCollectDiv)
 // ============================================================
+
+typedef 4 CdbPorts;
 
 interface CDB;
   method Action sendLoad(PIndx tag, Data value);
-  method Action sendALU(PIndx tag, Data value);
-  method Action sendMul(PIndx tag, Data value);
-  method Action sendDiv(PIndx tag, Data value);
-  method CDBMessage msg;       // arbitrated broadcast (this cycle)
-  method Bool valid;           // broadcast valid this cycle
+  method Action sendALU (PIndx tag, Data value);
+  method Action sendMul (PIndx tag, Data value);
+  method Action sendDiv (PIndx tag, Data value);
+  method Vector#(CdbPorts, CDBMessage) msgs;
+  method Bool anyValid;
 endinterface
 
 module mkCDB(CDB);
-  Wire#(Maybe#(CDBMessage)) loadIn <- mkDWire(tagged Invalid);
-  Wire#(Maybe#(CDBMessage)) aluIn  <- mkDWire(tagged Invalid);
-  Wire#(Maybe#(CDBMessage)) mulIn  <- mkDWire(tagged Invalid);
-  Wire#(Maybe#(CDBMessage)) divIn  <- mkDWire(tagged Invalid);
-  Reg#(CDBMessage) msgReg <- mkReg(CDBMessage{tag: 0, value: 0, valid: False});
-  Reg#(Bool) validReg <- mkReg(False);
+  // Per-port request DWires; default to Invalid every cycle.
+  Vector#(CdbPorts, Wire#(Maybe#(CDBMessage))) ins <- replicateM(mkDWire(tagged Invalid));
 
+  // Per-port latched messages; valid bit indicates "broadcast this cycle".
+  Vector#(CdbPorts, Reg#(CDBMessage)) msgRegs <-
+    replicateM(mkReg(CDBMessage{tag: 0, value: 0, valid: False}));
+
+  // Latch every port concurrently at the end of each cycle.
   rule latchBroadcast;
-    CDBMessage nextMsg = CDBMessage{tag: 0, value: 0, valid: False};
-    Bool nextValid = False;
-    if (loadIn matches tagged Valid .m) begin
-      nextMsg = m;
-      nextValid = True;
-    end else if (aluIn matches tagged Valid .m) begin
-      nextMsg = m;
-      nextValid = True;
-    end else if (mulIn matches tagged Valid .m) begin
-      nextMsg = m;
-      nextValid = True;
-    end else if (divIn matches tagged Valid .m) begin
-      nextMsg = m;
-      nextValid = True;
+    for (Integer i = 0; i < valueOf(CdbPorts); i = i + 1) begin
+      CDBMessage next = CDBMessage{tag: 0, value: 0, valid: False};
+      if (ins[i] matches tagged Valid .m) begin
+        next = m;
+      end
+      msgRegs[i] <= next;
     end
-    msgReg <= nextMsg;
-    validReg <= nextValid;
   endrule
 
   method Action sendLoad(PIndx tag, Data value);
-    loadIn <= tagged Valid CDBMessage{tag: tag, value: value, valid: True};
+    ins[0] <= tagged Valid CDBMessage{tag: tag, value: value, valid: True};
   endmethod
 
   method Action sendALU(PIndx tag, Data value);
-    aluIn <= tagged Valid CDBMessage{tag: tag, value: value, valid: True};
+    ins[1] <= tagged Valid CDBMessage{tag: tag, value: value, valid: True};
   endmethod
 
   method Action sendMul(PIndx tag, Data value);
-    mulIn <= tagged Valid CDBMessage{tag: tag, value: value, valid: True};
+    ins[2] <= tagged Valid CDBMessage{tag: tag, value: value, valid: True};
   endmethod
 
   method Action sendDiv(PIndx tag, Data value);
-    divIn <= tagged Valid CDBMessage{tag: tag, value: value, valid: True};
+    ins[3] <= tagged Valid CDBMessage{tag: tag, value: value, valid: True};
   endmethod
 
-  method CDBMessage msg = msgReg;
+  method Vector#(CdbPorts, CDBMessage) msgs;
+    function CDBMessage readMsg(Reg#(CDBMessage) r) = r;
+    return map(readMsg, msgRegs);
+  endmethod
 
-  method Bool valid = validReg;
+  method Bool anyValid;
+    function Bool isV(Reg#(CDBMessage) r) = r.valid;
+    return any(isV, msgRegs);
+  endmethod
 endmodule

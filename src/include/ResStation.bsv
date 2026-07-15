@@ -12,7 +12,7 @@ import OoOTypes::*;
 interface ResStation#(numeric type size);
   method Action enq(RSEntry e);           // dispatch entry (DI stage)
   method Bool notFull;
-  method Action wakeup(CDBMessage cdb);  // CDB broadcast listener
+  method Action wakeup(Vector#(4, CDBMessage) cdbs);  // CDB broadcast listener (all 4 ports)
   method Action commitWakeup(CDBMessage cdb); // commit-stage (CSR) result wakeup
   method Maybe#(RSEntry) selectOldestReady;  // issue selection
   method Maybe#(RSEntry) selectOldestReadyFrom(RobTag headTag);
@@ -35,7 +35,8 @@ module mkResStation(ResStation#(size))
 
   Wire#(Maybe#(RSEntry)) enqReq  <- mkDWire(tagged Invalid);
   Wire#(Maybe#(RobTag)) removeReq <- mkDWire(tagged Invalid);
-  Wire#(CDBMessage) cdbReq       <- mkDWire(CDBMessage{tag: 0, value: 0, valid: False});
+  Wire#(Vector#(4, CDBMessage)) cdbReq <-
+    mkDWire(replicate(CDBMessage{tag: 0, value: 0, valid: False}));
   // Commit-stage wakeup: CSR/rdtime results are written to the PRF at commit,
   // not broadcast on the CDB, so they need a separate wakeup path to clear
   // dependent RS entries' qj/qk.
@@ -109,15 +110,20 @@ module mkResStation(ResStation#(size))
       Bool hasEnq = isValid(enqReq);
       RSEntry enqEntry = fromMaybe(?, enqReq);
 
-      if (hasEnq && (cdbReq.valid || commitCdbReq.valid)) begin
-        if (cdbReq.valid) begin
-          if (enqEntry.qj matches tagged Valid .q &&& q == cdbReq.tag) begin
-            enqEntry.qj = tagged Invalid;
-            enqEntry.vj = cdbReq.value;
-          end
-          if (enqEntry.qk matches tagged Valid .q &&& q == cdbReq.tag) begin
-            enqEntry.qk = tagged Invalid;
-            enqEntry.vk = cdbReq.value;
+      // Simultaneous enqueue + CDB/commit wakeup: apply every valid
+      // broadcast in the vector to the freshly dispatched entry.
+      if (hasEnq) begin
+        for (Integer k = 0; k < 4; k = k + 1) begin
+          CDBMessage c = cdbReq[k];
+          if (c.valid) begin
+            if (enqEntry.qj matches tagged Valid .q &&& q == c.tag) begin
+              enqEntry.qj = tagged Invalid;
+              enqEntry.vj = c.value;
+            end
+            if (enqEntry.qk matches tagged Valid .q &&& q == c.tag) begin
+              enqEntry.qk = tagged Invalid;
+              enqEntry.vk = c.value;
+            end
           end
         end
         if (commitCdbReq.valid) begin
@@ -145,23 +151,26 @@ module mkResStation(ResStation#(size))
         end else begin
           // CDB / commit-stage wakeup: clear dependencies and capture values
           RSEntry e = entries[idx];
-          if (e.valid && (cdbReq.valid || commitCdbReq.valid)) begin
+          if (e.valid) begin
             Maybe#(PIndx) newQj = e.qj;
             Maybe#(PIndx) newQk = e.qk;
             Data newVj = e.vj;
             Data newVk = e.vk;
             Bool modified = False;
-            // CDB broadcast (FU writeback)
-            if (cdbReq.valid) begin
-              if (e.qj matches tagged Valid .q &&& q == cdbReq.tag) begin
-                newQj = tagged Invalid;
-                newVj = cdbReq.value;
-                modified = True;
-              end
-              if (e.qk matches tagged Valid .q &&& q == cdbReq.tag) begin
-                newQk = tagged Invalid;
-                newVk = cdbReq.value;
-                modified = True;
+            // CDB broadcasts (all 4 FU ports, concurrently)
+            for (Integer k = 0; k < 4; k = k + 1) begin
+              CDBMessage c = cdbReq[k];
+              if (c.valid) begin
+                if (newQj matches tagged Valid .q &&& q == c.tag) begin
+                  newQj = tagged Invalid;
+                  newVj = c.value;
+                  modified = True;
+                end
+                if (newQk matches tagged Valid .q &&& q == c.tag) begin
+                  newQk = tagged Invalid;
+                  newVk = c.value;
+                  modified = True;
+                end
               end
             end
             // Commit-stage broadcast (CSR/rdtime results written at commit)
@@ -240,8 +249,8 @@ module mkResStation(ResStation#(size))
     return ret;
   endmethod
 
-  method Action wakeup(CDBMessage cdb);
-    cdbReq <= cdb;
+  method Action wakeup(Vector#(4, CDBMessage) cdbs);
+    cdbReq <= cdbs;
   endmethod
 
   method Action commitWakeup(CDBMessage cdb);
