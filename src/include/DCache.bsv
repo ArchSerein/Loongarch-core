@@ -156,34 +156,19 @@ endmodule
 `endif
 
 interface DCacheReplace;
-  method DCacheWayIdx replace(DCacheIndex setIdx, Vector#(DCacheWays, DCacheTagValid) tagValids);
-  method Action       access(DCacheIndex setIdx, DCacheWayIdx wayIdx);
+  method DCacheWayIdx replace(DCacheIndex setIdx);
+  method Action       access(DCacheIndex setIdx);
 endinterface
 
 module mkDCacheReplaceRandom(DCacheReplace);
-  // 16-bit maximal-length Fibonacci LFSR: x^16 + x^14 + x^13 + x^11 + 1.
-  // Keep the state wider than the way index so successive replacement choices
-  // are taken from a pseudo-random sequence instead of round-robin order.
-  Reg#(Bit#(16)) lfsr <- mkReg(16'hACE1);
+  Vector#(DCacheSets, Reg#(DCacheWayIdx)) cnt <- replicateM(mkReg(0));
 
-  method DCacheWayIdx replace(DCacheIndex setIdx, Vector#(DCacheWays, DCacheTagValid) tagValids);
-    DCacheWayIdx replWay = truncate(lfsr);
-    DCacheWayIdx invalidWay = 0;
-    Bool hasInvalid = False;
-
-    for (Integer w = 0; w < valueOf(DCacheWays); w = w + 1) begin
-      if (!tagValids[w].valid && !hasInvalid) begin
-        invalidWay = fromInteger(w);
-        hasInvalid = True;
-      end
-    end
-
-    return hasInvalid ? invalidWay : replWay;
+  method DCacheWayIdx replace(DCacheIndex setIdx);
+    return cnt[setIdx];
   endmethod
 
-  method Action access(DCacheIndex setIdx, DCacheWayIdx wayIdx);
-    Bit#(1) feedback = lfsr[0] ^ lfsr[2] ^ lfsr[3] ^ lfsr[5];
-    lfsr <= {feedback, lfsr[15:1]};
+  method Action access(DCacheIndex setIdx);
+    cnt[setIdx] <= cnt[setIdx] + 1;
   endmethod
 endmodule
 
@@ -511,7 +496,7 @@ module mkDCache(DCache);
       end
 
       if (hit) begin
-        replacer.access(idx, hitWay);
+        replacer.access(idx);
 
         case (r.op)
           Ld: begin
@@ -556,7 +541,7 @@ module mkDCache(DCache);
           state <= Ready;
         end else begin
           missReq <= r;
-          let way = replacer.replace(idx, tagValids);
+          let way = replacer.replace(idx);
           victimWay <= way;
           Bit#(DCacheOffsetSz) zeroOff = 0;
           Addr victimBlockAddr = { tagValids[way].tag, idx, zeroOff };
@@ -689,7 +674,7 @@ module mkDCache(DCache);
         end
       endcase
 
-      replacer.access(idx, way);
+      replacer.access(idx);
       squashPending <= False;
       state <= Ready;
     end

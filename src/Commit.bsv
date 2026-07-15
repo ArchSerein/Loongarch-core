@@ -737,7 +737,7 @@ function Action doCommitBody(
         diffCsr.llbctl = diffLlbctl;
       end
       // Compute nextPc
-      Addr commitNextPc = head.mispredict ? head.correctTarget : (head.pc + 4);
+      Addr commitNextPc = head.isBranch ? head.correctTarget : (head.pc + 4);
       // Store/load diff events
       Maybe#(DiffMemOp) diffMem = tagged Invalid;
       Maybe#(ByteMask) diffMemMask = head.memMask;

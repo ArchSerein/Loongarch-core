@@ -164,38 +164,21 @@ endmodule
 // Replacement policy interface
 // ============================================================
 interface ICacheReplace;
-  method ICacheWayIdx replace(ICacheIndex setIdx, Vector#(ICacheWays, ICacheTagValid) tagValids);
-  method Action       access(ICacheIndex setIdx, ICacheWayIdx wayIdx);
+  method ICacheWayIdx replace(ICacheIndex setIdx);
+  method Action       access(ICacheIndex setIdx);
 endinterface
 
-// -------- Random (LFSR) replacement --------
 module mkICacheReplaceRandom(ICacheReplace);
-  // 16-bit maximal-length Fibonacci LFSR: x^16 + x^14 + x^13 + x^11 + 1.
-  // Keep the state wider than the way index so successive replacement choices
-  // are taken from a pseudo-random sequence instead of round-robin order.
-  Reg#(Bit#(16)) lfsr <- mkReg(16'hACE1);
+  Vector#(ICacheSets, Reg#(ICacheWayIdx)) cnt <- replicateM(mkReg(0));
 
-  method ICacheWayIdx replace(ICacheIndex setIdx, Vector#(ICacheWays, ICacheTagValid) tagValids);
-    ICacheWayIdx replWay = truncate(lfsr);
-    ICacheWayIdx invalidWay = 0;
-    Bool hasInvalid = False;
-
-    for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
-      if (!tagValids[w].valid && !hasInvalid) begin
-        invalidWay = fromInteger(w);
-        hasInvalid = True;
-      end
-    end
-
-    return hasInvalid ? invalidWay : replWay;
+  method ICacheWayIdx replace(ICacheIndex setIdx);
+    return cnt[setIdx];
   endmethod
 
-  method Action access(ICacheIndex setIdx, ICacheWayIdx wayIdx);
-    Bit#(1) feedback = lfsr[0] ^ lfsr[2] ^ lfsr[3] ^ lfsr[5];
-    lfsr <= {feedback, lfsr[15:1]};
+  method Action access(ICacheIndex setIdx);
+    cnt[setIdx] <= cnt[setIdx] + 1;
   endmethod
 endmodule
-
 // ============================================================
 // ICache implementation
 // ============================================================
@@ -322,7 +305,7 @@ module mkICache(ICache);
     let tag  = getITag(missReq.addr);
     let wsel = getIWordSel(missReq.addr);
     let tagValids = currentTagValids;
-    let way  = replacer.replace(idx, tagValids);
+    let way  = replacer.replace(idx);
 
     Bit#(ICacheWordSelSz) lineIdx = truncate(beatIdx);
     ICacheLine nextLine = update(refillLine, lineIdx, beat.data);
@@ -336,7 +319,7 @@ module mkICache(ICache);
       if (liveMiss) begin
         writeTagValid(way, idx, ICacheTagValid{valid: True, tag: tag});
         writeLine(way, idx, nextLine);
-        replacer.access(idx, way);
+        replacer.access(idx);
       end
       if (!squashPending) begin
         refillRespQ.enq(ICacheRefillResp{
@@ -410,7 +393,7 @@ module mkICache(ICache);
   endmethod
 
   method Action commitHit(Addr va, ICacheWayIdx way);
-    replacer.access(getIIndex(va), way);
+    replacer.access(getIIndex(va));
   endmethod
 
   method Action squash;
