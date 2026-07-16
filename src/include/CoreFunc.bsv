@@ -116,25 +116,6 @@ function Bool coreIsBarrier(IType t);
   return t == Dbar || t == Ibar;
 endfunction
 
-function Data mkInterruptNo(Data estat);
-  Bit#(12) intr = {estat[`CSR_ESTAT_IS_3], estat[`CSR_ESTAT_IS_2],
-  estat[`CSR_ESTAT_IS_1], estat[`CSR_ESTAT_IS_0]};
-    Data intNo = 0;
-  if      (intr[11] == 1'b1) intNo = 12; // ESTAT[12]
-  else if (intr[10] == 1'b1) intNo = 11; // ESTAT[11]
-  else if (intr[9] == 1'b1)  intNo = 9;  // ESTAT[9]
-  else if (intr[8] == 1'b1)  intNo = 8;  // ESTAT[8]
-  else if (intr[7] == 1'b1)  intNo = 7;  // ESTAT[7]
-  else if (intr[6] == 1'b1)  intNo = 6;  // ESTAT[6]
-  else if (intr[5] == 1'b1)  intNo = 5;  // ESTAT[5]
-  else if (intr[4] == 1'b1)  intNo = 4;  // ESTAT[4]
-  else if (intr[3] == 1'b1)  intNo = 3;  // ESTAT[3]
-  else if (intr[2] == 1'b1)  intNo = 2;  // ESTAT[2]
-  else if (intr[1] == 1'b1)  intNo = 1;  // ESTAT[1]
-  else if (intr[0] == 1'b1)  intNo = 0;  // ESTAT[0]
-  
-  return intNo;
-endfunction
 
 function ExcpInfo checkMemHasExcp(Maybe#(ByteMask) mask, Addr addr, ExcpInfo excp);
   ByteMask m = fromMaybe(5'b00000, mask);

@@ -133,8 +133,15 @@ typedef struct {
 
 Addr startpc = 32'h1c000000;
 
+typedef struct {
+  Bool      valid;
+  Bit#(13) enabledVector;
+  Bit#(4)  interruptNo;
+} InterruptInfo deriving(Bits, Eq);
+
 typedef enum {
   CommitIdle,
   CommitReady,
+  CommitInterruptReady,
   CommitTLBWait
 } CommitState deriving(Bits, Eq);

@@ -164,17 +164,17 @@ module mkCore(Core);
   // ============================================================
   // IF1 Stage (unchanged)
   // ============================================================
-  rule releaseIdleOnInterrupt (idleLock && csrf.interruptDetected);
+  rule releaseIdleOnInterrupt (idleLock && csrf.interruptDetected.valid);
     idleLock <= False;
   endrule
 
-  rule doIF1NoFetchTlb (!idleLock && !if2WaitRefill && !f1f2Fifo.notEmpty &&
+  rule doIF1NoFetchTlb (commitState != CommitInterruptReady && !idleLock && !if2WaitRefill && !f1f2Fifo.notEmpty &&
       getMmuTranslateType(csrf.crmd) != Translate);
     doIF1Body(pcReg[0], csrf.crmd, csrf.asid, csrf.dmw0, csrf.dmw1, getMmuTranslateType(csrf.crmd),
               branchPred, iCache, f1f2Fifo, pcReg[0]);
   endrule
 
-  rule doIF1WithFetchTlb (!idleLock && !if2WaitRefill && !f1f2Fifo.notEmpty &&
+  rule doIF1WithFetchTlb (commitState != CommitInterruptReady && !idleLock && !if2WaitRefill && !f1f2Fifo.notEmpty &&
       getMmuTranslateType(csrf.crmd) == Translate);
     Addr pc = pcReg[0];
     Data asid = csrf.asid;
@@ -186,7 +186,7 @@ module mkCore(Core);
   // ============================================================
   // IF2 Stage (unchanged)
   // ============================================================
-  rule doIF2if2WaitRefill (!aluBranchBusy && if2WaitRefill && f2dFifo.notFull);
+  rule doIF2if2WaitRefill (commitState != CommitInterruptReady && !aluBranchBusy && if2WaitRefill && f2dFifo.notFull);
     let req = if2PendingReq;
     let iResp <- iCache.refillResp;
     if (iResp.addr == if2MissPaddr) begin
@@ -202,12 +202,12 @@ module mkCore(Core);
     end
   endrule
 
-  rule doIF2NoFetchTlb (!aluBranchBusy && !if2WaitRefill && f2dFifo.notFull &&
+  rule doIF2NoFetchTlb (commitState != CommitInterruptReady && !aluBranchBusy && !if2WaitRefill && f2dFifo.notFull &&
       f1f2Fifo.first.transType != Translate);
     doIF2Body(noTlbLookup, f1f2Fifo, f2dFifo, iCache, if2PendingReq, if2MissPaddr, if2WaitRefill);
   endrule
 
-  rule doIF2WithFetchTlb (!aluBranchBusy && !if2WaitRefill && f2dFifo.notFull &&
+  rule doIF2WithFetchTlb (commitState != CommitInterruptReady && !aluBranchBusy && !if2WaitRefill && f2dFifo.notFull &&
       f1f2Fifo.first.transType == Translate);
     let tlbRes <- tlb.fetchLookupResp;
     doIF2Body(tlbRes, f1f2Fifo, f2dFifo, iCache, if2PendingReq, if2MissPaddr, if2WaitRefill);
@@ -216,14 +216,14 @@ module mkCore(Core);
   // ============================================================
   // ID Stage (modified: d2rFifo -> d2rnFifo)
   // ============================================================
-  rule doDecode;
+  rule doDecode (commitState != CommitInterruptReady);
     doDecodeBody(f2dFifo, d2rnFifo);
   endrule
 
   // ============================================================
   // RN Stage: Rename - RAT lookup, FreeList alloc, ROB enq
   // ============================================================
-  rule doRename (!aluBranchBusy && !idleLock &&
+  rule doRename (commitState != CommitInterruptReady && !aluBranchBusy && !idleLock &&
       d2rnFifo.notEmpty && rn2diFifo.notFull && rob.notFull &&
       (!renameNeedsFree(d2rnFifo.first) || freeList.notEmpty));
     doRenameBody(d2rnFifo, rn2diFifo, rat, freeList, prf, rob);
@@ -232,56 +232,56 @@ module mkCore(Core);
   // ============================================================
   // DI Stage: Dispatch to RS based on instruction type
   // ============================================================
-  rule doDispatchAlu (rn2diFifo.notEmpty && aluRS.notFull && dispIsAlu(rn2diFifo.first));
+  rule doDispatchAlu (commitState != CommitInterruptReady && rn2diFifo.notEmpty && aluRS.notFull && dispIsAlu(rn2diFifo.first));
     doDispatchAluBody(rn2diFifo, prf, aluRS);
   endrule
 
-  rule doDispatchMulDiv (rn2diFifo.notEmpty && muldivRS.notFull && dispIsMul(rn2diFifo.first));
+  rule doDispatchMulDiv (commitState != CommitInterruptReady && rn2diFifo.notEmpty && muldivRS.notFull && dispIsMul(rn2diFifo.first));
     doDispatchMulDivBody(rn2diFifo, prf, muldivRS);
   endrule
 
-  rule doDispatchMem (rn2diFifo.notEmpty && memRS.notFull && dispIsMem(rn2diFifo.first));
+  rule doDispatchMem (commitState != CommitInterruptReady && rn2diFifo.notEmpty && memRS.notFull && dispIsMem(rn2diFifo.first));
     doDispatchMemBody(rn2diFifo, prf, memRS);
   endrule
 
-  rule doDispatchSpecial (rn2diFifo.notEmpty && dispIsSpecial(rn2diFifo.first));
+  rule doDispatchSpecial (commitState != CommitInterruptReady && rn2diFifo.notEmpty && dispIsSpecial(rn2diFifo.first));
     doDispatchSpecialBody(rn2diFifo);
   endrule
 
   // ============================================================
   // CDB: Wakeup RS entries and writeback to PRF
   // ============================================================
-  rule wakeupAluRS (cdb.anyValid);
+  rule wakeupAluRS (commitState != CommitInterruptReady && cdb.anyValid);
     aluRS.wakeup(cdb.msgs);
   endrule
 
-  rule wakeupMuldivRS (cdb.anyValid);
+  rule wakeupMuldivRS (commitState != CommitInterruptReady && cdb.anyValid);
     muldivRS.wakeup(cdb.msgs);
   endrule
 
-  rule wakeupMemRS (cdb.anyValid);
+  rule wakeupMemRS (commitState != CommitInterruptReady && cdb.anyValid);
     memRS.wakeup(cdb.msgs);
   endrule
 
-  rule writebackLoad (cdb.msgs[0].valid);
+  rule writebackLoad (commitState != CommitInterruptReady && cdb.msgs[0].valid);
     let m = cdb.msgs[0];
     prf.cdbWriteLoad(m.tag, m.value);
     prf.setReadyLoad(m.tag);
   endrule
 
-  rule writebackALU (cdb.msgs[1].valid);
+  rule writebackALU (commitState != CommitInterruptReady && cdb.msgs[1].valid);
     let m = cdb.msgs[1];
     prf.cdbWriteALU(m.tag, m.value);
     prf.setReadyALU(m.tag);
   endrule
 
-  rule writebackMul (cdb.msgs[2].valid);
+  rule writebackMul (commitState != CommitInterruptReady && cdb.msgs[2].valid);
     let m = cdb.msgs[2];
     prf.cdbWriteMul(m.tag, m.value);
     prf.setReadyMul(m.tag);
   endrule
 
-  rule writebackDiv (cdb.msgs[3].valid);
+  rule writebackDiv (commitState != CommitInterruptReady && cdb.msgs[3].valid);
     let m = cdb.msgs[3];
     prf.cdbWriteDiv(m.tag, m.value);
     prf.setReadyDiv(m.tag);
@@ -297,14 +297,14 @@ module mkCore(Core);
     aluBranchBusy <= isBranch(entry.iType);
   endrule
 
-  rule doExecALUBranch (aluBusy && aluBranchBusy);
+  rule doExecALUBranch (commitState != CommitInterruptReady && aluBusy && aluBranchBusy);
     doExecALUBody(aluExecEntry, aluBusy, cdb, rob, pcReg[1], iCache, tlb,
       f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo, aluRS, muldivRS, memRS,
       if2WaitRefill, rat, freeList, branchPred);
     aluBranchBusy <= False;
   endrule
 
-  rule doExecALUNonBranch (aluBusy && !aluBranchBusy);
+  rule doExecALUNonBranch (commitState != CommitInterruptReady && aluBusy && !aluBranchBusy);
     doExecALUBody(aluExecEntry, aluBusy, cdb, rob, pcReg[1], iCache, tlb,
       f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo, aluRS, muldivRS, memRS,
       if2WaitRefill, rat, freeList, branchPred);
@@ -329,11 +329,11 @@ module mkCore(Core);
     doIssueDivBody(entry, divUnit, divExecEntry, muldivRS, divInFlight);
   endrule
 
-  rule doCollectMul (mulInFlight && mulUnit.finish);
+  rule doCollectMul (commitState != CommitInterruptReady && mulInFlight && mulUnit.finish);
     doCollectMulBody(mulInFlight, mulExecEntry, mulUnit, cdb, rob);
   endrule
 
-  rule doCollectDiv (divInFlight && divUnit.finish);
+  rule doCollectDiv (commitState != CommitInterruptReady && divInFlight && divUnit.finish);
     doCollectDivBody(divInFlight, divExecEntry, divUnit, cdb, rob);
   endrule
 
@@ -355,32 +355,32 @@ module mkCore(Core);
       memState, csrf, tlb, iCache, rob, memRS, storeBuf);
   endrule
 
-  rule doCollectMemTLB (memState == MemTLBWait && memNeedTlb);
+  rule doCollectMemTLB (commitState != CommitInterruptReady && memState == MemTLBWait && memNeedTlb);
     doCollectMemTLBBody(memState, memExecEntry, memVaddr,
       memPaddr, memForward, csrf, tlb, iCache, dCache, rob, memRS, storeBuf, committedStoreBuf);
   endrule
 
-  rule doCollectMemDirect (memState == MemTLBWait && !memNeedTlb);
+  rule doCollectMemDirect (commitState != CommitInterruptReady && memState == MemTLBWait && !memNeedTlb);
     doCollectMemDirectBody(memState, memExecEntry, memVaddr, memPaddr,
       memForward, csrf, iCache, dCache, rob, memRS, storeBuf, committedStoreBuf);
   endrule
 
-  rule doIssueMemUncache (memState == MemUncacheWait &&
+  rule doIssueMemUncache (commitState != CommitInterruptReady && memState == MemUncacheWait &&
       memExecEntry.robTag == rob.headTag);
     doIssueMemUncacheBody(memState, memExecEntry, memVaddr, memPaddr,
       memForward, dCache, storeBuf, committedStoreBuf);
   endrule
 
-  rule doCollectMemCache (memState == MemCacheWait);
+  rule doCollectMemCache (commitState != CommitInterruptReady && memState == MemCacheWait);
     doCollectMemCacheBody(memState, memExecEntry, memVaddr, memForward, dCache, cdb,
       rob, memRS);
   endrule
 
-  rule doCollectMemCacopI (memState == MemCacopIWait);
+  rule doCollectMemCacopI (commitState != CommitInterruptReady && memState == MemCacopIWait);
     doCollectMemCacopIBody(memState, memExecEntry, iCache, rob, memRS);
   endrule
 
-  rule doCollectMemIbar (memState == MemIbarWait);
+  rule doCollectMemIbar (commitState != CommitInterruptReady && memState == MemIbarWait);
     doCollectMemIbarBody(memState, memExecEntry, iCache, rob, memRS);
   endrule
 
@@ -407,6 +407,32 @@ module mkCore(Core);
       csrSnapReg,
 `endif
       commitCsrSnapReg, csrf, rob, commitState);
+  endrule
+
+  rule doCommitInterrupt (rob.headValid && commitState == CommitInterruptReady
+`ifdef CONFIG_DIFFTEST
+      && difftest.enqTraceReady
+`endif
+  );
+    doCommitTrapAction(CommitTrapInfo{
+        ecode: `ECODE_INT,
+        esubcode: `ESUBCODE_NONE,
+        badv: 0,
+        isInterrupt: True,
+        interruptNo: commitCsrSnapReg.interruptInfo.interruptNo
+      },
+      rob, commitState, csrf,
+`ifdef CONFIG_DIFFTEST
+      csrSnapReg,
+`endif
+      rat, freeList, tlb, pcReg[2], iCache, dCache,
+      if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
+      aluRS, muldivRS, memRS, storeBuf, aluBusy, mulInFlight,
+      divInFlight, memState
+`ifdef CONFIG_DIFFTEST
+      , difftest, archRegs
+`endif
+    );
   endrule
 
   rule doCommitErtn (rob.headValid && commitState == CommitReady

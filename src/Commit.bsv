@@ -52,7 +52,16 @@ typedef struct {
   Data tlbWrElo0;
   Data tlbWrElo1;
   Bool llbctlKloVal;
+  InterruptInfo interruptInfo;
 } CommitCsrSnapshot deriving(Bits, Eq);
+
+typedef struct {
+  Bit#(6) ecode;
+  Bit#(9) esubcode;
+  Addr badv;
+  Bool isInterrupt;
+  Bit#(4) interruptNo;
+} CommitTrapInfo deriving(Bits, Eq);
 
 typedef struct {
   Bool retired;
@@ -144,6 +153,7 @@ function Action takeCsrSnapshotBody(
   action
     DecodedInst dInst = decode(rob.head.inst);
     CsrIndx csrIdxForRd = fromMaybe(0, dInst.csr);
+    InterruptInfo interruptInfo = csrf.interruptDetected;
 `ifdef CONFIG_DIFFTEST
     csrSnapReg <= csrf.diffSnapshot;
 `endif
@@ -156,9 +166,10 @@ function Action takeCsrSnapshotBody(
       tlbWrEhi: csrf.tlbWriteEhi,
       tlbWrElo0: csrf.tlbWriteElo0,
       tlbWrElo1: csrf.tlbWriteElo1,
-      llbctlKloVal: csrf.llbctlKloValue
+      llbctlKloVal: csrf.llbctlKloValue,
+      interruptInfo: interruptInfo
     };
-    commitState <= CommitReady;
+    commitState <= interruptInfo.valid ? CommitInterruptReady : CommitReady;
   endaction
 endfunction
 
@@ -231,6 +242,82 @@ function Action doCommitFlushAndRestore(
   endaction
 endfunction
 
+function Action doCommitTrapAction(
+    CommitTrapInfo trap,
+    ROB rob,
+    Reg#(CommitState) commitState,
+    CsrFile csrf,
+`ifdef CONFIG_DIFFTEST
+    Reg#(DiffArchCsrState) csrSnapReg,
+`endif
+    RAT rat,
+    FreeList freeList,
+    TlbArray tlb,
+    Reg#(Addr) pcReg,
+    ICache iCache,
+    DCache dCache,
+    Reg#(Bool) if2WaitRefill,
+    Fifo#(2, F1toF2) f1f2Fifo,
+    Fifo#(2, F2D) f2dFifo,
+    Fifo#(2, D2RN) d2rnFifo,
+    Fifo#(2, RenamedInst) rn2diFifo,
+    ResStation#(16) aluRS,
+    ResStation#(4) muldivRS,
+    ResStation#(16) memRS,
+    StoreBuf#(16) storeBuf,
+    Reg#(Bool) aluBusy,
+    Reg#(Bool) mulInFlight,
+    Reg#(Bool) divInFlight,
+    Reg#(MemExecState) memState
+`ifdef CONFIG_DIFFTEST
+    , Difftest difftest
+    , Vector#(32, Reg#(Data)) archRegs
+`endif
+);
+  action
+    let head = rob.head;
+`ifdef CONFIG_DIFFTEST
+    DiffArchCsrState diffCsrSnap = csrSnapReg;
+`endif
+
+    Addr exEntry <- csrf.raiseException(trap.ecode, trap.esubcode, head.pc, trap.badv);
+    pcReg <= exEntry;
+    doCommitFlushAndRestore(rob, rat, freeList, tlb, iCache, dCache, False,
+      if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
+      aluRS, muldivRS, memRS, storeBuf, aluBusy, mulInFlight,
+      divInFlight, memState);
+    commitState <= CommitIdle;
+
+`ifdef CONFIG_DIFFTEST
+    Vector#(32, Data) gpr = ?;
+    for (Integer i = 0; i < 32; i = i + 1) gpr[i] = archRegs[i];
+    DiffArchCsrState diffCsr = diffSnapshotAfterWriteFromState(diffCsrSnap,
+      tagged Invalid, 0, True, trap.ecode, trap.esubcode, head.pc, trap.badv, False);
+    Data diffInterrupt = 0;
+    Data diffException = 0;
+    if (trap.isInterrupt) begin
+      diffInterrupt = zeroExtend(trap.interruptNo);
+    end else begin
+      diffException = zeroExtend(trap.ecode);
+    end
+    difftest.enqTrace(DiffTrace{
+      commit: DiffCommit{
+        valid: False, pc: head.pc, nextPc: exEntry,
+        inst: head.inst, wen: False, wdest: 0, wdata: 0, skip: False,
+        isTlbfill: False, tlbfillIndex: 0
+      },
+      regs: DiffArchGRegState{gpr: gpr},
+      csr: diffCsr,
+      excp: DiffExcpEvent{excpValid: True, eret: False,
+        interrupt: diffInterrupt, exception: diffException,
+        exceptionPC: head.pc, exceptionInst: head.inst},
+      store: DiffStoreEvent{valid: 0, paddr: 0, vaddr: 0, data: 0},
+      load: DiffLoadEvent{valid: 0, paddr: 0, vaddr: 0}
+    });
+`endif
+  endaction
+endfunction
+
 function Action doCommitErtnAction(
     ROB rob,
     Reg#(CommitState) commitState,
@@ -299,7 +386,7 @@ function Action doCommitErtnAction(
       regs: DiffArchGRegState{gpr: gpr},
       csr: diffCsr,
       excp: DiffExcpEvent{excpValid: False, eret: True,
-        interrupt: mkInterruptNo(diffCsr.estat),
+        interrupt: 0,
         exception: 0, exceptionPC: head.pc, exceptionInst: head.inst},
       store: DiffStoreEvent{valid: 0, paddr: 0, vaddr: 0, data: 0},
       load: DiffLoadEvent{valid: 0, paddr: 0, vaddr: 0}
@@ -345,7 +432,6 @@ function Action doCommitRedirectAction(
 );
   action
     let head = rob.head;
-    Bool deqRob = False;
 `ifdef CONFIG_DIFFTEST
     DiffArchCsrState diffCsrSnap = csrSnapReg;
 `endif
@@ -354,43 +440,35 @@ function Action doCommitRedirectAction(
       Bit#(6) ecode = head.excp.ecode;
       Bit#(9) esubcode = head.excp.esubcode;
 `ifdef CONFIG_BSIM
-      if (ecode == `ECODE_SYS && esubcode == 9'h001) begin
+      if (ecode == `ECODE_SYS && esubcode == 1) begin
         $display("this syscall 0x11, finish simulation");
-        toHostFifo.enq(CpuToHostData{c2hType: ExitCode, data: 16'b0});
+        toHostFifo.enq(CpuToHostData{c2hType: ExitCode, data: 0});
       end
 `endif
-      Addr exEntry <- csrf.raiseException(ecode, esubcode, head.pc, head.excp.badv);
-      pcReg <= exEntry;
-      doCommitFlushAndRestore(rob, rat, freeList, tlb, iCache, dCache, False,
+      doCommitTrapAction(CommitTrapInfo{
+          ecode: ecode, esubcode: esubcode, badv: head.excp.badv,
+          isInterrupt: False, interruptNo: 0
+        },
+        rob, commitState, csrf,
+`ifdef CONFIG_DIFFTEST
+        csrSnapReg,
+`endif
+        rat, freeList, tlb, pcReg, iCache, dCache,
         if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
         aluRS, muldivRS, memRS, storeBuf, aluBusy, mulInFlight,
-        divInFlight, memState);
-
+        divInFlight, memState
 `ifdef CONFIG_DIFFTEST
-      Vector#(32, Data) gpr = ?;
-      for (Integer i = 0; i < 32; i = i + 1) gpr[i] = archRegs[i];
-      DiffArchCsrState diffCsr = diffSnapshotAfterWriteFromState(diffCsrSnap,
-        tagged Invalid, 0, True, ecode, esubcode, head.pc, head.excp.badv, False);
-      difftest.enqTrace(DiffTrace{
-        commit: DiffCommit{
-          valid: False, pc: head.pc, nextPc: exEntry,
-          inst: head.inst, wen: False, wdest: 0, wdata: 0, skip: False,
-          isTlbfill: False, tlbfillIndex: 0
-        },
-        regs: DiffArchGRegState{gpr: gpr},
-        csr: diffCsr,
-        excp: DiffExcpEvent{excpValid: True, eret: False,
-          interrupt: mkInterruptNo(diffCsr.estat),
-          exception: zeroExtend(ecode),
-          exceptionPC: head.pc, exceptionInst: head.inst},
-        store: DiffStoreEvent{valid: 0, paddr: 0, vaddr: 0, data: 0},
-        load: DiffLoadEvent{valid: 0, paddr: 0, vaddr: 0}
-      });
+        , difftest, archRegs
 `endif
+      );
     end else if (head.iType == Idle) begin
       idleLock <= True;
       pcReg <= head.pc + 4;
-      deqRob = True;
+`ifdef CONFIG_TRACE_PERFORMANCE
+      inst_count();
+`endif
+      commitState <= CommitIdle;
+      rob.deq;
 
 `ifdef CONFIG_DIFFTEST
       Vector#(32, Data) gpr = ?;
@@ -404,8 +482,7 @@ function Action doCommitRedirectAction(
         },
         regs: DiffArchGRegState{gpr: gpr},
         csr: diffCsr,
-        excp: DiffExcpEvent{excpValid: False, eret: False,
-          interrupt: mkInterruptNo(diffCsr.estat),
+        excp: DiffExcpEvent{excpValid: False, eret: False, interrupt: 0,
           exception: 0, exceptionPC: head.pc, exceptionInst: head.inst},
         store: DiffStoreEvent{valid: 0, paddr: 0, vaddr: 0, data: 0},
         load: DiffLoadEvent{valid: 0, paddr: 0, vaddr: 0}
@@ -416,50 +493,30 @@ function Action doCommitRedirectAction(
       Bit#(9) esubcode = `ESUBCODE_NONE;
 `ifdef CONFIG_BSIM
       if (head.iType == Syscall) begin
-        Bit#(9) syscallEsubcode = (head.inst[14:0] == 15'h11) ? 9'h001 : `ESUBCODE_NONE;
+        Bit#(9) syscallEsubcode = (head.inst[14:0] == 17) ? 1 : `ESUBCODE_NONE;
         esubcode = syscallEsubcode;
-        if (esubcode == 9'h001) begin
+        if (esubcode == 1) begin
           $display("this syscall 0x11, finish simulation");
-          toHostFifo.enq(CpuToHostData{c2hType: ExitCode, data: 16'b0});
+          toHostFifo.enq(CpuToHostData{c2hType: ExitCode, data: 0});
         end
       end
 `endif
-      Addr exEntry <- csrf.raiseException(ecode, esubcode, head.pc, head.pc);
-      pcReg <= exEntry;
-      doCommitFlushAndRestore(rob, rat, freeList, tlb, iCache, dCache, False,
+      doCommitTrapAction(CommitTrapInfo{
+          ecode: ecode, esubcode: esubcode, badv: head.pc,
+          isInterrupt: False, interruptNo: 0
+        },
+        rob, commitState, csrf,
+`ifdef CONFIG_DIFFTEST
+        csrSnapReg,
+`endif
+        rat, freeList, tlb, pcReg, iCache, dCache,
         if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
         aluRS, muldivRS, memRS, storeBuf, aluBusy, mulInFlight,
-        divInFlight, memState);
-
+        divInFlight, memState
 `ifdef CONFIG_DIFFTEST
-      Vector#(32, Data) gpr = ?;
-      for (Integer i = 0; i < 32; i = i + 1) gpr[i] = archRegs[i];
-      DiffArchCsrState diffCsr = diffSnapshotAfterWriteFromState(diffCsrSnap,
-        tagged Invalid, 0, True, ecode, esubcode, head.pc, head.pc, False);
-      difftest.enqTrace(DiffTrace{
-        commit: DiffCommit{
-          valid: False, pc: head.pc, nextPc: exEntry,
-          inst: head.inst, wen: False, wdest: 0, wdata: 0, skip: False,
-          isTlbfill: False, tlbfillIndex: 0
-        },
-        regs: DiffArchGRegState{gpr: gpr},
-        csr: diffCsr,
-        excp: DiffExcpEvent{excpValid: True, eret: False,
-          interrupt: mkInterruptNo(diffCsr.estat),
-          exception: zeroExtend(ecode),
-          exceptionPC: head.pc, exceptionInst: head.inst},
-        store: DiffStoreEvent{valid: 0, paddr: 0, vaddr: 0, data: 0},
-        load: DiffLoadEvent{valid: 0, paddr: 0, vaddr: 0}
-      });
+        , difftest, archRegs
 `endif
-    end
-
-`ifdef CONFIG_TRACE_PERFORMANCE
-    inst_count();
-`endif
-    commitState <= CommitIdle;
-    if (deqRob) begin
-      rob.deq;
+      );
     end
   endaction
 endfunction
@@ -617,7 +674,7 @@ function ActionValue#(CommitNormalResult) doCommitNormalSharedAction(
         regs: DiffArchGRegState{gpr: gpr},
         csr: diffCsr,
         excp: DiffExcpEvent{excpValid: False, eret: False,
-          interrupt: mkInterruptNo(diffCsr.estat),
+          interrupt: 0,
           exception: 0, exceptionPC: head.pc, exceptionInst: head.inst},
         store: DiffStoreEvent{valid: 0, paddr: 0, vaddr: 0, data: 0},
         load: DiffLoadEvent{valid: 0, paddr: 0, vaddr: 0}
@@ -727,7 +784,7 @@ function ActionValue#(CommitNormalResult) doCommitNormalSharedAction(
         regs: DiffArchGRegState{gpr: gpr},
         csr: diffCsr,
         excp: DiffExcpEvent{excpValid: False, eret: False,
-          interrupt: mkInterruptNo(diffCsr.estat),
+          interrupt: 0,
           exception: 0, exceptionPC: head.pc, exceptionInst: head.inst},
         store: storeEvent,
         load: loadEvent
