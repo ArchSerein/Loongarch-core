@@ -54,6 +54,12 @@ typedef struct {
   Bool llbctlKloVal;
 } CommitCsrSnapshot deriving(Bits, Eq);
 
+typedef struct {
+  Bool retired;
+  Bool deqRob;
+  Bool waitTlb;
+} CommitNormalResult deriving(Bits, Eq);
+
 function Action doCollectCommitTLBBody(
     Reg#(CommitState) commitState,
     TlbArray tlb,
@@ -156,7 +162,76 @@ function Action takeCsrSnapshotBody(
   endaction
 endfunction
 
-function Action doCommitErtnBody(
+function Action doCommitBody(
+    ROB rob
+`ifdef CONFIG_WB_DEBUG
+    , Wire#(Bool) debugWsValidWire
+    , Wire#(Addr) debugWbPcWire
+`ifdef CONFIG_WB_DEBUG_INST
+    , Wire#(Instruction) debugWbInstWire
+`endif
+`endif
+);
+  action
+`ifdef CONFIG_WB_DEBUG
+    let head = rob.head;
+    debugWsValidWire <= True;
+    debugWbPcWire <= head.pc;
+`ifdef CONFIG_WB_DEBUG_INST
+    debugWbInstWire <= head.inst;
+`endif
+`endif
+  endaction
+endfunction
+
+function Action doCommitFlushAndRestore(
+    ROB rob,
+    RAT rat,
+    FreeList freeList,
+    TlbArray tlb,
+    ICache iCache,
+    DCache dCache,
+    Bool clearLl,
+    Reg#(Bool) if2WaitRefill,
+    Fifo#(2, F1toF2) f1f2Fifo,
+    Fifo#(2, F2D) f2dFifo,
+    Fifo#(2, D2RN) d2rnFifo,
+    Fifo#(2, RenamedInst) rn2diFifo,
+    ResStation#(16) aluRS,
+    ResStation#(4) muldivRS,
+    ResStation#(16) memRS,
+    StoreBuf#(16) storeBuf,
+    Reg#(Bool) aluBusy,
+    Reg#(Bool) mulInFlight,
+    Reg#(Bool) divInFlight,
+    Reg#(MemExecState) memState
+);
+  action
+    iCache.squash;
+    tlb.squashReq;
+    tlb.squashFetchLookup;
+    tlb.squashDataLookup;
+    dCache.squash(clearLl);
+    if2WaitRefill <= False;
+    f1f2Fifo.clear;
+    f2dFifo.clear;
+    d2rnFifo.clear;
+    rn2diFifo.clear;
+    aluRS.clear;
+    muldivRS.clear;
+    memRS.clear;
+    storeBuf.clear;
+    rob.clear;
+    rat.restoreFromRetirement;
+    freeList.restoreFromRetRAT(rat.allRetRAT);
+    aluBusy <= False;
+    mulInFlight <= False;
+    divInFlight <= False;
+    memState <= MemIdle;
+  endaction
+endfunction
+
+function Action doCommitErtnAction(
     ROB rob,
     Reg#(CommitState) commitState,
     CsrFile csrf,
@@ -187,13 +262,6 @@ function Action doCommitErtnBody(
     , Difftest difftest
     , Vector#(32, Reg#(Data)) archRegs
 `endif
-`ifdef CONFIG_WB_DEBUG
-    , Wire#(Bool) debugWsValidWire
-    , Wire#(Addr) debugWbPcWire
-`ifdef CONFIG_WB_DEBUG_INST
-    , Wire#(Instruction) debugWbInstWire
-`endif
-`endif
 );
   action
     let head = rob.head;
@@ -204,39 +272,13 @@ function Action doCommitErtnBody(
     Bool llbctlKloVal = commitCsrSnapReg.llbctlKloVal;
 `endif
 
-`ifdef CONFIG_WB_DEBUG
-    debugWsValidWire <= True;
-    debugWbPcWire <= head.pc;
-`ifdef CONFIG_WB_DEBUG_INST
-    debugWbInstWire <= head.inst;
-`endif
-`endif
-
     Bool clearLl = !llbctlKloVal;
     Addr era <- csrf.returnFromException;
     pcReg <= era;
-
-    iCache.squash;
-    tlb.squashReq;
-    tlb.squashFetchLookup;
-    tlb.squashDataLookup;
-    dCache.squash(clearLl);
-    if2WaitRefill <= False;
-    f1f2Fifo.clear;
-    f2dFifo.clear;
-    d2rnFifo.clear;
-    rn2diFifo.clear;
-    aluRS.clear;
-    muldivRS.clear;
-    memRS.clear;
-    storeBuf.clear;
-    rob.clear;
-    rat.restoreFromRetirement;
-    freeList.restoreFromRetRAT(rat.allRetRAT);
-    aluBusy <= False;
-    mulInFlight <= False;
-    divInFlight <= False;
-    memState <= MemIdle;
+    doCommitFlushAndRestore(rob, rat, freeList, tlb, iCache, dCache, clearLl,
+      if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
+      aluRS, muldivRS, memRS, storeBuf, aluBusy, mulInFlight,
+      divInFlight, memState);
     commitState <= CommitIdle;
 
 `ifdef CONFIG_TRACE_PERFORMANCE
@@ -266,15 +308,13 @@ function Action doCommitErtnBody(
   endaction
 endfunction
 
-function Action doCommitBody(
+function Action doCommitRedirectAction(
     ROB rob,
     Reg#(CommitState) commitState,
     CsrFile csrf,
 `ifdef CONFIG_DIFFTEST
     Reg#(DiffArchCsrState) csrSnapReg,
 `endif
-    Reg#(CommitCsrSnapshot) commitCsrSnapReg,
-    PRF prf,
     RAT rat,
     FreeList freeList,
     TlbArray tlb,
@@ -290,13 +330,11 @@ function Action doCommitBody(
     ResStation#(4) muldivRS,
     ResStation#(16) memRS,
     StoreBuf#(16) storeBuf,
-    StoreForwardBuf#(16) committedStoreBuf,
     Reg#(Bool) idleLock,
     Reg#(Bool) aluBusy,
     Reg#(Bool) mulInFlight,
     Reg#(Bool) divInFlight,
-    Reg#(MemExecState) memState,
-    BranchPredictor branchPred
+    Reg#(MemExecState) memState
 `ifdef CONFIG_BSIM
     , Fifo#(2, CpuToHostData) toHostFifo
 `endif
@@ -304,97 +342,29 @@ function Action doCommitBody(
     , Difftest difftest
     , Vector#(32, Reg#(Data)) archRegs
 `endif
-`ifdef CONFIG_WB_DEBUG
-    , Wire#(Bool) debugWsValidWire
-    , Wire#(Addr) debugWbPcWire
-`ifdef CONFIG_WB_DEBUG_INST
-    , Wire#(Instruction) debugWbInstWire
-`endif
-`endif
 );
   action
     let head = rob.head;
-    Bool doDeq = False;
-    Bool waitTlb = False;
-
-    // Read CSR values before any commit-side CSR action in this rule.
-    DecodedInst dInst = decode(head.inst);
-    CsrIndx csrIdxForRd = fromMaybe(0, dInst.csr);
-    CommitCsrSnapshot commitCsrSnap = commitCsrSnapReg;
+    Bool deqRob = False;
 `ifdef CONFIG_DIFFTEST
     DiffArchCsrState diffCsrSnap = csrSnapReg;
-    Data csrReadVal = csrRdFromSnapshot(diffCsrSnap, csrIdxForRd);
-    Data tlbReqAsidVal = diffCsrSnap.asid;
-    Bit#(5) tlbRdIndex = truncate(diffCsrSnap.tlbidx[`CSR_TLBIDX_INDEX]);
-    Data tlbWrIdx = effectiveTlbIdxForWrite(diffCsrSnap.tlbidx, diffCsrSnap.estat);
-    Data tlbWrEhi = diffCsrSnap.tlbehi;
-    Data tlbWrElo0 = diffCsrSnap.tlbelo0;
-    Data tlbWrElo1 = diffCsrSnap.tlbelo1;
-    Bool llbctlKloVal = unpack(diffCsrSnap.llbctl[2]);
-`else
-    Data csrReadVal = commitCsrSnap.csrReadVal;
-    Data tlbReqAsidVal = commitCsrSnap.tlbReqAsidVal;
-    Bit#(5) tlbRdIndex = commitCsrSnap.tlbRdIndex;
-    Data tlbWrIdx = commitCsrSnap.tlbWrIdx;
-    Data tlbWrEhi = commitCsrSnap.tlbWrEhi;
-    Data tlbWrElo0 = commitCsrSnap.tlbWrElo0;
-    Data tlbWrElo1 = commitCsrSnap.tlbWrElo1;
-    Bool llbctlKloVal = commitCsrSnap.llbctlKloVal;
-`endif
-    Bit#(64) stableCounter = commitCsrSnap.stableCounter;
-
-    // Unconditional PRF reads for commit-stage source operands
-    // (must be outside if-else branches to avoid EHR port sharing)
-    Data cmRVal1 = prf.rd3(head.pSrc1);
-    Data cmRVal2 = prf.rd4(head.pSrc2);
-    StoreBufEntry commitStoreEntry = ?;
-
-`ifdef CONFIG_WB_DEBUG
-    debugWsValidWire <= True;
-    debugWbPcWire <= head.pc;
-`ifdef CONFIG_WB_DEBUG_INST
-    debugWbInstWire <= head.inst;
-`endif
 `endif
 
     if (head.excp.valid) begin
-      // Exception at commit: flush and redirect
       Bit#(6) ecode = head.excp.ecode;
       Bit#(9) esubcode = head.excp.esubcode;
 `ifdef CONFIG_BSIM
-      Bool wb_finish_on_syscall = False;
       if (ecode == `ECODE_SYS && esubcode == 9'h001) begin
-        wb_finish_on_syscall = True;
         $display("this syscall 0x11, finish simulation");
         toHostFifo.enq(CpuToHostData{c2hType: ExitCode, data: 16'b0});
       end
 `endif
       Addr exEntry <- csrf.raiseException(ecode, esubcode, head.pc, head.excp.badv);
       pcReg <= exEntry;
-      doDeq = True;
-
-      // Flush pipeline
-      iCache.squash;
-      tlb.squashReq;
-      tlb.squashFetchLookup;
-      tlb.squashDataLookup;
-      dCache.squash(False);
-      if2WaitRefill <= False;
-      f1f2Fifo.clear;
-      f2dFifo.clear;
-      d2rnFifo.clear;
-      rn2diFifo.clear;
-      aluRS.clear;
-      muldivRS.clear;
-      memRS.clear;
-      storeBuf.clear;
-      rob.clear;
-      rat.restoreFromRetirement;
-      freeList.restoreFromRetRAT(rat.allRetRAT);
-      aluBusy <= False;
-      mulInFlight <= False;
-      divInFlight <= False;
-      memState <= MemIdle;
+      doCommitFlushAndRestore(rob, rat, freeList, tlb, iCache, dCache, False,
+        if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
+        aluRS, muldivRS, memRS, storeBuf, aluBusy, mulInFlight,
+        divInFlight, memState);
 
 `ifdef CONFIG_DIFFTEST
       Vector#(32, Data) gpr = ?;
@@ -417,166 +387,10 @@ function Action doCommitBody(
         load: DiffLoadEvent{valid: 0, paddr: 0, vaddr: 0}
       });
 `endif
-    end else if (isTlb(head.iType)) begin
-      // TLB instruction: issue TLB request, wait for response
-      Data rVal1 = cmRVal1;
-      Data rVal2 = cmRVal2;
-      TlbOp op = TlbOpSearch;
-      if (head.iType == Tlbrd) op = TlbOpRead;
-      else if (head.iType == Tlbwr) op = TlbOpWrite;
-      else if (head.iType == Tlbfill) op = TlbOpFill;
-      else if (head.iType == Invtlb) op = TlbOpInv;
-      Data tlbReqAsid = (head.iType == Invtlb) ? rVal2 : tlbReqAsidVal;
-      tlb.req(TlbReq{
-        op: op,
-        tlbidx: (head.iType == Tlbrd) ? zeroExtend(tlbRdIndex) : tlbWrIdx,
-        invOp: truncate(fromMaybe(0, dInst.imm)),
-        ehi: tlbWrEhi,
-        elo0: tlbWrElo0,
-        elo1: tlbWrElo1,
-        asid: tlbReqAsid,
-        va: rVal1
-      });
-      waitTlb = True;
-    end else if (isCsr(head.iType)) begin
-      // CSR instruction: execute at commit
-      Data rVal1 = cmRVal1;
-      Data rVal2 = cmRVal2;
-
-      // Use pre-computed value method results (from top of doCommit)
-      Data csrVal = ?;
-      if (head.iType == RdTimeL) begin
-        csrVal = truncate(stableCounter);
-      end else if (head.iType == RdTimeH) begin
-        csrVal = truncateLSB(stableCounter);
-      end else begin
-        csrVal = csrReadVal;
-      end
-
-      // 2. Compute Difftest snapshot (value method — before wr)
-      Bool wen = False;
-      Data wdata = csrVal;
-      `ifdef CONFIG_DIFFTEST
-      Vector#(32, Data) gpr = ?;
-      for (Integer i = 0; i < 32; i = i + 1) gpr[i] = archRegs[i];
-      if (head.dst matches tagged Valid .dst &&& dst != 0) begin
-        gpr[dst] = csrVal;
-        wen = True;
-      end
-      Maybe#(CsrIndx) diffCsrIdx = tagged Invalid;
-      Data diffCsrVal = csrVal;
-      if (head.iType == Csrw) begin
-        diffCsrIdx = dInst.csr;
-        diffCsrVal = rVal1;
-      end else if (head.iType == Csrxchg) begin
-        diffCsrIdx = dInst.csr;
-        diffCsrVal = (csrVal & (~rVal2)) | (rVal1 & rVal2);
-      end
-      DiffArchCsrState diffCsr = diffSnapshotAfterWriteFromState(diffCsrSnap,
-        diffCsrIdx, diffCsrVal, False, 0, 0, head.pc, 0, False);
-      `endif
-
-      // 3. CSR write (action method — after all value methods)
-      if (head.iType == Csrw) begin
-        csrf.wr(dInst.csr, rVal1);
-      end else if (head.iType == Csrxchg) begin
-        csrf.wr(dInst.csr, (csrVal & (~rVal2)) | (rVal1 & rVal2));
-      end
-
-      // 4. Write to PRF and shadow ARF
-      if (head.dst matches tagged Valid .dst &&& dst != 0) begin
-        if (head.pDst matches tagged Valid .pd) begin
-          prf.commitWrite(pd, csrVal);
-          prf.setReadyCommit(pd);
-          // CSR results are written at commit, not via the CDB, so wake up
-          // any RS entry waiting on this destination directly.
-          let csrWakeup = CDBMessage{tag: pd, value: csrVal, valid: True};
-          aluRS.commitWakeup(csrWakeup);
-          muldivRS.commitWakeup(csrWakeup);
-          memRS.commitWakeup(csrWakeup);
-        end
-		`ifdef CONFIG_DIFFTEST
-        archRegs[dst] <= csrVal;
-		`endif
-        rat.updateRet(dst, fromMaybe(?, head.pDst));
-        if (head.oldPdst matches tagged Valid .old) begin
-          freeList.enq(old);
-        end
-      end
-
-      doDeq = True;
-
-      `ifdef CONFIG_DIFFTEST
-      difftest.enqTrace(DiffTrace{
-        commit: DiffCommit{
-          valid: True, pc: head.pc, nextPc: head.pc + 4,
-          inst: head.inst, wen: wen, wdest: fromMaybe(0, head.dst),
-          wdata: wdata, skip: False, isTlbfill: False, tlbfillIndex: 0
-        },
-        regs: DiffArchGRegState{gpr: gpr},
-        csr: diffCsr,
-        excp: DiffExcpEvent{excpValid: False, eret: False,
-          interrupt: mkInterruptNo(diffCsr.estat),
-          exception: 0, exceptionPC: head.pc, exceptionInst: head.inst},
-        store: DiffStoreEvent{valid: 0, paddr: 0, vaddr: 0, data: 0},
-        load: DiffLoadEvent{valid: 0, paddr: 0, vaddr: 0}
-      });
-      `endif
-    end else if (head.iType == Ertn) begin
-      // ERTN: return from exception
-      Bool clearLl = !llbctlKloVal;
-      Addr era <- csrf.returnFromException;
-      pcReg <= era;
-      doDeq = True;
-
-      // Flush pipeline
-      iCache.squash;
-      tlb.squashReq;
-      tlb.squashFetchLookup;
-      tlb.squashDataLookup;
-      dCache.squash(clearLl);
-      if2WaitRefill <= False;
-      f1f2Fifo.clear;
-      f2dFifo.clear;
-      d2rnFifo.clear;
-      rn2diFifo.clear;
-      aluRS.clear;
-      muldivRS.clear;
-      memRS.clear;
-      storeBuf.clear;
-      rob.clear;
-      rat.restoreFromRetirement;
-      freeList.restoreFromRetRAT(rat.allRetRAT);
-      aluBusy <= False;
-      mulInFlight <= False;
-      divInFlight <= False;
-      memState <= MemIdle;
-
-`ifdef CONFIG_DIFFTEST
-      Vector#(32, Data) gpr = ?;
-      for (Integer i = 0; i < 32; i = i + 1) gpr[i] = archRegs[i];
-      DiffArchCsrState diffCsr = diffSnapshotAfterWriteFromState(diffCsrSnap,
-        tagged Invalid, 0, False, 0, 0, head.pc, 0, True);
-      difftest.enqTrace(DiffTrace{
-        commit: DiffCommit{
-          valid: True, pc: head.pc, nextPc: era,
-          inst: head.inst, wen: False, wdest: 0, wdata: 0, skip: False,
-          isTlbfill: False, tlbfillIndex: 0
-        },
-        regs: DiffArchGRegState{gpr: gpr},
-        csr: diffCsr,
-        excp: DiffExcpEvent{excpValid: False, eret: True,
-          interrupt: mkInterruptNo(diffCsr.estat),
-          exception: 0, exceptionPC: head.pc, exceptionInst: head.inst},
-        store: DiffStoreEvent{valid: 0, paddr: 0, vaddr: 0, data: 0},
-        load: DiffLoadEvent{valid: 0, paddr: 0, vaddr: 0}
-      });
-`endif
     end else if (head.iType == Idle) begin
-      // IDLE: wait for interrupt
       idleLock <= True;
       pcReg <= head.pc + 4;
-      doDeq = True;
+      deqRob = True;
 
 `ifdef CONFIG_DIFFTEST
       Vector#(32, Data) gpr = ?;
@@ -598,7 +412,6 @@ function Action doCommitBody(
       });
 `endif
     end else if (head.iType == Syscall || head.iType == Break) begin
-      // Syscall/Break: raise exception
       Bit#(6) ecode = (head.iType == Syscall) ? `ECODE_SYS : `ECODE_BRK;
       Bit#(9) esubcode = `ESUBCODE_NONE;
 `ifdef CONFIG_BSIM
@@ -613,30 +426,10 @@ function Action doCommitBody(
 `endif
       Addr exEntry <- csrf.raiseException(ecode, esubcode, head.pc, head.pc);
       pcReg <= exEntry;
-      doDeq = True;
-
-      // Flush pipeline
-      iCache.squash;
-      tlb.squashReq;
-      tlb.squashFetchLookup;
-      tlb.squashDataLookup;
-      dCache.squash(False);
-      if2WaitRefill <= False;
-      f1f2Fifo.clear;
-      f2dFifo.clear;
-      d2rnFifo.clear;
-      rn2diFifo.clear;
-      aluRS.clear;
-      muldivRS.clear;
-      memRS.clear;
-      storeBuf.clear;
-      rob.clear;
-      rat.restoreFromRetirement;
-      freeList.restoreFromRetRAT(rat.allRetRAT);
-      aluBusy <= False;
-      mulInFlight <= False;
-      divInFlight <= False;
-      memState <= MemIdle;
+      doCommitFlushAndRestore(rob, rat, freeList, tlb, iCache, dCache, False,
+        if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
+        aluRS, muldivRS, memRS, storeBuf, aluBusy, mulInFlight,
+        divInFlight, memState);
 
 `ifdef CONFIG_DIFFTEST
       Vector#(32, Data) gpr = ?;
@@ -659,11 +452,179 @@ function Action doCommitBody(
         load: DiffLoadEvent{valid: 0, paddr: 0, vaddr: 0}
       });
 `endif
+    end
+
+`ifdef CONFIG_TRACE_PERFORMANCE
+    inst_count();
+`endif
+    commitState <= CommitIdle;
+    if (deqRob) begin
+      rob.deq;
+    end
+  endaction
+endfunction
+
+function ActionValue#(CommitNormalResult) doCommitNormalSharedAction(
+    ROB rob,
+    CsrFile csrf,
+`ifdef CONFIG_DIFFTEST
+    Reg#(DiffArchCsrState) csrSnapReg,
+`endif
+    Reg#(CommitCsrSnapshot) commitCsrSnapReg,
+    PRF prf,
+    RAT rat,
+    TlbArray tlb,
+    Reg#(Addr) pcReg,
+    ICache iCache,
+    DCache dCache,
+    Reg#(Bool) if2WaitRefill,
+    Fifo#(2, F1toF2) f1f2Fifo,
+    Fifo#(2, F2D) f2dFifo,
+    Fifo#(2, D2RN) d2rnFifo,
+    Fifo#(2, RenamedInst) rn2diFifo,
+    ResStation#(16) aluRS,
+    ResStation#(4) muldivRS,
+    ResStation#(16) memRS,
+    StoreBuf#(16) storeBuf,
+    StoreForwardBuf#(16) committedStoreBuf,
+    Reg#(Bool) aluBusy,
+    Reg#(Bool) mulInFlight,
+    Reg#(Bool) divInFlight,
+    Reg#(MemExecState) memState
+`ifdef CONFIG_DIFFTEST
+    , Difftest difftest
+    , Vector#(32, Reg#(Data)) archRegs
+`endif
+);
+  actionvalue
+    let head = rob.head;
+    Bool retired = False;
+    Bool deqRob = False;
+    Bool waitTlb = False;
+
+    DecodedInst dInst = decode(head.inst);
+    CsrIndx csrIdxForRd = fromMaybe(0, dInst.csr);
+    CommitCsrSnapshot commitCsrSnap = commitCsrSnapReg;
+`ifdef CONFIG_DIFFTEST
+    DiffArchCsrState diffCsrSnap = csrSnapReg;
+    Data csrReadVal = csrRdFromSnapshot(diffCsrSnap, csrIdxForRd);
+    Data tlbReqAsidVal = diffCsrSnap.asid;
+    Bit#(5) tlbRdIndex = truncate(diffCsrSnap.tlbidx[`CSR_TLBIDX_INDEX]);
+    Data tlbWrIdx = effectiveTlbIdxForWrite(diffCsrSnap.tlbidx, diffCsrSnap.estat);
+    Data tlbWrEhi = diffCsrSnap.tlbehi;
+    Data tlbWrElo0 = diffCsrSnap.tlbelo0;
+    Data tlbWrElo1 = diffCsrSnap.tlbelo1;
+`else
+    Data csrReadVal = commitCsrSnap.csrReadVal;
+    Data tlbReqAsidVal = commitCsrSnap.tlbReqAsidVal;
+    Bit#(5) tlbRdIndex = commitCsrSnap.tlbRdIndex;
+    Data tlbWrIdx = commitCsrSnap.tlbWrIdx;
+    Data tlbWrEhi = commitCsrSnap.tlbWrEhi;
+    Data tlbWrElo0 = commitCsrSnap.tlbWrElo0;
+    Data tlbWrElo1 = commitCsrSnap.tlbWrElo1;
+`endif
+    Bit#(64) stableCounter = commitCsrSnap.stableCounter;
+
+    Data cmRVal1 = prf.rd3(head.pSrc1);
+    Data cmRVal2 = prf.rd4(head.pSrc2);
+    StoreBufEntry commitStoreEntry = ?;
+
+    if (isTlb(head.iType)) begin
+      Data rVal1 = cmRVal1;
+      Data rVal2 = cmRVal2;
+      TlbOp op = TlbOpSearch;
+      if (head.iType == Tlbrd) op = TlbOpRead;
+      else if (head.iType == Tlbwr) op = TlbOpWrite;
+      else if (head.iType == Tlbfill) op = TlbOpFill;
+      else if (head.iType == Invtlb) op = TlbOpInv;
+      Data tlbReqAsid = (head.iType == Invtlb) ? rVal2 : tlbReqAsidVal;
+      tlb.req(TlbReq{
+        op: op,
+        tlbidx: (head.iType == Tlbrd) ? zeroExtend(tlbRdIndex) : tlbWrIdx,
+        invOp: truncate(fromMaybe(0, dInst.imm)),
+        ehi: tlbWrEhi,
+        elo0: tlbWrElo0,
+        elo1: tlbWrElo1,
+        asid: tlbReqAsid,
+        va: rVal1
+      });
+      waitTlb = True;
+    end else if (isCsr(head.iType)) begin
+      Data rVal1 = cmRVal1;
+      Data rVal2 = cmRVal2;
+
+      Data csrVal = ?;
+      if (head.iType == RdTimeL) begin
+        csrVal = truncate(stableCounter);
+      end else if (head.iType == RdTimeH) begin
+        csrVal = truncateLSB(stableCounter);
+      end else begin
+        csrVal = csrReadVal;
+      end
+
+`ifdef CONFIG_DIFFTEST
+      Bool wen = False;
+      Data wdata = csrVal;
+      Vector#(32, Data) gpr = ?;
+      for (Integer i = 0; i < 32; i = i + 1) gpr[i] = archRegs[i];
+      if (head.dst matches tagged Valid .dst &&& dst != 0) begin
+        gpr[dst] = csrVal;
+        wen = True;
+      end
+      Maybe#(CsrIndx) diffCsrIdx = tagged Invalid;
+      Data diffCsrVal = csrVal;
+      if (head.iType == Csrw) begin
+        diffCsrIdx = dInst.csr;
+        diffCsrVal = rVal1;
+      end else if (head.iType == Csrxchg) begin
+        diffCsrIdx = dInst.csr;
+        diffCsrVal = (csrVal & (~rVal2)) | (rVal1 & rVal2);
+      end
+      DiffArchCsrState diffCsr = diffSnapshotAfterWriteFromState(diffCsrSnap,
+        diffCsrIdx, diffCsrVal, False, 0, 0, head.pc, 0, False);
+`endif
+
+      if (head.iType == Csrw) begin
+        csrf.wr(dInst.csr, rVal1);
+      end else if (head.iType == Csrxchg) begin
+        csrf.wr(dInst.csr, (csrVal & (~rVal2)) | (rVal1 & rVal2));
+      end
+
+      if (head.dst matches tagged Valid .dst &&& dst != 0) begin
+        if (head.pDst matches tagged Valid .pd) begin
+          prf.commitWrite(pd, csrVal);
+          prf.setReadyCommit(pd);
+          let csrWakeup = CDBMessage{tag: pd, value: csrVal, valid: True};
+          aluRS.commitWakeup(csrWakeup);
+          muldivRS.commitWakeup(csrWakeup);
+          memRS.commitWakeup(csrWakeup);
+        end
+`ifdef CONFIG_DIFFTEST
+        archRegs[dst] <= csrVal;
+`endif
+      end
+
+      retired = True;
+      deqRob = True;
+
+`ifdef CONFIG_DIFFTEST
+      difftest.enqTrace(DiffTrace{
+        commit: DiffCommit{
+          valid: True, pc: head.pc, nextPc: head.pc + 4,
+          inst: head.inst, wen: wen, wdest: fromMaybe(0, head.dst),
+          wdata: wdata, skip: False, isTlbfill: False, tlbfillIndex: 0
+        },
+        regs: DiffArchGRegState{gpr: gpr},
+        csr: diffCsr,
+        excp: DiffExcpEvent{excpValid: False, eret: False,
+          interrupt: mkInterruptNo(diffCsr.estat),
+          exception: 0, exceptionPC: head.pc, exceptionInst: head.inst},
+        store: DiffStoreEvent{valid: 0, paddr: 0, vaddr: 0, data: 0},
+        load: DiffLoadEvent{valid: 0, paddr: 0, vaddr: 0}
+      });
+`endif
     end else if (head.state == RobCompleted) begin
-      // Normal commit (ALU, Ld, MulDiv, St, etc.)
       if (head.iType == Ibar) begin
-        // Discard instructions fetched before invalidation completed and
-        // restart at IBAR architectural successor.
         pcReg <= head.pc + 4;
         iCache.squash;
         tlb.squashFetchLookup;
@@ -677,15 +638,15 @@ function Action doCommitBody(
         memRS.clear;
         storeBuf.clear;
         rob.clear;
+        // The no-reclaim wrapper intentionally has no FreeList parameter, so
+        // this IBAR flush keeps FreeList methods out of the no-reclaim rule.
         rat.restoreFromRetirement;
-        freeList.restoreFromRetRAT(rat.allRetRAT);
         aluBusy <= False;
         mulInFlight <= False;
         divInFlight <= False;
         memState <= MemIdle;
       end
       if (head.iType == St) begin
-        // Store commit: write to D-Cache
         commitStoreEntry = storeBuf.first;
         storeBuf.deq;
         committedStoreBuf.enq(commitStoreEntry);
@@ -698,31 +659,26 @@ function Action doCommitBody(
         });
       end
 
-      // Update shadow ARF and retRAT for register-writing instructions
       Bool wen = False;
       Data wdata = 0;
       if (head.dst matches tagged Valid .dst &&& dst != 0) begin
         if (head.pDst matches tagged Valid .pd) begin
           wdata = prf.rd5(pd);
         end
-		`ifdef CONFIG_DIFFTEST
+`ifdef CONFIG_DIFFTEST
         archRegs[dst] <= wdata;
-		`endif
-        rat.updateRet(dst, fromMaybe(?, head.pDst));
-        if (head.oldPdst matches tagged Valid .old) begin
-          freeList.enq(old);
-        end
+`endif
         wen = True;
       end
 
-      // Handle Ll/Sc side effects
       if (head.iType == Ll) begin
         csrf.setLlbit(True);
       end else if (head.iType == Sc) begin
         csrf.setLlbit(False);
       end
 
-      doDeq = True;
+      retired = True;
+      deqRob = (head.iType != Ibar);
 
 `ifdef CONFIG_DIFFTEST
       Vector#(32, Data) gpr = ?;
@@ -736,9 +692,7 @@ function Action doCommitBody(
         diffLlbctl[0] = pack(head.iType == Ll);
         diffCsr.llbctl = diffLlbctl;
       end
-      // Compute nextPc
       Addr commitNextPc = head.isBranch ? head.correctTarget : (head.pc + 4);
-      // Store/load diff events
       Maybe#(DiffMemOp) diffMem = tagged Invalid;
       Maybe#(ByteMask) diffMemMask = head.memMask;
       if (head.iType == Ld || head.iType == Ll) begin
@@ -779,22 +733,157 @@ function Action doCommitBody(
         load: loadEvent
       });
 `endif
-    end else begin
-      // Not completed: stall
     end
 
-`ifdef CONFIG_TRACE_PERFORMANCE
-    if (doDeq) inst_count();
-`endif
+    return CommitNormalResult{retired: retired, deqRob: deqRob, waitTlb: waitTlb};
+  endactionvalue
+endfunction
 
-    if (waitTlb) begin
+function Action doCommitReclaimAction(
+    ROB rob,
+    Reg#(CommitState) commitState,
+    CsrFile csrf,
+`ifdef CONFIG_DIFFTEST
+    Reg#(DiffArchCsrState) csrSnapReg,
+`endif
+    Reg#(CommitCsrSnapshot) commitCsrSnapReg,
+    PRF prf,
+    RAT rat,
+    FreeList freeList,
+    TlbArray tlb,
+    Reg#(Addr) pcReg,
+    ICache iCache,
+    DCache dCache,
+    Reg#(Bool) if2WaitRefill,
+    Fifo#(2, F1toF2) f1f2Fifo,
+    Fifo#(2, F2D) f2dFifo,
+    Fifo#(2, D2RN) d2rnFifo,
+    Fifo#(2, RenamedInst) rn2diFifo,
+    ResStation#(16) aluRS,
+    ResStation#(4) muldivRS,
+    ResStation#(16) memRS,
+    StoreBuf#(16) storeBuf,
+    StoreForwardBuf#(16) committedStoreBuf,
+    Reg#(Bool) aluBusy,
+    Reg#(Bool) mulInFlight,
+    Reg#(Bool) divInFlight,
+    Reg#(MemExecState) memState,
+    BranchPredictor branchPred
+`ifdef CONFIG_DIFFTEST
+    , Difftest difftest
+    , Vector#(32, Reg#(Data)) archRegs
+`endif
+);
+  action
+    let head = rob.head;
+    let result <- doCommitNormalSharedAction(rob, csrf,
+`ifdef CONFIG_DIFFTEST
+      csrSnapReg,
+`endif
+      commitCsrSnapReg, prf, rat, tlb, pcReg, iCache, dCache,
+      if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
+      aluRS, muldivRS, memRS, storeBuf, committedStoreBuf, aluBusy,
+      mulInFlight, divInFlight, memState
+`ifdef CONFIG_DIFFTEST
+      , difftest, archRegs
+`endif
+    );
+
+    if (result.retired) begin
+      if (head.dst matches tagged Valid .dst &&& dst != 0) begin
+        rat.updateRet(dst, fromMaybe(?, head.pDst));
+      end
+      if (head.oldPdst matches tagged Valid .old) begin
+        freeList.enq(old);
+      end
+`ifdef CONFIG_TRACE_PERFORMANCE
+      inst_count();
+`endif
+    end
+
+    if (result.waitTlb) begin
       commitState <= CommitTLBWait;
     end else begin
       commitState <= CommitIdle;
     end
 
-    if (doDeq) begin
-      // Update branch history in architectural (ROB commit) order.
+    if (result.deqRob) begin
+      if (head.isBranch) begin
+        Bool actualTaken = (head.iType == Br) ? (head.correctTarget != head.pc + 4) : True;
+        CfiType cfiType = (head.iType == Br) ? CFI_COND :
+                          ((head.iType == J) ? CFI_JAL : CFI_JALR);
+        branchPred.commitHistory(actualTaken, head.correctTarget, cfiType);
+      end
+      rob.deq;
+    end
+  endaction
+endfunction
+
+function Action doCommitNoReclaimAction(
+    ROB rob,
+    Reg#(CommitState) commitState,
+    CsrFile csrf,
+`ifdef CONFIG_DIFFTEST
+    Reg#(DiffArchCsrState) csrSnapReg,
+`endif
+    Reg#(CommitCsrSnapshot) commitCsrSnapReg,
+    PRF prf,
+    RAT rat,
+    TlbArray tlb,
+    Reg#(Addr) pcReg,
+    ICache iCache,
+    DCache dCache,
+    Reg#(Bool) if2WaitRefill,
+    Fifo#(2, F1toF2) f1f2Fifo,
+    Fifo#(2, F2D) f2dFifo,
+    Fifo#(2, D2RN) d2rnFifo,
+    Fifo#(2, RenamedInst) rn2diFifo,
+    ResStation#(16) aluRS,
+    ResStation#(4) muldivRS,
+    ResStation#(16) memRS,
+    StoreBuf#(16) storeBuf,
+    StoreForwardBuf#(16) committedStoreBuf,
+    Reg#(Bool) aluBusy,
+    Reg#(Bool) mulInFlight,
+    Reg#(Bool) divInFlight,
+    Reg#(MemExecState) memState,
+    BranchPredictor branchPred
+`ifdef CONFIG_DIFFTEST
+    , Difftest difftest
+    , Vector#(32, Reg#(Data)) archRegs
+`endif
+);
+  action
+    let head = rob.head;
+    let result <- doCommitNormalSharedAction(rob, csrf,
+`ifdef CONFIG_DIFFTEST
+      csrSnapReg,
+`endif
+      commitCsrSnapReg, prf, rat, tlb, pcReg, iCache, dCache,
+      if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
+      aluRS, muldivRS, memRS, storeBuf, committedStoreBuf, aluBusy,
+      mulInFlight, divInFlight, memState
+`ifdef CONFIG_DIFFTEST
+      , difftest, archRegs
+`endif
+    );
+
+    if (result.retired) begin
+      if (head.dst matches tagged Valid .dst &&& dst != 0) begin
+        rat.updateRet(dst, fromMaybe(?, head.pDst));
+      end
+`ifdef CONFIG_TRACE_PERFORMANCE
+      inst_count();
+`endif
+    end
+
+    if (result.waitTlb) begin
+      commitState <= CommitTLBWait;
+    end else begin
+      commitState <= CommitIdle;
+    end
+
+    if (result.deqRob) begin
       if (head.isBranch) begin
         Bool actualTaken = (head.iType == Br) ? (head.correctTarget != head.pc + 4) : True;
         CfiType cfiType = (head.iType == Br) ? CFI_COND :

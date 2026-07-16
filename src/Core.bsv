@@ -414,7 +414,15 @@ module mkCore(Core);
       && difftest.enqTraceReady
 `endif
       && rob.head.iType == Ertn);
-    doCommitErtnBody(rob, commitState, csrf,
+    doCommitBody(rob
+`ifdef CONFIG_WB_DEBUG
+      , debugWsValidWire, debugWbPcWire
+`ifdef CONFIG_WB_DEBUG_INST
+      , debugWbInstWire
+`endif
+`endif
+    );
+    doCommitErtnAction(rob, commitState, csrf,
 `ifdef CONFIG_DIFFTEST
       csrSnapReg,
 `endif
@@ -425,12 +433,6 @@ module mkCore(Core);
 `ifdef CONFIG_DIFFTEST
       , difftest, archRegs
 `endif
-`ifdef CONFIG_WB_DEBUG
-      , debugWsValidWire, debugWbPcWire
-`ifdef CONFIG_WB_DEBUG_INST
-      , debugWbInstWire
-`endif
-`endif
     );
   endrule
 
@@ -440,20 +442,7 @@ module mkCore(Core);
 `endif
       && (rob.head.excp.valid || rob.head.iType == Idle ||
        rob.head.iType == Syscall || rob.head.iType == Break));
-    doCommitBody(rob, commitState, csrf,
-`ifdef CONFIG_DIFFTEST
-      csrSnapReg,
-`endif
-      commitCsrSnapReg, prf, rat, freeList, tlb, pcReg[2], iCache, dCache,
-      if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
-      aluRS, muldivRS, memRS, storeBuf, committedStoreBuf, idleLock, aluBusy, mulInFlight,
-      divInFlight, memState, branchPred
-`ifdef CONFIG_BSIM
-      , toHostFifo
-`endif
-`ifdef CONFIG_DIFFTEST
-      , difftest, archRegs
-`endif
+    doCommitBody(rob
 `ifdef CONFIG_WB_DEBUG
       , debugWsValidWire, debugWbPcWire
 `ifdef CONFIG_WB_DEBUG_INST
@@ -461,33 +450,77 @@ module mkCore(Core);
 `endif
 `endif
     );
-  endrule
-
-  rule doCommit (rob.headValid && commitState == CommitReady
-`ifdef CONFIG_DIFFTEST
-      && difftest.enqTraceReady
-`endif
-      && !(rob.head.excp.valid || rob.head.iType == Ertn || rob.head.iType == Idle ||
-       rob.head.iType == Syscall || rob.head.iType == Break));
-    doCommitBody(rob, commitState, csrf,
+    doCommitRedirectAction(rob, commitState, csrf,
 `ifdef CONFIG_DIFFTEST
       csrSnapReg,
 `endif
-      commitCsrSnapReg, prf, rat, freeList, tlb, pcReg[2], iCache, dCache,
+      rat, freeList, tlb, pcReg[2], iCache, dCache,
       if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
-      aluRS, muldivRS, memRS, storeBuf, committedStoreBuf, idleLock, aluBusy, mulInFlight,
-      divInFlight, memState, branchPred
+      aluRS, muldivRS, memRS, storeBuf, idleLock, aluBusy, mulInFlight,
+      divInFlight, memState
 `ifdef CONFIG_BSIM
       , toHostFifo
 `endif
 `ifdef CONFIG_DIFFTEST
       , difftest, archRegs
 `endif
+    );
+  endrule
+
+  rule doCommitReclaim (rob.headValid && commitState == CommitReady
+`ifdef CONFIG_DIFFTEST
+      && difftest.enqTraceReady
+`endif
+      && !(rob.head.excp.valid || rob.head.iType == Ertn || rob.head.iType == Idle ||
+       rob.head.iType == Syscall || rob.head.iType == Break)
+      && isValid(rob.head.oldPdst));
+    doCommitBody(rob
 `ifdef CONFIG_WB_DEBUG
       , debugWsValidWire, debugWbPcWire
 `ifdef CONFIG_WB_DEBUG_INST
       , debugWbInstWire
 `endif
+`endif
+    );
+    doCommitReclaimAction(rob, commitState, csrf,
+`ifdef CONFIG_DIFFTEST
+      csrSnapReg,
+`endif
+      commitCsrSnapReg, prf, rat, freeList, tlb, pcReg[2], iCache, dCache,
+      if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
+      aluRS, muldivRS, memRS, storeBuf, committedStoreBuf, aluBusy, mulInFlight,
+      divInFlight, memState, branchPred
+`ifdef CONFIG_DIFFTEST
+      , difftest, archRegs
+`endif
+    );
+  endrule
+
+  rule doCommitNoReclaim (rob.headValid && commitState == CommitReady
+`ifdef CONFIG_DIFFTEST
+      && difftest.enqTraceReady
+`endif
+      && !(rob.head.excp.valid || rob.head.iType == Ertn || rob.head.iType == Idle ||
+       rob.head.iType == Syscall || rob.head.iType == Break)
+      && !isValid(rob.head.oldPdst));
+    doCommitBody(rob
+`ifdef CONFIG_WB_DEBUG
+      , debugWsValidWire, debugWbPcWire
+`ifdef CONFIG_WB_DEBUG_INST
+      , debugWbInstWire
+`endif
+`endif
+    );
+    doCommitNoReclaimAction(rob, commitState, csrf,
+`ifdef CONFIG_DIFFTEST
+      csrSnapReg,
+`endif
+      commitCsrSnapReg, prf, rat, tlb, pcReg[2], iCache, dCache,
+      if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
+      aluRS, muldivRS, memRS, storeBuf, committedStoreBuf, aluBusy, mulInFlight,
+      divInFlight, memState, branchPred
+`ifdef CONFIG_DIFFTEST
+      , difftest, archRegs
 `endif
     );
   endrule
