@@ -593,7 +593,9 @@ extern "C" void bdpi_difftest_instr_commit(unsigned char valid, unsigned int pc,
                                            unsigned char wen, unsigned char wdest,
                                            unsigned int wdata, unsigned char skip,
                                            unsigned char is_tlbfill,
-                                           unsigned char tlbfill_index) {
+                                           unsigned char tlbfill_index,
+                                           unsigned char csr_rstat,
+                                           unsigned int csr_data) {
   Difftest* difftest = active_difftest();
   if (difftest == nullptr) {
     return;
@@ -611,6 +613,8 @@ extern "C" void bdpi_difftest_instr_commit(unsigned char valid, unsigned int pc,
   commit->wdata = wdata;
   commit->is_TLBFILL = (is_tlbfill != 0) ? 1 : 0;
   commit->TLBFILL_index = tlbfill_index;
+  commit->csr_rstat = (csr_rstat != 0) ? 1 : 0;
+  commit->csr_data = csr_data;
   commit->is_CNTinst = 0;
   commit->timer_64_value = last_timer_64_value;
 

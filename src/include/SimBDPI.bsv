@@ -80,7 +80,9 @@ import "BDPI" function Action bdpi_difftest_instr_commit(
   Data wdata,
   Bit#(1) skip,
   Bit#(1) isTlbfill,
-  Bit#(5) tlbfillIndex
+  Bit#(5) tlbfillIndex,
+  Bit#(1) csrRstat,
+  Data csrData
 );
 `endif
 
@@ -150,6 +152,9 @@ module mkTbCoreBDPI(Empty);
 `ifdef CONFIG_DIFFTEST
   rule drainDiffTrace(started && core.diffTraceValid);
     let t <- core.diffTrace;
+    Bool isCsr = t.commit.inst[31:24] == 8'h04;
+    Bool readsEstat = t.commit.valid && isCsr && t.commit.inst[23:10] == 14'h0005;
+
     bdpi_difftest_greg_state(
       t.regs.gpr[0], t.regs.gpr[1], t.regs.gpr[2], t.regs.gpr[3],
       t.regs.gpr[4], t.regs.gpr[5], t.regs.gpr[6], t.regs.gpr[7],
@@ -198,7 +203,9 @@ module mkTbCoreBDPI(Empty);
       t.commit.wdata,
       pack(t.commit.skip),
       pack(t.commit.isTlbfill),
-      t.commit.tlbfillIndex
+      t.commit.tlbfillIndex,
+      pack(readsEstat),
+      t.commit.wdata
     );
   endrule
 `endif
