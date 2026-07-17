@@ -88,6 +88,8 @@ function Action doCollectCommitTLBBody(
     let res <- tlb.resp;
     commitState <= CommitIdle;
     let head = rob.head;
+    Bit#(5) wbTlbfillIndex = 0;
+    Bool isTlbfill = !head.excp.valid && head.iType == Tlbfill;
 
 `ifdef CONFIG_DIFFTEST
     DiffArchCsrState diffCsrSnap = csrSnapReg;
@@ -103,6 +105,9 @@ function Action doCollectCommitTLBBody(
         csrf.applyTlbrdResult(res.ne, res.ps, res.ehi, res.elo0, res.elo1, res.asid);
       end else if (head.iType == Tlbwr || head.iType == Tlbfill) begin
         csrf.commitTlbOp;
+        if (isTlbfill) begin
+          wbTlbfillIndex = truncate(res.ehi[`CSR_TLBIDX_INDEX]);
+        end
       end
     end
 
@@ -113,9 +118,20 @@ function Action doCollectCommitTLBBody(
 `ifdef CONFIG_DIFFTEST
     // Difftest for TLB commit
     DiffArchCsrState diffCsr = diffCsrSnap;
-    if (head.iType == Tlbrd) begin
-      diffCsr = diffSnapshotAfterTlbrdFromState(diffCsrSnap,
-        res.ne, res.ps, res.ehi, res.elo0, res.elo1, res.asid);
+    if (head.iType == Tlbsrch) begin
+      Data srchResult = 0;
+      if (res.ne) begin
+        srchResult[`CSR_TLBIDX_NE] = 1'b1;
+      end else begin
+        srchResult[`CSR_TLBIDX_INDEX] = res.ehi[`CSR_TLBIDX_INDEX];
+      end
+      diffCsr = diffSnapshotAfterWriteFromState(
+        diffCsrSnap, tagged Valid `CSR_TLBIDX, srchResult, False, 0, 0, head.pc, 0, False);
+    end else if (head.iType == Tlbrd) begin
+      diffCsr = diffSnapshotAfterTlbrdFromState(
+        diffCsrSnap,
+        res.ne, res.ps, res.ehi, res.elo0, res.elo1, res.asid
+      );
     end
     Vector#(32, Data) gpr = ?;
     for (Integer i = 0; i < 32; i = i + 1) gpr[i] = archRegs[i];
@@ -123,8 +139,8 @@ function Action doCollectCommitTLBBody(
       commit: DiffCommit{
         valid: !head.excp.valid, pc: head.pc, nextPc: head.pc + 4,
         inst: head.inst, wen: False, wdest: 0, wdata: 0, skip: False,
-        isTlbfill: !head.excp.valid && head.iType == Tlbfill,
-        tlbfillIndex: 0
+        isTlbfill: isTlbfill,
+        tlbfillIndex: wbTlbfillIndex
       },
       regs: DiffArchGRegState{gpr: gpr},
       csr: diffCsr,
@@ -594,7 +610,7 @@ function ActionValue#(CommitNormalResult) doCommitNormalSharedAction(
       else if (head.iType == Tlbwr) op = TlbOpWrite;
       else if (head.iType == Tlbfill) op = TlbOpFill;
       else if (head.iType == Invtlb) op = TlbOpInv;
-      Data tlbReqAsid = (head.iType == Invtlb) ? rVal2 : tlbReqAsidVal;
+      Data tlbReqAsid = (head.iType == Invtlb) ? rVal1 : tlbReqAsidVal;
       tlb.req(TlbReq{
         op: op,
         tlbidx: (head.iType == Tlbrd) ? zeroExtend(tlbRdIndex) : tlbWrIdx,
@@ -603,7 +619,7 @@ function ActionValue#(CommitNormalResult) doCommitNormalSharedAction(
         elo0: tlbWrElo0,
         elo1: tlbWrElo1,
         asid: tlbReqAsid,
-        va: rVal1
+        va: (head.iType == Invtlb) ? rVal2 : rVal1
       });
       waitTlb = True;
     end else if (isCsr(head.iType)) begin
