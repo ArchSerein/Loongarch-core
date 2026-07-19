@@ -92,6 +92,8 @@ module mkResStation(ResStation#(size))
       Bit#(size) freeMask = ~keepMask;
       if (freeMask != 0) begin
         enqP <= truncate(pack(countZerosLSB(freeMask)));
+      end else begin
+        enqP <= 0;
       end
     end else begin
       // Normal operation: CDB wakeup + enq + remove
@@ -109,6 +111,16 @@ module mkResStation(ResStation#(size))
 
       Bool hasEnq = isValid(enqReq);
       RSEntry enqEntry = fromMaybe(?, enqReq);
+      Maybe#(Bit#(TLog#(size))) allocPos = tagged Invalid;
+
+      if (hasEnq) begin
+        for (Integer i = 0; i < valueOf(size); i = i + 1) begin
+          Bit#(TLog#(size)) idx = enqP + fromInteger(i);
+          if (!isValid(allocPos) && !entries[idx].valid) begin
+            allocPos = tagged Valid idx;
+          end
+        end
+      end
 
       // Simultaneous enqueue + CDB/commit wakeup: apply every valid
       // broadcast in the vector to the freshly dispatched entry.
@@ -142,8 +154,8 @@ module mkResStation(ResStation#(size))
       for (Integer i = 0; i < valueOf(size); i = i + 1) begin
         Bit#(TLog#(size)) idx = fromInteger(i);
 
-        if (hasEnq && enqP == idx) begin
-          // Enq writes to this entry (highest priority)
+        if (allocPos matches tagged Valid .ap &&& ap == idx) begin
+          // Enq writes to the first free CAM slot found from enqP.
           entries[idx] <= enqEntry;
         end else if (removePos matches tagged Valid .rp &&& rp == idx) begin
           // Remove invalidates this entry
@@ -201,8 +213,8 @@ module mkResStation(ResStation#(size))
       // Update pointers and count
       Bit#(TLog#(size)) nextEnqP = enqP;
       Bit#(TAdd#(TLog#(size), 1)) nextCount = count;
-      if (hasEnq) begin
-        nextEnqP = nextPtr(enqP);
+      if (allocPos matches tagged Valid .ap) begin
+        nextEnqP = nextPtr(ap);
         nextCount = nextCount + 1;
       end
       if (isValid(removePos)) begin
@@ -260,7 +272,7 @@ module mkResStation(ResStation#(size))
   method Maybe#(RSEntry) selectOldestReady;
     Maybe#(RSEntry) ret = tagged Invalid;
     Bool found = False;
-    // Scan from enqP (oldest) in circular order
+    // Scan from the allocation hint in circular order
     for (Integer i = 0; i < valueOf(size); i = i + 1) begin
       Bit#(TLog#(size)) idx = enqP + fromInteger(i);
       RSEntry e = entries[idx];
