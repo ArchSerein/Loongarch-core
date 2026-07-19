@@ -480,11 +480,14 @@ function Action doCommitRedirectAction(
     end else if (head.iType == Idle) begin
       idleLock <= True;
       pcReg <= head.pc + 4;
+      doCommitFlushAndRestore(rob, rat, freeList, tlb, iCache, dCache, False,
+        if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
+        aluRS, muldivRS, memRS, storeBuf, aluBusy, mulInFlight,
+        divInFlight, memState);
 `ifdef CONFIG_TRACE_PERFORMANCE
       inst_count();
 `endif
       commitState <= CommitIdle;
-      rob.deq;
 
 `ifdef CONFIG_DIFFTEST
       Vector#(32, Data) gpr = ?;
@@ -657,10 +660,25 @@ function ActionValue#(CommitNormalResult) doCommitNormalSharedAction(
         diffCsrIdx, diffCsrVal, False, 0, 0, head.pc, 0, False);
 `endif
 
+      Data csrWriteVal = csrVal;
+      Bool csrDoWrite = False;
       if (head.iType == Csrw) begin
-        csrf.wr(dInst.csr, rVal1);
+        csrWriteVal = rVal1;
+        csrDoWrite = True;
+        csrf.wr(dInst.csr, csrWriteVal);
       end else if (head.iType == Csrxchg) begin
-        csrf.wr(dInst.csr, (csrVal & (~rVal2)) | (rVal1 & rVal2));
+        csrWriteVal = (csrVal & (~rVal2)) | (rVal1 & rVal2);
+        csrDoWrite = True;
+        csrf.wr(dInst.csr, csrWriteVal);
+      end
+      if (csrDoWrite) begin
+        if (dInst.csr matches tagged Valid .csrIdx) begin
+          if (csrIdx == `CSR_LLBCTL) begin
+            if (unpack(csrWriteVal[1])) begin
+              dCache.clearReservation;
+            end
+          end
+        end
       end
 
       if (head.dst matches tagged Valid .dst &&& dst != 0) begin

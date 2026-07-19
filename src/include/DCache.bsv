@@ -81,6 +81,7 @@ interface DCache;
   method Action req(MemReq r);
   method Action cacop(MemReq r);
   method ActionValue#(DCacheResp) resp;
+  method Action clearReservation;
   method Action squash(Bool clearLl);
   interface AxiMemMaster axiMem;
 endinterface
@@ -760,6 +761,10 @@ module mkDCache(DCache);
     let d = respQ.first;
     respQ.deq;
     return d;
+  endmethod
+
+  method Action clearReservation;
+    llValid <= False;
   endmethod
 
   method Action squash(Bool clearLl);

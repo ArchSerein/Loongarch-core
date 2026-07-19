@@ -276,11 +276,13 @@ function Action doCollectMemCacheBody(
     Reg#(MemExecState) memState,
     Reg#(RSEntry) memExecEntry,
     Reg#(Addr) memVaddr,
+    Reg#(Addr) memPaddr,
     Reg#(StoreForwardResult) memForward,
     DCache dCache,
     CDB cdb,
     ROB rob,
-    ResStation#(16) memRS
+    ResStation#(16) memRS,
+    StoreForwardBuf#(16) committedStoreBuf
 );
   action
     let d <- dCache.resp;
@@ -301,6 +303,14 @@ function Action doCollectMemCacheBody(
       end
       rob.updateMem(entry.robTag, RobCompleted);
     end else if (entry.iType == Sc) begin
+      if (d.data == scSucc) begin
+        ByteMask scMask = fromMaybe(0, entry.mask);
+        let scStorePkt = selectStoreData(entry.vk, memVaddr[1:0], scMask[3:0]);
+        committedStoreBuf.enq(StoreBufEntry{
+          vaddr: memVaddr, paddr: memPaddr,
+          data: tpl_2(scStorePkt), byteEn: extend(tpl_1(scStorePkt))
+        });
+      end
       if (entry.pDst matches tagged Valid .pd) begin
         cdb.sendLoad(pd, d.data);
       end

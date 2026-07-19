@@ -372,8 +372,8 @@ module mkCore(Core);
   endrule
 
   rule doCollectMemCache (commitState != CommitInterruptReady && memState == MemCacheWait);
-    doCollectMemCacheBody(memState, memExecEntry, memVaddr, memForward, dCache, cdb,
-      rob, memRS);
+    doCollectMemCacheBody(memState, memExecEntry, memVaddr, memPaddr,
+      memForward, dCache, cdb, rob, memRS, committedStoreBuf);
   endrule
 
   rule doCollectMemCacopI (commitState != CommitInterruptReady && memState == MemCacopIWait);
