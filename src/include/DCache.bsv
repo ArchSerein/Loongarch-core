@@ -413,7 +413,7 @@ module mkDCache(DCache);
     endaction
   endfunction
 
-  rule drainWriteBuffer (state == Ready && !reqQ.notEmpty && writeBufferValid);
+  rule drainWriteBuffer (state == Ready && writeBufferValid);
     writeWord(writeBuffer.way, writeBuffer.idx, writeBuffer.wsel, writeBuffer.data);
     writeBufferValid <= False;
   endrule

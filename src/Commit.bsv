@@ -458,7 +458,7 @@ function Action doCommitRedirectAction(
 `ifdef CONFIG_BSIM
       if (ecode == `ECODE_SYS && esubcode == 1) begin
         $display("this syscall 0x11, finish simulation");
-        toHostFifo.enq(CpuToHostData{c2hType: ExitCode, data: 0});
+        toHostFifo.enq(CpuToHostData{c2hType: ExitCode, data: truncate(archRegs[4])});
       end
 `endif
       doCommitTrapAction(CommitTrapInfo{
@@ -724,7 +724,7 @@ function ActionValue#(CommitNormalResult) doCommitNormalSharedAction(
         storeBuf.deq;
         committedStoreBuf.enq(commitStoreEntry);
         dCache.req(MemReq{
-          op: St, addr: commitStoreEntry.addr, paddr: head.memPaddr,
+          op: St, addr: commitStoreEntry.vaddr, paddr: commitStoreEntry.paddr,
           useCache: head.memUseCache,
           data: commitStoreEntry.data, byteEn: truncate(commitStoreEntry.byteEn),
           size: memByteEnToAxiSize(truncate(commitStoreEntry.byteEn)),

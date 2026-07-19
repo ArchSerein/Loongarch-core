@@ -93,7 +93,8 @@ typedef struct {
 
 // Store Buffer entry (for SQ)
 typedef struct {
-  Addr      addr;
+  Addr      vaddr;
+  Addr      paddr;
   Data      data;
   ByteMask  byteEn;
 } StoreBufEntry deriving(Bits, Eq);

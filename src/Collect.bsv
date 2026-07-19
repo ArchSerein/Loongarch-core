@@ -126,7 +126,7 @@ function Action doCollectMemTLBBody(
           ByteMask m = fromMaybe(5'b00000, entry.mask);
           let storePkt = selectStoreData(entry.vk, vaddr[1:0], m[3:0]);
           storeBuf.enq(StoreBufEntry{
-            addr: vaddr, data: tpl_2(storePkt),
+            vaddr: vaddr, paddr: dTrans.pa, data: tpl_2(storePkt),
             byteEn: extend(tpl_1(storePkt))
           });
           rob.updateMemInfo(entry.robTag, vaddr, dTrans.pa, memUseCache, entry.mask);
@@ -156,7 +156,7 @@ function Action doCollectMemTLBBody(
             cacheOp: isCacop ? cacheOp : 5'b0
           };
           memForward <= entry.isLoad ?
-            mergeForward(committedStoreBuf.forward(vaddr), storeBuf.forward(vaddr)) :
+            mergeForward(committedStoreBuf.forward(dTrans.pa), storeBuf.forward(dTrans.pa)) :
             StoreForwardResult{data: 0, byteEn: 0};
           rob.updateMemInfo(entry.robTag, vaddr, dTrans.pa, memUseCache, entry.mask);
           if (entry.iType == Ld && !memUseCache && entry.robTag != rob.headTag) begin
@@ -202,7 +202,7 @@ function Action doCollectMemDirectBody(
         ByteMask m = fromMaybe(5'b00000, entry.mask);
         let storePkt = selectStoreData(entry.vk, vaddr[1:0], m[3:0]);
         storeBuf.enq(StoreBufEntry{
-          addr: vaddr, data: tpl_2(storePkt),
+          vaddr: vaddr, paddr: paddr, data: tpl_2(storePkt),
           byteEn: extend(tpl_1(storePkt))
         });
         rob.updateMemInfo(entry.robTag, vaddr, paddr, memUseCache, entry.mask);
@@ -232,7 +232,7 @@ function Action doCollectMemDirectBody(
           cacheOp: isCacop ? cacheOp : 5'b0
         };
         memForward <= entry.isLoad ?
-          mergeForward(committedStoreBuf.forward(vaddr), storeBuf.forward(vaddr)) :
+          mergeForward(committedStoreBuf.forward(paddr), storeBuf.forward(paddr)) :
           StoreForwardResult{data: 0, byteEn: 0};
         rob.updateMemInfo(entry.robTag, vaddr, paddr, memUseCache, entry.mask);
         if (entry.iType == Ld && !memUseCache && entry.robTag != rob.headTag) begin
@@ -260,10 +260,11 @@ function Action doIssueMemUncacheBody(
   action
     let entry = memExecEntry;
     Addr vaddr = memVaddr;
+    Addr paddr = memPaddr;
     ByteMask mask = fromMaybe(5'b0, entry.mask);
-    memForward <= mergeForward(committedStoreBuf.forward(vaddr), storeBuf.forward(vaddr));
+    memForward <= mergeForward(committedStoreBuf.forward(paddr), storeBuf.forward(paddr));
     dCache.req(MemReq{
-      op: Ld, addr: vaddr, paddr: memPaddr, useCache: False,
+      op: Ld, addr: vaddr, paddr: paddr, useCache: False,
       data: 0, byteEn: 0,
       size: memByteEnToAxiSize(truncate(mask)), cacheOp: 0
     });

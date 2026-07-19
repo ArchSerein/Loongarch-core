@@ -16,14 +16,14 @@ interface StoreBuf#(numeric type n);
   method Action enq(StoreBufEntry x);
   method Action deq;
   method StoreBufEntry first;
-  method StoreForwardResult forward(Addr addr);
-  method Bool search(Addr addr);
+  method StoreForwardResult forward(Addr paddr);
+  method Bool search(Addr paddr);
   method Action clear;
 endinterface
 
 interface StoreForwardBuf#(numeric type n);
   method Action enq(StoreBufEntry x);
-  method StoreForwardResult forward(Addr addr);
+  method StoreForwardResult forward(Addr paddr);
   method Action clear;
 endinterface
 
@@ -67,9 +67,10 @@ module mkStoreBuf(StoreBuf#(n)) provisos (Bits#(StoreBufEntry, entrySz));
         if (count != 0 && !oneEntryDrained) begin
           let tailP = prevPtr(enqP);
           let tail = data[tailP];
-          if (coreSameWordAddr(tail.addr, x.addr)) begin
+          if (coreSameWordAddr(tail.paddr, x.paddr)) begin
             data[tailP] <= StoreBufEntry{
-              addr: tail.addr,
+              vaddr: tail.vaddr,
+              paddr: tail.paddr,
               data: coreApplyByteMask(tail.data, x.data, truncate(x.byteEn)),
               byteEn: tail.byteEn | x.byteEn
             };
@@ -115,7 +116,7 @@ module mkStoreBuf(StoreBuf#(n)) provisos (Bits#(StoreBufEntry, entrySz));
     return data[deqP];
   endmethod
 
-  method StoreForwardResult forward(Addr addr);
+  method StoreForwardResult forward(Addr paddr);
     StoreForwardResult ret = StoreForwardResult{data: 0, byteEn: 0};
     Bit#(TLog#(n)) ptr = deqP;
 
@@ -123,7 +124,7 @@ module mkStoreBuf(StoreBuf#(n)) provisos (Bits#(StoreBufEntry, entrySz));
       Bit#(TAdd#(TLog#(n), 1)) offset = fromInteger(i);
       if (offset < count) begin
         let e = data[ptr];
-        if (coreSameWordAddr(e.addr, addr)) begin
+        if (coreSameWordAddr(e.paddr, paddr)) begin
           ret.data = coreApplyByteMask(ret.data, e.data, truncate(e.byteEn));
           ret.byteEn = ret.byteEn | e.byteEn;
         end
@@ -132,7 +133,7 @@ module mkStoreBuf(StoreBuf#(n)) provisos (Bits#(StoreBufEntry, entrySz));
     end
 
     if (enqReq[2] matches tagged Valid .x) begin
-      if (coreSameWordAddr(x.addr, addr)) begin
+      if (coreSameWordAddr(x.paddr, paddr)) begin
         ret.data = coreApplyByteMask(ret.data, x.data, truncate(x.byteEn));
         ret.byteEn = ret.byteEn | x.byteEn;
       end
@@ -141,7 +142,7 @@ module mkStoreBuf(StoreBuf#(n)) provisos (Bits#(StoreBufEntry, entrySz));
     return ret;
   endmethod
 
-  method Bool search(Addr addr);
+  method Bool search(Addr paddr);
     Bool ret = False;
     Bit#(TLog#(n)) ptr = deqP;
 
@@ -149,7 +150,7 @@ module mkStoreBuf(StoreBuf#(n)) provisos (Bits#(StoreBufEntry, entrySz));
       Bit#(TAdd#(TLog#(n), 1)) offset = fromInteger(i);
       if (offset < count) begin
         let e = data[ptr];
-        if (coreSameWordAddr(e.addr, addr)) begin
+        if (coreSameWordAddr(e.paddr, paddr)) begin
           ret = True;
         end
       end
@@ -157,7 +158,7 @@ module mkStoreBuf(StoreBuf#(n)) provisos (Bits#(StoreBufEntry, entrySz));
     end
 
     if (enqReq[2] matches tagged Valid .x) begin
-      if (coreSameWordAddr(x.addr, addr)) begin
+      if (coreSameWordAddr(x.paddr, paddr)) begin
         ret = True;
       end
     end
@@ -194,7 +195,7 @@ module mkStoreForwardBuf(StoreForwardBuf#(n)) provisos (Bits#(StoreBufEntry, ent
     end
   endmethod
 
-  method StoreForwardResult forward(Addr addr);
+  method StoreForwardResult forward(Addr paddr);
     StoreForwardResult ret = StoreForwardResult{data: 0, byteEn: 0};
     Bit#(TLog#(n)) ptr = (count == depth) ? enqP : 0;
 
@@ -202,7 +203,7 @@ module mkStoreForwardBuf(StoreForwardBuf#(n)) provisos (Bits#(StoreBufEntry, ent
       Bit#(TAdd#(TLog#(n), 1)) offset = fromInteger(i);
       if (offset < count) begin
         let e = data[ptr];
-        if (valid[ptr] && coreSameWordAddr(e.addr, addr)) begin
+        if (valid[ptr] && coreSameWordAddr(e.paddr, paddr)) begin
           ret.data = coreApplyByteMask(ret.data, e.data, truncate(e.byteEn));
           ret.byteEn = ret.byteEn | e.byteEn;
         end
