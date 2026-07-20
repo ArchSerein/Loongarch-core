@@ -45,9 +45,11 @@ function Action doRenameBody(
     IType iType = dInst.iType;
     Bool brFlag = isBranch(iType);
 
-    RobTag robTag = rob.enqTag;
+    RobToken robToken = rob.enqToken;
+    RobTag robTag = robToken.index;
     rob.enq(RobEntry{
       valid: True,
+      token: robToken,
       state: RobIssued,
       pc: r.pc,
       inst: r.inst,
@@ -86,6 +88,7 @@ function Action doRenameBody(
       pDst: pDst,
       oldPdst: oldPdst,
       robTag: robTag,
+      token: robToken,
       isBranch: brFlag,
       excp: excp
     });

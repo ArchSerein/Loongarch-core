@@ -733,7 +733,7 @@ module mkDCache(DCache);
     bQ.deq;
     dynamicAssert(beat.resp == AxiRespOkay ||
                   beat.resp == AxiRespExOkay, "write resp has fault");
-    if (!squashPending && (r.op == Sc || fenceFlushWait)) begin
+    if (!squashPending) begin
       respQ.enq(DCacheResp{data: r.op == Sc ? scSucc : 0});
     end
     if (r.op == Sc || (r.op == St && llValid && llAddr == r.paddr)) begin

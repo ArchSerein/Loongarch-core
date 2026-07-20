@@ -14,6 +14,21 @@ typedef Bit#(6) PIndx;
 // ROB tag: 32-entry reorder buffer
 typedef Bit#(5) RobTag;
 
+// Speculative epoch: incremented on ROB recovery so reused ROB slots do not
+// match stale asynchronous responses.
+typedef Bit#(4) SpecEpoch;
+
+typedef struct {
+  RobTag    index;
+  SpecEpoch epoch;
+} RobToken deriving(Bits, Eq);
+
+typedef enum {
+  StoreSpeculative,
+  StoreCommitted,
+  StoreIssued
+} StoreState deriving(Bits, Eq);
+
 // ROB entry state
 typedef enum {
   RobIssued,
@@ -31,6 +46,7 @@ typedef struct {
 // Reorder Buffer entry
 typedef struct {
   Bool             valid;
+  RobToken         token;
   RobState         state;
   Addr             pc;
   Instruction      inst;
@@ -67,6 +83,7 @@ typedef struct {
   Data                vk;       // source 2 value
   Maybe#(PIndx)       pDst;     // destination physical register
   RobTag              robTag;   // ROB tag
+  RobToken            token;    // ROB slot + speculative epoch
   Maybe#(Data)        imm;      // immediate
   Addr                pc;       // program counter
   Addr                predPc;   // predicted PC (for branch)
@@ -87,12 +104,15 @@ typedef struct {
   PIndx          pDst;      // destination physical register
   PIndx          oldPdst;   // old destination (for ROB release)
   RobTag         robTag;    // ROB tag
+  RobToken       token;     // ROB slot + speculative epoch
   Bool           isBranch;  // branch flag (needs checkpoint)
   ExcpInfo       excp;      // exception info
 } RenamedInst deriving(Bits, Eq);
 
 // Store Buffer entry (for SQ)
 typedef struct {
+  RobToken  owner;
+  StoreState state;
   Addr      vaddr;
   Addr      paddr;
   Bool      useCache;
@@ -155,6 +175,22 @@ function Bool isMem(IType t);
          t == Cacop || t == Dbar || t == Ibar;
 endfunction
 
+function Bool sameRobToken(RobToken a, RobToken b);
+  return a.index == b.index && a.epoch == b.epoch;
+endfunction
+
+function Bool robTokenYoungerThan(RobToken token, RobToken base, RobTag headTag);
+  Bit#(5) tokenAge = token.index - headTag;
+  Bit#(5) baseAge = base.index - headTag;
+  return token.epoch == base.epoch && tokenAge > baseAge;
+endfunction
+
+function Bool robTokenOlderThan(RobToken token, RobToken base, RobTag headTag);
+  Bit#(5) tokenAge = token.index - headTag;
+  Bit#(5) baseAge = base.index - headTag;
+  return token.epoch != base.epoch || tokenAge < baseAge;
+endfunction
+
 function Bool isAlu(IType t);
   return t == Alu || t == Lu12i || t == Pcaddu12i;
 endfunction
@@ -187,7 +223,7 @@ endfunction
 function RSEntry invalidRSEntry();
   return RSEntry {
     valid: False, iType: ?, aluFunc: ?, muldivFunc: ?, brFunc: ?,
-    qj: ?, qk: ?, vj: ?, vk: ?, pDst: ?, robTag: ?,
+    qj: ?, qk: ?, vj: ?, vk: ?, pDst: ?, robTag: ?, token: ?,
     imm: ?, pc: ?, predPc: ?, mask: ?, cacheOp: ?, isStore: ?, isLoad: ?
   };
 endfunction

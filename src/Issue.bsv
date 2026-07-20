@@ -49,7 +49,7 @@ function Action doIssueALUBody(
 );
   action
     aluExecEntry <= entry;
-    aluRS.remove(entry.robTag);
+    aluRS.remove(entry.token);
     aluBusy <= True;
   endaction
 endfunction
@@ -69,6 +69,7 @@ function Action doExecALUBody(
     ResStation#(16) aluRS,
     ResStation#(4) muldivRS,
     ResStation#(16) memRS,
+    StoreBuf#(16) storeBuf,
     Reg#(Bool) if2WaitRefill,
     RAT rat,
     FreeList freeList,
@@ -97,8 +98,8 @@ function Action doExecALUBody(
     end
 
     // Update ROB
-    rob.updateALU(entry.robTag, RobCompleted);
-    rob.updateBranch(entry.robTag, eInst.mispredict, eInst.targetAddr);
+    rob.updateALU(entry.token, RobCompleted);
+    rob.updateBranch(entry.token, eInst.mispredict, eInst.targetAddr);
 
     // Train the predictor for every resolved control-flow instruction.
     // Misprediction only controls recovery; correct predictions must still
@@ -135,6 +136,7 @@ function Action doExecALUBody(
       aluRS.flushAfter(entry.robTag, rob.headTag);
       muldivRS.flushAfter(entry.robTag, rob.headTag);
       memRS.flushAfter(entry.robTag, rob.headTag);
+      storeBuf.flushAfter(entry.token, rob.headTag);
       if2WaitRefill <= False;
       rob.flushAfter(entry.robTag);
       rat.restore(entry.robTag);
@@ -157,7 +159,7 @@ function Action doIssueMulBody(
     Bool is_signed = (mdFunc == MulW || mdFunc == MulhW);
     mulUnit.start(is_signed, entry.vj, entry.vk);
     mulExecEntry <= entry;
-    muldivRS.remove(entry.robTag);
+    muldivRS.remove(entry.token);
     mulInFlight <= True;
   endaction
 endfunction
@@ -175,7 +177,7 @@ function Action doIssueDivBody(
     Bool is_signed = (mdFunc == DivW || mdFunc == ModW);
     divUnit.start(is_signed, entry.vj, entry.vk);
     divExecEntry <= entry;
-    muldivRS.remove(entry.robTag);
+    muldivRS.remove(entry.token);
     divInFlight <= True;
   endaction
 endfunction
@@ -200,9 +202,9 @@ function Action doIssueMemBody(
     ExcpInfo excp = checkMemHasExcp(entry.mask, vaddr, mkNoExcp);
 
     if (excp.valid) begin
-      rob.updateExcp(entry.robTag, excp);
-      rob.updateMem(entry.robTag, RobCompleted);
-      memRS.remove(entry.robTag);
+      rob.updateExcp(entry.token, excp);
+      rob.updateMem(entry.token, RobCompleted);
+      memRS.remove(entry.token);
     end else if (entry.iType == Ibar) begin
       iCache.invalidate;
       memExecEntry <= entry;

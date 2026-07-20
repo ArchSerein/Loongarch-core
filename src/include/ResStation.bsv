@@ -18,7 +18,7 @@ interface ResStation#(numeric type size);
   method Maybe#(RSEntry) selectOldestReadyFrom(RobTag headTag);
   method Maybe#(RSEntry) selectOldestReadyForAlu(RobTag headTag, Bool headValid);
   method Bool hasOlderStore(RobTag tag, RobTag headTag);
-  method Action remove(RobTag tag);      // remove issued entry
+  method Action remove(RobToken token);  // remove issued entry
   method Action flushAfter(RobTag tag, RobTag headTag); // invalidate younger entries
   method Action clear;                   // full reset
 endinterface
@@ -34,7 +34,7 @@ module mkResStation(ResStation#(size))
   Reg#(Bit#(TAdd#(TLog#(size), 1))) count <- mkReg(0);
 
   Wire#(Maybe#(RSEntry)) enqReq  <- mkDWire(tagged Invalid);
-  Wire#(Maybe#(RobTag)) removeReq <- mkDWire(tagged Invalid);
+  Wire#(Maybe#(RobToken)) removeReq <- mkDWire(tagged Invalid);
   Wire#(Vector#(4, CDBMessage)) cdbReq <-
     mkDWire(replicate(CDBMessage{tag: 0, value: 0, valid: False}));
   // Commit-stage wakeup: CSR/rdtime results are written to the PRF at commit,
@@ -100,10 +100,10 @@ module mkResStation(ResStation#(size))
 
       // Find remove position
       Maybe#(Bit#(TLog#(size))) removePos = tagged Invalid;
-      if (removeReq matches tagged Valid .tag) begin
+      if (removeReq matches tagged Valid .token) begin
         for (Integer i = 0; i < valueOf(size); i = i + 1) begin
           Bit#(TLog#(size)) idx = fromInteger(i);
-          if (entries[idx].valid && entries[idx].robTag == tag) begin
+          if (entries[idx].valid && sameRobToken(entries[idx].token, token)) begin
             removePos = tagged Valid idx;
           end
         end
@@ -202,7 +202,7 @@ module mkResStation(ResStation#(size))
               entries[idx] <= RSEntry {
                 valid: True, iType: e.iType, aluFunc: e.aluFunc, muldivFunc: e.muldivFunc,
                 brFunc: e.brFunc, qj: newQj, qk: newQk, vj: newVj, vk: newVk,
-                pDst: e.pDst, robTag: e.robTag, imm: e.imm, pc: e.pc, predPc: e.predPc,
+                pDst: e.pDst, robTag: e.robTag, token: e.token, imm: e.imm, pc: e.pc, predPc: e.predPc,
                 mask: e.mask, cacheOp: e.cacheOp, isStore: e.isStore, isLoad: e.isLoad
               };
             end
@@ -314,8 +314,8 @@ module mkResStation(ResStation#(size))
     return ret;
   endmethod
 
-  method Action remove(RobTag tag);
-    removeReq <= tagged Valid tag;
+  method Action remove(RobToken token);
+    removeReq <= tagged Valid token;
   endmethod
 
   method Action flushAfter(RobTag tag, RobTag headTag);

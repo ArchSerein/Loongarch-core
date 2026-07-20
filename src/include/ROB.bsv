@@ -12,6 +12,8 @@ import OoOTypes::*;
 
 interface ROB;
   method RobTag enqTag;              // next tag to assign (tail)
+  method RobToken enqToken;          // next dynamic instruction token
+  method SpecEpoch currentEpoch;     // current speculative epoch
   method Action enq(RobEntry e);     // insert at tail
   method RobEntry head;              // peek head entry (CM)
   method RobTag headTag;             // current head tag
@@ -19,13 +21,14 @@ interface ROB;
   method Action deq;                 // advance head (CM)
   method Bool headValid;             // head slot occupied
   method Bool notFull;               // space available
-  method Action updateALU(RobTag tag, RobState state);
-  method Action updateMul(RobTag tag, RobState state);
-  method Action updateDiv(RobTag tag, RobState state);
-  method Action updateMem(RobTag tag, RobState state);
-  method Action updateExcp(RobTag tag, ExcpInfo excp);
-  method Action updateBranch(RobTag tag, Bool mispred, Addr target);
-  method Action updateMemInfo(RobTag tag, Addr vaddr, Addr paddr, Bool useCache, Maybe#(ByteMask) mask);
+  method Action updateALU(RobToken token, RobState state);
+  method Action updateMul(RobToken token, RobState state);
+  method Action updateDiv(RobToken token, RobState state);
+  method Action updateMem(RobToken token, RobState state);
+  method Action updateExcp(RobToken token, ExcpInfo excp);
+  method Action updateBranch(RobToken token, Bool mispred, Addr target);
+  method Action updateMemInfo(RobToken token, Addr vaddr, Addr paddr, Bool useCache, Maybe#(ByteMask) mask);
+  method Bool tokenAlive(RobToken token);
   method Action flushAfter(RobTag tag);  // invalidate entries after tag
   method Action clear;               // full reset
 endinterface
@@ -35,16 +38,17 @@ module mkROB(ROB);
   Reg#(Bit#(5)) headPtr <- mkReg(0);
   Reg#(Bit#(5)) tail <- mkReg(0);
   Reg#(Bit#(6)) count <- mkReg(0);
+  Reg#(SpecEpoch) epoch <- mkReg(0);
 
   Wire#(Maybe#(RobEntry)) enqReq <- mkDWire(tagged Invalid);
   Wire#(Bool) deqReq <- mkDWire(False);
   // Each execution pipeline has an independent ROB completion port.  A single
   // DWire here would serialize otherwise independent writebacks.
-  Vector#(4, Wire#(Maybe#(Tuple2#(RobTag, RobState)))) updateReqs <-
+  Vector#(4, Wire#(Maybe#(Tuple2#(RobToken, RobState)))) updateReqs <-
     replicateM(mkDWire(tagged Invalid));
-  Wire#(Maybe#(Tuple2#(RobTag, ExcpInfo))) updateExcpReq <- mkDWire(tagged Invalid);
-  Wire#(Maybe#(Tuple3#(RobTag, Bool, Addr))) updateBranchReq <- mkDWire(tagged Invalid);
-  Wire#(Maybe#(Tuple5#(RobTag, Addr, Addr, Bool, Maybe#(ByteMask)))) updateMemInfoReq <- mkDWire(tagged Invalid);
+  Wire#(Maybe#(Tuple2#(RobToken, ExcpInfo))) updateExcpReq <- mkDWire(tagged Invalid);
+  Wire#(Maybe#(Tuple3#(RobToken, Bool, Addr))) updateBranchReq <- mkDWire(tagged Invalid);
+  Wire#(Maybe#(Tuple5#(RobToken, Addr, Addr, Bool, Maybe#(ByteMask)))) updateMemInfoReq <- mkDWire(tagged Invalid);
   Wire#(Maybe#(RobTag)) flushReq <- mkDWire(tagged Invalid);
   Wire#(Bool) clearReq <- mkDWire(False);
 
@@ -55,9 +59,15 @@ module mkROB(ROB);
     return (ptr == maxIndex) ? 0 : ptr + 1;
   endfunction
 
+  function Bool tagInWindow(RobTag tag);
+    Bit#(5) age = tag - headPtr;
+    return zeroExtend(age) < count;
+  endfunction
+
   function RobEntry invalidRobEntry;
     return RobEntry {
-      valid: False, state: RobIssued, pc: 0, inst: 0,
+      valid: False, token: RobToken{index: 0, epoch: 0},
+      state: RobIssued, pc: 0, inst: 0,
       pDst: tagged Invalid, oldPdst: tagged Invalid, dst: tagged Invalid,
       pSrc1: 0, pSrc2: 0, iType: Alu,
       excp: ExcpInfo{valid: False, ecode: 0, esubcode: 0, badv: 0},
@@ -97,21 +107,25 @@ module mkROB(ROB);
         Bool modified = False;
 
         for (Integer p = 0; p < 4; p = p + 1) begin
-          if (updateReqs[p] matches tagged Valid .req &&& tpl_1(req) == idx) begin
+          if (updateReqs[p] matches tagged Valid .req &&& tpl_1(req).index == idx &&
+              e.valid && sameRobToken(e.token, tpl_1(req))) begin
             newState = tpl_2(req);
             modified = True;
           end
         end
-        if (updateExcpReq matches tagged Valid .req &&& tpl_1(req) == idx) begin
+        if (updateExcpReq matches tagged Valid .req &&& tpl_1(req).index == idx &&
+            e.valid && sameRobToken(e.token, tpl_1(req))) begin
           newExcp = tpl_2(req);
           modified = True;
         end
-        if (updateBranchReq matches tagged Valid .req &&& tpl_1(req) == idx) begin
+        if (updateBranchReq matches tagged Valid .req &&& tpl_1(req).index == idx &&
+            e.valid && sameRobToken(e.token, tpl_1(req))) begin
           newMispredict = tpl_2(req);
           newCorrectTarget = tpl_3(req);
           modified = True;
         end
-        if (updateMemInfoReq matches tagged Valid .req &&& tpl_1(req) == idx) begin
+        if (updateMemInfoReq matches tagged Valid .req &&& tpl_1(req).index == idx &&
+            e.valid && sameRobToken(e.token, tpl_1(req))) begin
           newMemVaddr = tpl_2(req);
           newMemPaddr = tpl_3(req);
           newMemUseCache = tpl_4(req);
@@ -121,7 +135,7 @@ module mkROB(ROB);
 
         if (modified) begin
           entries[idx] <= RobEntry {
-            valid: e.valid, state: newState, pc: e.pc, inst: e.inst,
+            valid: e.valid, token: e.token, state: newState, pc: e.pc, inst: e.inst,
             pDst: e.pDst, oldPdst: e.oldPdst,
             dst: e.dst,
             pSrc1: e.pSrc1, pSrc2: e.pSrc2,
@@ -141,12 +155,14 @@ module mkROB(ROB);
       headPtr <= 0;
       tail <= 0;
       count <= 0;
+      epoch <= epoch + 1;
     end else if (doFlush) begin
       let tag = fromMaybe(?, flushReq);
       Bit#(5) effectiveHead = doDeq ? nextPtr(headPtr) : headPtr;
       tail <= nextPtr(tag);
       headPtr <= effectiveHead;
       count <= zeroExtend(tag - headPtr) + (doDeq ? 0 : 1);
+      epoch <= epoch + 1;
     end else begin
       Bit#(5) nextHead = headPtr;
       Bit#(5) nextTail = tail;
@@ -168,6 +184,8 @@ module mkROB(ROB);
   endrule
 
   method RobTag enqTag = tail;
+  method RobToken enqToken = RobToken{index: tail, epoch: epoch};
+  method SpecEpoch currentEpoch = epoch;
   method Bool notFull = count != depth;
   method Bool headValid = count != 0;
 
@@ -189,32 +207,37 @@ module mkROB(ROB);
     deqReq <= True;
   endmethod
 
-  method Action updateALU(RobTag tag, RobState state);
-    updateReqs[0] <= tagged Valid tuple2(tag, state);
+  method Action updateALU(RobToken token, RobState state);
+    updateReqs[0] <= tagged Valid tuple2(token, state);
   endmethod
 
-  method Action updateMul(RobTag tag, RobState state);
-    updateReqs[1] <= tagged Valid tuple2(tag, state);
+  method Action updateMul(RobToken token, RobState state);
+    updateReqs[1] <= tagged Valid tuple2(token, state);
   endmethod
 
-  method Action updateDiv(RobTag tag, RobState state);
-    updateReqs[2] <= tagged Valid tuple2(tag, state);
+  method Action updateDiv(RobToken token, RobState state);
+    updateReqs[2] <= tagged Valid tuple2(token, state);
   endmethod
 
-  method Action updateMem(RobTag tag, RobState state);
-    updateReqs[3] <= tagged Valid tuple2(tag, state);
+  method Action updateMem(RobToken token, RobState state);
+    updateReqs[3] <= tagged Valid tuple2(token, state);
   endmethod
 
-  method Action updateExcp(RobTag tag, ExcpInfo excp);
-    updateExcpReq <= tagged Valid tuple2(tag, excp);
+  method Action updateExcp(RobToken token, ExcpInfo excp);
+    updateExcpReq <= tagged Valid tuple2(token, excp);
   endmethod
 
-  method Action updateBranch(RobTag tag, Bool mispred, Addr target);
-    updateBranchReq <= tagged Valid tuple3(tag, mispred, target);
+  method Action updateBranch(RobToken token, Bool mispred, Addr target);
+    updateBranchReq <= tagged Valid tuple3(token, mispred, target);
   endmethod
 
-  method Action updateMemInfo(RobTag tag, Addr vaddr, Addr paddr, Bool useCache, Maybe#(ByteMask) mask);
-    updateMemInfoReq <= tagged Valid tuple5(tag, vaddr, paddr, useCache, mask);
+  method Action updateMemInfo(RobToken token, Addr vaddr, Addr paddr, Bool useCache, Maybe#(ByteMask) mask);
+    updateMemInfoReq <= tagged Valid tuple5(token, vaddr, paddr, useCache, mask);
+  endmethod
+
+  method Bool tokenAlive(RobToken token);
+    return count != 0 && tagInWindow(token.index) && entries[token.index].valid &&
+           sameRobToken(entries[token.index].token, token);
   endmethod
 
   method Action flushAfter(RobTag tag);

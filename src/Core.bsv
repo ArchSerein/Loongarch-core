@@ -300,14 +300,14 @@ module mkCore(Core);
   rule doExecALUBranch (commitState != CommitInterruptReady && aluBusy && aluBranchBusy);
     doExecALUBody(aluExecEntry, aluBusy, cdb, rob, pcReg[1], iCache, tlb,
       f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo, aluRS, muldivRS, memRS,
-      if2WaitRefill, rat, freeList, branchPred);
+      storeBuf, if2WaitRefill, rat, freeList, branchPred);
     aluBranchBusy <= False;
   endrule
 
   rule doExecALUNonBranch (commitState != CommitInterruptReady && aluBusy && !aluBranchBusy);
     doExecALUBody(aluExecEntry, aluBusy, cdb, rob, pcReg[1], iCache, tlb,
       f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo, aluRS, muldivRS, memRS,
-      if2WaitRefill, rat, freeList, branchPred);
+      storeBuf, if2WaitRefill, rat, freeList, branchPred);
     aluBranchBusy <= False;
   endrule
 
@@ -329,11 +329,11 @@ module mkCore(Core);
     doIssueDivBody(entry, divUnit, divExecEntry, muldivRS, divInFlight);
   endrule
 
-  rule doCollectMul (commitState != CommitInterruptReady && mulInFlight && mulUnit.finish);
+  rule doCollectMul (commitState != CommitInterruptReady && !aluBranchBusy && mulInFlight && mulUnit.finish);
     doCollectMulBody(mulInFlight, mulExecEntry, mulUnit, cdb, rob);
   endrule
 
-  rule doCollectDiv (commitState != CommitInterruptReady && divInFlight && divUnit.finish);
+  rule doCollectDiv (commitState != CommitInterruptReady && !aluBranchBusy && divInFlight && divUnit.finish);
     doCollectDivBody(divInFlight, divExecEntry, divUnit, cdb, rob);
   endrule
 
@@ -342,7 +342,9 @@ module mkCore(Core);
   // ============================================================
   Reg#(Bool) memNeedTlb <- mkReg(False);
 
-  rule doIssueMem (commitState == CommitIdle && memState == MemIdle && !isCsrTlbSpecial(rob.headIType) &&&
+  rule doIssueMem (commitState == CommitIdle && memState == MemIdle && !storeBuf.hasPendingDrain &&
+      !(rob.headValid && rob.head.iType == St && rob.head.state == RobCompleted) &&
+      !isCsrTlbSpecial(rob.headIType) &&&
       memRS.selectOldestReadyFrom(rob.headTag) matches tagged Valid .entry &&&
       // Only ordinary loads may execute away from the ROB head.  Stores,
       // LL/SC, barriers and cache maintenance have architectural side
@@ -355,33 +357,60 @@ module mkCore(Core);
       memState, csrf, tlb, iCache, rob, memRS, storeBuf);
   endrule
 
-  rule doCollectMemTLB (commitState != CommitInterruptReady && memState == MemTLBWait && memNeedTlb);
+  rule doCollectMemTLB (commitState != CommitInterruptReady && !aluBranchBusy && memState == MemTLBWait && memNeedTlb);
     doCollectMemTLBBody(memState, memExecEntry, memVaddr,
-      memPaddr, memForward, csrf, tlb, iCache, dCache, rob, memRS, storeBuf, committedStoreBuf);
+      memPaddr, memForward, csrf, tlb, iCache, dCache, rob, memRS, storeBuf);
   endrule
 
-  rule doCollectMemDirect (commitState != CommitInterruptReady && memState == MemTLBWait && !memNeedTlb);
+  rule doCollectMemDirect (commitState != CommitInterruptReady && !aluBranchBusy && memState == MemTLBWait && !memNeedTlb);
     doCollectMemDirectBody(memState, memExecEntry, memVaddr, memPaddr,
-      memForward, csrf, iCache, dCache, rob, memRS, storeBuf, committedStoreBuf);
+      memForward, csrf, iCache, dCache, rob, memRS, storeBuf);
+  endrule
+
+  rule cancelDeadMemUncache (commitState != CommitInterruptReady && memState == MemUncacheWait &&
+      !rob.tokenAlive(memExecEntry.token));
+    memState <= MemIdle;
   endrule
 
   rule doIssueMemUncache (commitState != CommitInterruptReady && memState == MemUncacheWait &&
-      memExecEntry.robTag == rob.headTag);
+      rob.tokenAlive(memExecEntry.token) && memExecEntry.robTag == rob.headTag && !storeBuf.hasPendingDrain);
     doIssueMemUncacheBody(memState, memExecEntry, memVaddr, memPaddr,
-      memForward, dCache, storeBuf, committedStoreBuf);
+      memForward, dCache, storeBuf, rob.headTag);
   endrule
 
-  rule doCollectMemCache (commitState != CommitInterruptReady && memState == MemCacheWait);
+  rule doCollectMemCache (commitState != CommitInterruptReady && !aluBranchBusy && memState == MemCacheWait &&
+      !storeBuf.firstIssuedUncache);
     doCollectMemCacheBody(memState, memExecEntry, memVaddr, memPaddr,
-      memForward, dCache, cdb, rob, memRS, committedStoreBuf);
+      memForward, dCache, cdb, rob, memRS);
   endrule
 
-  rule doCollectMemCacopI (commitState != CommitInterruptReady && memState == MemCacopIWait);
+  rule doCollectMemCacopI (commitState != CommitInterruptReady && !aluBranchBusy && memState == MemCacopIWait);
     doCollectMemCacopIBody(memState, memExecEntry, iCache, rob, memRS);
   endrule
 
-  rule doCollectMemIbar (commitState != CommitInterruptReady && memState == MemIbarWait);
+  rule doCollectMemIbar (commitState != CommitInterruptReady && !aluBranchBusy && memState == MemIbarWait);
     doCollectMemIbarBody(memState, memExecEntry, iCache, rob, memRS);
+  endrule
+
+  rule drainCommittedStore (commitState != CommitInterruptReady && memState == MemIdle &&
+      storeBuf.notEmpty && storeBuf.first.state == StoreCommitted);
+    let e = storeBuf.first;
+    dCache.req(MemReq{
+      op: St, addr: e.vaddr, paddr: e.paddr, useCache: e.useCache,
+      data: e.data, byteEn: truncate(e.byteEn),
+      size: memByteEnToAxiSize(truncate(e.byteEn)), cacheOp: 5'b0
+    });
+    if (e.useCache) begin
+      storeBuf.deq;
+    end else begin
+      storeBuf.markIssued(e.owner);
+    end
+  endrule
+
+  rule completeIssuedUncacheStore (commitState == CommitIdle &&
+      storeBuf.notEmpty && storeBuf.first.state == StoreIssued && !storeBuf.first.useCache);
+    let done <- dCache.resp;
+    storeBuf.complete(storeBuf.first.owner);
   endrule
 
   // ============================================================

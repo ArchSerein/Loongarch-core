@@ -237,8 +237,9 @@ function Action doCommitFlushAndRestore(
     iCache.squash;
     tlb.squashReq;
     tlb.squashFetchLookup;
-    tlb.squashDataLookup;
-    dCache.squash(clearLl);
+    if (clearLl) begin
+      dCache.clearReservation;
+    end
     if2WaitRefill <= False;
     f1f2Fifo.clear;
     f2dFifo.clear;
@@ -247,14 +248,16 @@ function Action doCommitFlushAndRestore(
     aluRS.clear;
     muldivRS.clear;
     memRS.clear;
-    storeBuf.clear;
+    storeBuf.clearSpeculative;
     rob.clear;
     rat.restoreFromRetirement;
     freeList.restoreFromRetRAT(rat.allRetRAT);
     aluBusy <= False;
     mulInFlight <= False;
     divInFlight <= False;
-    memState <= MemIdle;
+    if (memState == MemUncacheWait) begin
+      memState <= MemIdle;
+    end
   endaction
 endfunction
 
@@ -727,7 +730,7 @@ function ActionValue#(CommitNormalResult) doCommitNormalSharedAction(
         aluRS.clear;
         muldivRS.clear;
         memRS.clear;
-        storeBuf.clear;
+        storeBuf.clearSpeculative;
         rob.clear;
         // The no-reclaim wrapper intentionally has no FreeList parameter, so
         // this IBAR flush keeps FreeList methods out of the no-reclaim rule.
@@ -735,19 +738,15 @@ function ActionValue#(CommitNormalResult) doCommitNormalSharedAction(
         aluBusy <= False;
         mulInFlight <= False;
         divInFlight <= False;
-        memState <= MemIdle;
+        if (memState == MemUncacheWait) begin
+          memState <= MemIdle;
+        end
       end
       if (head.iType == St) begin
-        commitStoreEntry = storeBuf.first;
-        storeBuf.deq;
-        committedStoreBuf.enq(commitStoreEntry);
-        dCache.req(MemReq{
-          op: St, addr: commitStoreEntry.vaddr, paddr: commitStoreEntry.paddr,
-          useCache: head.memUseCache,
-          data: commitStoreEntry.data, byteEn: truncate(commitStoreEntry.byteEn),
-          size: memByteEnToAxiSize(truncate(commitStoreEntry.byteEn)),
-          cacheOp: 5'b0
-        });
+        if (storeBuf.lookupEntry(head.token) matches tagged Valid .s) begin
+          commitStoreEntry = s;
+        end
+        storeBuf.commit(head.token);
       end
 
       Bool wen = False;

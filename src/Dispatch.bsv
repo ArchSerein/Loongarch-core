@@ -26,7 +26,7 @@ function Action doDispatchAluBody(
       qk: src2Ready ? tagged Invalid : tagged Valid rInst.pSrc2,
       vj: prf.rd1(rInst.pSrc1), vk: prf.rd2(rInst.pSrc2),
       pDst: (rInst.pDst == 0) ? tagged Invalid : tagged Valid rInst.pDst,
-      robTag: rInst.robTag,
+      robTag: rInst.robTag, token: rInst.token,
       imm: rInst.dInst.imm, pc: rInst.pc, predPc: rInst.predPc,
       mask: rInst.dInst.mask, cacheOp: rInst.dInst.cacheOp,
       isStore: False, isLoad: False
@@ -53,7 +53,7 @@ function Action doDispatchMulDivBody(
       qk: src2Ready ? tagged Invalid : tagged Valid rInst.pSrc2,
       vj: prf.rd1(rInst.pSrc1), vk: prf.rd2(rInst.pSrc2),
       pDst: (rInst.pDst == 0) ? tagged Invalid : tagged Valid rInst.pDst,
-      robTag: rInst.robTag,
+      robTag: rInst.robTag, token: rInst.token,
       imm: rInst.dInst.imm, pc: rInst.pc, predPc: rInst.predPc,
       mask: rInst.dInst.mask, cacheOp: rInst.dInst.cacheOp,
       isStore: False, isLoad: False
@@ -80,7 +80,7 @@ function Action doDispatchMemBody(
       qk: prf.isReady2(rInst.pSrc2) ? tagged Invalid : tagged Valid rInst.pSrc2,
       vj: prf.rd1(rInst.pSrc1), vk: prf.rd2(rInst.pSrc2),
       pDst: (rInst.pDst == 0) ? tagged Invalid : tagged Valid rInst.pDst,
-      robTag: rInst.robTag,
+      robTag: rInst.robTag, token: rInst.token,
       imm: rInst.dInst.imm, pc: rInst.pc, predPc: rInst.predPc,
       mask: rInst.dInst.mask, cacheOp: rInst.dInst.cacheOp,
       isStore: isSt, isLoad: isLd
