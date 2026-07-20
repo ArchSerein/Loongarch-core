@@ -30,6 +30,7 @@ module mkResStation(ResStation#(size))
   );
 
   Vector#(size, Reg#(RSEntry)) entries <- replicateM(mkRegU);
+  Reg#(Bit#(size)) validMask <- mkReg(0);
   Reg#(Bit#(TLog#(size))) enqP <- mkReg(0);
   Reg#(Bit#(TAdd#(TLog#(size), 1))) count <- mkReg(0);
 
@@ -55,46 +56,26 @@ module mkResStation(ResStation#(size))
   (* no_implicit_conditions *)
   rule canonicalize;
     if (clearReq) begin
+      validMask <= 0;
       enqP <= 0;
       count <= 0;
-      for (Integer i = 0; i < valueOf(size); i = i + 1) begin
-        entries[fromInteger(i)] <= invalidRSEntry;
-      end
     end else if (flushReq matches tagged Valid .req) begin
       RobTag tag = tpl_1(req);
       RobTag headTag = tpl_2(req);
       Bit#(5) flushAge = tag - headTag;
       Bit#(size) keepMask = 0;
-      Bit#(size) flushMask = 0;
 
       // Every comparison is independent; the loop elaborates into parallel
-      // per-entry subtract/compare logic and produces two bit masks.
+      // per-entry subtract/compare logic and produces the retained-valid mask.
       for (Integer i = 0; i < valueOf(size); i = i + 1) begin
         RSEntry e = entries[fromInteger(i)];
         Bit#(5) entryAge = e.robTag - headTag;
-        Bool isYounger = e.valid && entryAge > flushAge;
-        keepMask[i] = pack(e.valid && !isYounger);
-        flushMask[i] = pack(isYounger);
+        Bool keep = validMask[i] == 1 && entryAge <= flushAge;
+        keepMask[i] = pack(keep);
       end
 
-      // Entry updates are driven directly by the flush mask.
-      for (Integer i = 0; i < valueOf(size); i = i + 1) begin
-        if (flushMask[i] == 1) begin
-          entries[fromInteger(i)] <= invalidRSEntry;
-        end
-      end
-
-      // countOnes is implemented as a balanced population-count tree.
+      validMask <= keepMask;
       count <= pack(countOnes(keepMask));
-
-      // Allocation does not require age ordering: choose the lowest-indexed
-      // free slot with a standard priority encoder.
-      Bit#(size) freeMask = ~keepMask;
-      if (freeMask != 0) begin
-        enqP <= truncate(pack(countZerosLSB(freeMask)));
-      end else begin
-        enqP <= 0;
-      end
     end else begin
       // Normal operation: CDB wakeup + enq + remove
 
@@ -103,7 +84,7 @@ module mkResStation(ResStation#(size))
       if (removeReq matches tagged Valid .token) begin
         for (Integer i = 0; i < valueOf(size); i = i + 1) begin
           Bit#(TLog#(size)) idx = fromInteger(i);
-          if (entries[idx].valid && sameRobToken(entries[idx].token, token)) begin
+          if (validMask[idx] == 1 && sameRobToken(entries[idx].token, token)) begin
             removePos = tagged Valid idx;
           end
         end
@@ -116,7 +97,7 @@ module mkResStation(ResStation#(size))
       if (hasEnq) begin
         for (Integer i = 0; i < valueOf(size); i = i + 1) begin
           Bit#(TLog#(size)) idx = enqP + fromInteger(i);
-          if (!isValid(allocPos) && !entries[idx].valid) begin
+          if (!isValid(allocPos) && validMask[idx] == 0) begin
             allocPos = tagged Valid idx;
           end
         end
@@ -157,13 +138,10 @@ module mkResStation(ResStation#(size))
         if (allocPos matches tagged Valid .ap &&& ap == idx) begin
           // Enq writes to the first free CAM slot found from enqP.
           entries[idx] <= enqEntry;
-        end else if (removePos matches tagged Valid .rp &&& rp == idx) begin
-          // Remove invalidates this entry
-          entries[idx] <= invalidRSEntry;
         end else begin
           // CDB / commit-stage wakeup: clear dependencies and capture values
           RSEntry e = entries[idx];
-          if (e.valid) begin
+          if (validMask[idx] == 1) begin
             Maybe#(PIndx) newQj = e.qj;
             Maybe#(PIndx) newQk = e.qk;
             Data newVj = e.vj;
@@ -210,16 +188,20 @@ module mkResStation(ResStation#(size))
         end
       end
 
-      // Update pointers and count
+      // Update validity, pointers, and count
+      Bit#(size) nextValidMask = validMask;
       Bit#(TLog#(size)) nextEnqP = enqP;
       Bit#(TAdd#(TLog#(size), 1)) nextCount = count;
       if (allocPos matches tagged Valid .ap) begin
+        nextValidMask[ap] = 1;
         nextEnqP = nextPtr(ap);
         nextCount = nextCount + 1;
       end
-      if (isValid(removePos)) begin
+      if (removePos matches tagged Valid .rp) begin
+        nextValidMask[rp] = 0;
         nextCount = nextCount - 1;
       end
+      validMask <= nextValidMask;
       enqP <= nextEnqP;
       count <= nextCount;
     end
@@ -237,7 +219,7 @@ module mkResStation(ResStation#(size))
 
     for (Integer i = 0; i < valueOf(size); i = i + 1) begin
       RSEntry e = entries[fromInteger(i)];
-      if (e.valid && isBranch(e.iType) && headValid && e.robTag == headTag &&
+      if (validMask[i] == 1 && isBranch(e.iType) && headValid && e.robTag == headTag &&
           !isValid(e.qj) && !isValid(e.qk)) begin
         ret = tagged Valid e;
         foundHeadBranch = True;
@@ -250,7 +232,7 @@ module mkResStation(ResStation#(size))
       for (Integer i = 0; i < valueOf(size); i = i + 1) begin
         RSEntry e = entries[fromInteger(i)];
         Bit#(5) entryAge = e.robTag - headTag;
-        if (e.valid && !isBranch(e.iType) && !isValid(e.qj) && !isValid(e.qk) &&
+        if (validMask[i] == 1 && !isBranch(e.iType) && !isValid(e.qj) && !isValid(e.qk) &&
             (!found || entryAge < bestAge)) begin
           ret = tagged Valid e;
           bestAge = entryAge;
@@ -276,7 +258,7 @@ module mkResStation(ResStation#(size))
     for (Integer i = 0; i < valueOf(size); i = i + 1) begin
       Bit#(TLog#(size)) idx = enqP + fromInteger(i);
       RSEntry e = entries[idx];
-      if (!found && e.valid && !isValid(e.qj) && !isValid(e.qk)) begin
+      if (!found && validMask[idx] == 1 && !isValid(e.qj) && !isValid(e.qk)) begin
         ret = tagged Valid e;
         found = True;
       end
@@ -291,7 +273,7 @@ module mkResStation(ResStation#(size))
     for (Integer i = 0; i < valueOf(size); i = i + 1) begin
       RSEntry e = entries[fromInteger(i)];
       Bit#(5) entryAge = e.robTag - headTag;
-      if (e.valid && !isValid(e.qj) && !isValid(e.qk) &&
+      if (validMask[i] == 1 && !isValid(e.qj) && !isValid(e.qk) &&
           (!found || entryAge < bestAge)) begin
         ret = tagged Valid e;
         bestAge = entryAge;
@@ -307,7 +289,7 @@ module mkResStation(ResStation#(size))
     for (Integer i = 0; i < valueOf(size); i = i + 1) begin
       RSEntry e = entries[fromInteger(i)];
       Bit#(5) entryAge = e.robTag - headTag;
-      if (e.valid && e.isStore && e.robTag != tag && entryAge < tagAge) begin
+      if (validMask[i] == 1 && e.isStore && e.robTag != tag && entryAge < tagAge) begin
         ret = True;
       end
     end
