@@ -95,6 +95,7 @@ typedef struct {
 typedef struct {
   Addr      vaddr;
   Addr      paddr;
+  Bool      useCache;
   Data      data;
   ByteMask  byteEn;
 } StoreBufEntry deriving(Bits, Eq);

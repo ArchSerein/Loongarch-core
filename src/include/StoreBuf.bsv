@@ -67,10 +67,11 @@ module mkStoreBuf(StoreBuf#(n)) provisos (Bits#(StoreBufEntry, entrySz));
         if (count != 0 && !oneEntryDrained) begin
           let tailP = prevPtr(enqP);
           let tail = data[tailP];
-          if (coreSameWordAddr(tail.paddr, x.paddr)) begin
+          if (tail.useCache && x.useCache && coreSameWordAddr(tail.paddr, x.paddr)) begin
             data[tailP] <= StoreBufEntry{
               vaddr: tail.vaddr,
               paddr: tail.paddr,
+              useCache: tail.useCache,
               data: coreApplyByteMask(tail.data, x.data, truncate(x.byteEn)),
               byteEn: tail.byteEn | x.byteEn
             };

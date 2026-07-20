@@ -126,7 +126,7 @@ function Action doCollectMemTLBBody(
           ByteMask m = fromMaybe(5'b00000, entry.mask);
           let storePkt = selectStoreData(entry.vk, vaddr[1:0], m[3:0]);
           storeBuf.enq(StoreBufEntry{
-            vaddr: vaddr, paddr: dTrans.pa, data: tpl_2(storePkt),
+            vaddr: vaddr, paddr: dTrans.pa, useCache: memUseCache, data: tpl_2(storePkt),
             byteEn: extend(tpl_1(storePkt))
           });
           rob.updateMemInfo(entry.robTag, vaddr, dTrans.pa, memUseCache, entry.mask);
@@ -202,7 +202,7 @@ function Action doCollectMemDirectBody(
         ByteMask m = fromMaybe(5'b00000, entry.mask);
         let storePkt = selectStoreData(entry.vk, vaddr[1:0], m[3:0]);
         storeBuf.enq(StoreBufEntry{
-          vaddr: vaddr, paddr: paddr, data: tpl_2(storePkt),
+          vaddr: vaddr, paddr: paddr, useCache: memUseCache, data: tpl_2(storePkt),
           byteEn: extend(tpl_1(storePkt))
         });
         rob.updateMemInfo(entry.robTag, vaddr, paddr, memUseCache, entry.mask);
@@ -308,7 +308,7 @@ function Action doCollectMemCacheBody(
         let scStorePkt = selectStoreData(entry.vk, memVaddr[1:0], scMask[3:0]);
         committedStoreBuf.enq(StoreBufEntry{
           vaddr: memVaddr, paddr: memPaddr,
-          data: tpl_2(scStorePkt), byteEn: extend(tpl_1(scStorePkt))
+          useCache: True, data: tpl_2(scStorePkt), byteEn: extend(tpl_1(scStorePkt))
         });
       end
       if (entry.pDst matches tagged Valid .pd) begin
