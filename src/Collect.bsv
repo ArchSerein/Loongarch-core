@@ -170,7 +170,7 @@ function Action doCollectMemTLBBody(
               ByteMask m = fromMaybe(5'b00000, entry.mask);
               let storePkt = selectStoreData(entry.vk, vaddr[1:0], m[3:0]);
               byteEn = tpl_1(storePkt); wData = tpl_2(storePkt); memOp = Sc;
-            end else if (coreIsBarrier(entry.iType)) begin
+            end else if (entry.iType == Dbar) begin
               memOp = Barrier;
             end else if (isCacop) begin
               memOp = Cacop;
@@ -179,7 +179,9 @@ function Action doCollectMemTLBBody(
             memForward <= entry.isLoad ?
               storeBuf.forwardForLoad(entry.token, rob.headTag, dTrans.pa) :
               StoreForwardResult{data: 0, byteEn: 0};
-            rob.updateMemInfo(entry.token, vaddr, dTrans.pa, memUseCache, entry.mask);
+            if (memOp != Barrier) begin
+              rob.updateMemInfo(entry.token, vaddr, dTrans.pa, memUseCache, entry.mask);
+            end
             if (entry.iType == Ld && !memUseCache && entry.robTag != rob.headTag) begin
               memState <= MemUncacheWait;
             end else begin
@@ -241,7 +243,7 @@ function Action doCollectMemDirectBody(
             ByteMask m = fromMaybe(5'b00000, entry.mask);
             let storePkt = selectStoreData(entry.vk, vaddr[1:0], m[3:0]);
             byteEn = tpl_1(storePkt); wData = tpl_2(storePkt); memOp = Sc;
-          end else if (coreIsBarrier(entry.iType)) begin
+          end else if (entry.iType == Dbar) begin
             memOp = Barrier;
           end else if (isCacop) begin
             memOp = Cacop;
@@ -250,7 +252,9 @@ function Action doCollectMemDirectBody(
           memForward <= entry.isLoad ?
             storeBuf.forwardForLoad(entry.token, rob.headTag, paddr) :
             StoreForwardResult{data: 0, byteEn: 0};
-          rob.updateMemInfo(entry.token, vaddr, paddr, memUseCache, entry.mask);
+          if (memOp != Barrier) begin
+            rob.updateMemInfo(entry.token, vaddr, paddr, memUseCache, entry.mask);
+          end
           if (entry.iType == Ld && !memUseCache && entry.robTag != rob.headTag) begin
             memState <= MemUncacheWait;
           end else begin

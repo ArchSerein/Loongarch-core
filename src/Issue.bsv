@@ -197,30 +197,38 @@ function Action doIssueMemBody(
     StoreBuf#(16) storeBuf
 );
   action
-    Data immVal = fromMaybe(0, entry.imm);
-    Addr vaddr = entry.vj + immVal;
-    ExcpInfo excp = checkMemHasExcp(entry.mask, vaddr, mkNoExcp);
-
-    if (excp.valid) begin
-      rob.updateExcp(entry.token, excp);
-      rob.updateMem(entry.token, RobCompleted);
-      memRS.remove(entry.token);
-    end else if (entry.iType == Ibar) begin
+    if (entry.iType == Ibar) begin
       iCache.invalidate;
       memExecEntry <= entry;
       memState <= MemIbarWait;
-    end else begin
+    end else if (entry.iType == Dbar) begin
       memExecEntry <= entry;
-      memVaddr <= vaddr;
-      MmuTranslateType transType = getMmuTranslateType(csrf.crmd);
-      if (transType == Translate) begin
-        tlb.dataLookupReq(vaddr, csrf.asid);
-        memNeedTlb <= True;
-        memState <= MemTLBWait;
+      memVaddr <= 0;
+      memPaddr <= 0;
+      memNeedTlb <= False;
+      memState <= MemTLBWait;
+    end else begin
+      Data immVal = fromMaybe(0, entry.imm);
+      Addr vaddr = entry.vj + immVal;
+      ExcpInfo excp = checkMemHasExcp(entry.mask, vaddr, mkNoExcp);
+
+      if (excp.valid) begin
+        rob.updateExcp(entry.token, excp);
+        rob.updateMem(entry.token, RobCompleted);
+        memRS.remove(entry.token);
       end else begin
-        memPaddr <= vaddr;
-        memNeedTlb <= False;
-        memState <= MemTLBWait;
+        memExecEntry <= entry;
+        memVaddr <= vaddr;
+        MmuTranslateType transType = getMmuTranslateType(csrf.crmd);
+        if (transType == Translate) begin
+          tlb.dataLookupReq(vaddr, csrf.asid);
+          memNeedTlb <= True;
+          memState <= MemTLBWait;
+        end else begin
+          memPaddr <= vaddr;
+          memNeedTlb <= False;
+          memState <= MemTLBWait;
+        end
       end
     end
   endaction

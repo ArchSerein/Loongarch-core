@@ -205,7 +205,6 @@ module mkDCache(DCache);
   Reg#(Bool) llValid <- mkReg(False);
   Reg#(Addr) llAddr <- mkRegU;
   Reg#(Bool) squashPending <- mkReg(False);
-  Reg#(Bool) fenceFlushWait <- mkReg(False);
   Reg#(Bool) cacheMaintWait <- mkReg(False);
   Reg#(DCacheIndex) cacheMaintIdx <- mkRegU;
   Reg#(DCacheWayIdx) cacheMaintWay <- mkRegU;
@@ -423,7 +422,9 @@ module mkDCache(DCache);
     let r = reqQ.first;
     reqQ.deq;
 
-    if (!r.useCache && r.op != Barrier && r.op != Cacop) begin
+    if (r.op == Barrier) begin
+      respQ.enq(DCacheResp{data: 0});
+    end else if (!r.useCache && r.op != Cacop) begin
       if (r.op == Sc && !(llValid && llAddr == r.paddr)) begin
         respQ.enq(DCacheResp{data: scFail});
         llValid <= False;
@@ -450,36 +451,7 @@ module mkDCache(DCache);
     let lines = currentLines(idx);
     let dirtyLine = currentDirties(idx);
 
-    if (r.op == Barrier) begin
-      Bool hit = False;
-      DCacheWayIdx hitWay = 0;
-      for (Integer w = 0; w < valueOf(DCacheWays); w = w + 1) begin
-        if (tagValids[w].valid && tagValids[w].tag == tag) begin
-          hit = True;
-          hitWay = fromInteger(w);
-        end
-      end
-      if (hit && dirtyLine[hitWay]) begin
-        Bit#(DCacheOffsetSz) zeroOff = 0;
-        wbLine <= lines[hitWay];
-        awQ.enq(AxiWriteAddr{
-          addr: { tagValids[hitWay].tag, idx, zeroOff },
-          len: fromInteger(valueOf(DCacheLineWords) - 1),
-          size: 3'd2,
-          burst: AxiBurstIncr
-        });
-        beatIdx <= 0;
-        cacheMaintIdx <= idx;
-        cacheMaintWay <= hitWay;
-        fenceFlushWait <= True;
-        state <= SendWbData;
-      end else begin
-        // Barrier completes immediately if no dirty line needs writeback.
-        respQ.enq(DCacheResp{data: 0});
-        fenceFlushWait <= False;
-        state <= Ready;
-      end
-    end else if (r.op == Cacop) begin
+    if (r.op == Cacop) begin
       doCacopReq(r, tagValids, lines, dirtyLine);
     end else begin
       Bool         hit = False;
@@ -588,15 +560,7 @@ module mkDCache(DCache);
 
   rule doWaitWbResp (state == WaitWbResp && bQ.notEmpty);
     bQ.deq;
-    if (fenceFlushWait) begin
-      writeDirty(cacheMaintIdx, cacheMaintWay, False);
-      fenceFlushWait <= False;
-      if (!squashPending) begin
-        respQ.enq(DCacheResp{data: 0});
-      end
-      squashPending <= False;
-      state <= Ready;
-    end else if (cacheMaintWait) begin
+    if (cacheMaintWait) begin
       writeTagValid(cacheMaintWay, cacheMaintIdx, DCacheTagValid{valid: False, tag: 0});
       writeDirty(cacheMaintIdx, cacheMaintWay, False);
       if (llValid && getDBlockBase(llAddr) == cacheMaintBlockAddr) begin
@@ -738,9 +702,6 @@ module mkDCache(DCache);
     end
     if (r.op == Sc || (r.op == St && llValid && llAddr == r.paddr)) begin
       llValid <= False;
-    end
-    if (fenceFlushWait) begin
-      fenceFlushWait <= False;
     end
     squashPending <= False;
     state <= Ready;
