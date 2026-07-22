@@ -19,6 +19,7 @@ import AxiMem::*;
 import CoreTypes::*;
 import CoreFunc::*;
 import BranchPredictor::*;
+import FrontendFastPathQueue::*;
 import BranchPredTypes::*;
 import OoOTypes::*;
 import PRF::*;
@@ -87,6 +88,20 @@ module mkCore(Core);
   BranchPredictor  branchPred <- mkBranchPredictor;
   TlbArray                tlb <- mkTlb;
 
+  FastPathQueue         fastQ <- mkFastPathQueue;
+  Reg#(Addr)        fastGenPc <- mkReg(startpc);
+  Reg#(FrontendEpoch) frontendEpoch <- mkReg(0);
+
+  Reg#(Bool)          accBusy <- mkReg(False);
+  Reg#(FastPathQSeq) accReqSeq <- mkReg(0);
+  Reg#(FrontendEpoch) accReqEpoch <- mkReg(0);
+  Reg#(Addr)         accReqPc <- mkRegU;
+  Reg#(Addr) accReqFastPredPc <- mkRegU;
+  Reg#(Bool)   accReqObsolete <- mkReg(False);
+
+  Reg#(Bool) fetchInflightValid <- mkReg(False);
+  Reg#(FetchInflight) fetchInflight <- mkRegU;
+
   // Execution state
   Reg#(Bool)         aluBusy <- mkReg(False);
   Reg#(Bool)   aluBranchBusy <- mkReg(False);
@@ -116,7 +131,6 @@ module mkCore(Core);
 
   // I-Cache miss tracking
   Reg#(Bool)        if2WaitRefill <- mkReg(False);
-  Reg#(F1toF2)       if2PendingReq <- mkRegU;
   Reg#(Addr)         if2MissPaddr  <- mkRegU;
 
   // Pipeline FIFOs
@@ -126,7 +140,7 @@ module mkCore(Core);
   Fifo#(2, RenamedInst)   rn2diFifo <- mkCFFifo;
 
 `ifdef CONFIG_TRACE_PERFORMANCE
-  rule countFetchStall (!idleLock && (if2WaitRefill || f1f2Fifo.notEmpty));
+  rule countFetchStall (!idleLock && if2WaitRefill);
     perf_fetch_stall_cycle();
     perf_icache_miss_cycle();
   endrule
@@ -162,55 +176,108 @@ module mkCore(Core);
 `endif
 
   // ============================================================
-  // IF1 Stage (unchanged)
+  // Frontend fast-path queue, accurate cursor, and fetch engine
   // ============================================================
   rule releaseIdleOnInterrupt (idleLock && csrf.interruptDetected.valid);
     idleLock <= False;
   endrule
 
-  rule doIF1NoFetchTlb (commitState != CommitInterruptReady && !idleLock && !if2WaitRefill && !f1f2Fifo.notEmpty &&
-      getMmuTranslateType(csrf.crmd) != Translate);
-    doIF1Body(pcReg[0], csrf.crmd, csrf.asid, csrf.dmw0, csrf.dmw1, getMmuTranslateType(csrf.crmd),
-              branchPred, iCache, f1f2Fifo, pcReg[0]);
+  rule doFrontendAccurateComplete (branchPred.accurateReady);
+    let accResult <- branchPred.getAccurateResult;
+    Bool validReq = accBusy && accReqEpoch == frontendEpoch &&
+      !accReqObsolete && accReqSeq == fastQ.accSeqValue;
+
+    if (validReq) begin
+      Addr actual = refinedNextPc(accResult, accReqPc);
+      Bool mismatch = actual != accReqFastPredPc;
+      if (mismatch) begin
+        fastQ.truncateAfterAcc(actual);
+        fastGenPc <= actual;
+      end else begin
+        fastQ.confirmAcc(actual);
+      end
+    end
+
+    accBusy <= False;
+    accReqObsolete <= False;
   endrule
 
-  rule doIF1WithFetchTlb (commitState != CommitInterruptReady && !idleLock && !if2WaitRefill && !f1f2Fifo.notEmpty &&
-      getMmuTranslateType(csrf.crmd) == Translate);
-    Addr pc = pcReg[0];
-    Data asid = csrf.asid;
-    tlb.fetchLookupReq(pc, asid);
-    doIF1Body(pc, csrf.crmd, asid, csrf.dmw0, csrf.dmw1, Translate,
-              branchPred, iCache, f1f2Fifo, pcReg[0]);
+  rule doFrontendFetchRefill (commitState != CommitInterruptReady && !aluBranchBusy &&
+      !branchPred.accurateReady && fetchInflightValid && if2WaitRefill && f2dFifo.notFull);
+    doFetchRefillRespBody(fetchInflight, fetchInflightValid, if2MissPaddr,
+      if2WaitRefill, f2dFifo, iCache, fastQ, fastGenPc, frontendEpoch,
+      accBusy, accReqObsolete, branchPred);
   endrule
 
-  // ============================================================
-  // IF2 Stage (unchanged)
-  // ============================================================
-  rule doIF2if2WaitRefill (commitState != CommitInterruptReady && !aluBranchBusy && if2WaitRefill && f2dFifo.notFull);
-    let req = if2PendingReq;
-    let iResp <- iCache.refillResp;
-    if (iResp.addr == if2MissPaddr) begin
-      f2dFifo.enq(F2D{
-        pc: req.pc,
-        predPc: req.predPc,
-        inst: iResp.inst,
-        instPaddr: if2MissPaddr,
-        excp: mkNoExcp
-      });
-      if2WaitRefill <= False;
-      pcReg[0] <= req.predPc;
+  rule doFrontendFetchCollectNoFetchTlb (commitState != CommitInterruptReady && !aluBranchBusy &&
+      !branchPred.accurateReady && fetchInflightValid && !if2WaitRefill && f2dFifo.notFull &&
+      fetchInflight.entry.transType != Translate);
+    doFetchProbeRespBody(noTlbLookup, fetchInflight, fetchInflightValid,
+      if2MissPaddr, if2WaitRefill, f2dFifo, iCache, fastQ, fastGenPc, frontendEpoch,
+      accBusy, accReqObsolete, branchPred);
+  endrule
+
+  rule doFrontendFetchCollectWithFetchTlb (commitState != CommitInterruptReady && !aluBranchBusy &&
+      !branchPred.accurateReady && fetchInflightValid && !if2WaitRefill && f2dFifo.notFull &&
+      fetchInflight.entry.transType == Translate);
+    let tlbRes <- tlb.fetchLookupResp;
+    doFetchProbeRespBody(tlbRes, fetchInflight, fetchInflightValid,
+      if2MissPaddr, if2WaitRefill, f2dFifo, iCache, fastQ, fastGenPc, frontendEpoch,
+      accBusy, accReqObsolete, branchPred);
+  endrule
+
+  rule doFrontendFetchLaunch (commitState != CommitInterruptReady && !idleLock && !aluBranchBusy &&
+      !branchPred.accurateReady && !fetchInflightValid && fastQ.notEmpty);
+    let entry = fastQ.first;
+    Bool useAccurate = fastQ.fetchUseAccurate;
+    Addr nextPc = useAccurate ? entry.selectedPredPc : entry.fastPredPc;
+    Bool fastFallback = !useAccurate;
+    FastPathQSeq deqSeq = fastQ.deqSeqValue;
+
+    iCache.probe(entry.pc);
+    if (entry.transType == Translate) begin
+      tlb.fetchLookupReq(entry.pc, entry.asid);
+    end
+
+    fetchInflight <= FetchInflight{entry: entry, nextPc: nextPc};
+    fetchInflightValid <= True;
+    fastQ.deqFetch(fastFallback);
+
+    if (fastFallback && accBusy && accReqSeq == deqSeq && accReqEpoch == entry.epoch) begin
+      accReqObsolete <= True;
     end
   endrule
 
-  rule doIF2NoFetchTlb (commitState != CommitInterruptReady && !aluBranchBusy && !if2WaitRefill && f2dFifo.notFull &&
-      f1f2Fifo.first.transType != Translate);
-    doIF2Body(noTlbLookup, f1f2Fifo, f2dFifo, iCache, if2PendingReq, if2MissPaddr, if2WaitRefill);
+  rule doFrontendAccurateStart (commitState != CommitInterruptReady && !idleLock &&
+      !branchPred.accurateReady && !accBusy && fetchInflightValid && fastQ.hasUnverified);
+    let entry = fastQ.accFirst;
+    branchPred.startAccurate(entry.pc);
+    accBusy <= True;
+    accReqSeq <= fastQ.accSeqValue;
+    accReqEpoch <= entry.epoch;
+    accReqPc <= entry.pc;
+    accReqFastPredPc <= entry.fastPredPc;
+    accReqObsolete <= False;
   endrule
 
-  rule doIF2WithFetchTlb (commitState != CommitInterruptReady && !aluBranchBusy && !if2WaitRefill && f2dFifo.notFull &&
-      f1f2Fifo.first.transType == Translate);
-    let tlbRes <- tlb.fetchLookupResp;
-    doIF2Body(tlbRes, f1f2Fifo, f2dFifo, iCache, if2PendingReq, if2MissPaddr, if2WaitRefill);
+  rule doFrontendFastEnq (commitState != CommitInterruptReady && !idleLock &&
+      !branchPred.accurateReady && fastQ.notFull);
+    Addr pc = fastGenPc;
+    Addr fastPredPc = branchPred.predict(pc);
+    MmuTranslateType transType = getMmuTranslateType(csrf.crmd);
+
+    fastQ.enqFast(FastPathQEntry{
+      pc: pc,
+      fastPredPc: fastPredPc,
+      selectedPredPc: fastPredPc,
+      crmd: csrf.crmd,
+      asid: csrf.asid,
+      dmw0: csrf.dmw0,
+      dmw1: csrf.dmw1,
+      transType: transType,
+      epoch: frontendEpoch
+    });
+    fastGenPc <= fastPredPc;
   endrule
 
   // ============================================================
@@ -300,14 +367,16 @@ module mkCore(Core);
   rule doExecALUBranch (commitState != CommitInterruptReady && aluBusy && aluBranchBusy);
     doExecALUBody(aluExecEntry, aluBusy, cdb, rob, pcReg[1], iCache, tlb,
       f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo, aluRS, muldivRS, memRS,
-      storeBuf, if2WaitRefill, rat, freeList, branchPred);
+      storeBuf, if2WaitRefill, rat, freeList, branchPred,
+      fastQ, fastGenPc, frontendEpoch, fetchInflightValid, accBusy, accReqObsolete);
     aluBranchBusy <= False;
   endrule
 
   rule doExecALUNonBranch (commitState != CommitInterruptReady && aluBusy && !aluBranchBusy);
     doExecALUBody(aluExecEntry, aluBusy, cdb, rob, pcReg[1], iCache, tlb,
       f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo, aluRS, muldivRS, memRS,
-      storeBuf, if2WaitRefill, rat, freeList, branchPred);
+      storeBuf, if2WaitRefill, rat, freeList, branchPred,
+      fastQ, fastGenPc, frontendEpoch, fetchInflightValid, accBusy, accReqObsolete);
     aluBranchBusy <= False;
   endrule
 
@@ -457,7 +526,8 @@ module mkCore(Core);
       rat, freeList, tlb, pcReg[2], iCache, dCache,
       if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
       aluRS, muldivRS, memRS, storeBuf, aluBusy, mulInFlight,
-      divInFlight, memState
+      divInFlight, memState, fastQ, fastGenPc, frontendEpoch,
+      fetchInflightValid, accBusy, accReqObsolete, branchPred
 `ifdef CONFIG_DIFFTEST
       , difftest, archRegs
 `endif
@@ -484,7 +554,8 @@ module mkCore(Core);
       commitCsrSnapReg, rat, freeList, tlb, pcReg[2], iCache, dCache,
       if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
       aluRS, muldivRS, memRS, storeBuf, aluBusy, mulInFlight,
-      divInFlight, memState
+      divInFlight, memState, fastQ, fastGenPc, frontendEpoch,
+      fetchInflightValid, accBusy, accReqObsolete, branchPred
 `ifdef CONFIG_DIFFTEST
       , difftest, archRegs
 `endif
@@ -512,7 +583,8 @@ module mkCore(Core);
       rat, freeList, tlb, pcReg[2], iCache, dCache,
       if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
       aluRS, muldivRS, memRS, storeBuf, idleLock, aluBusy, mulInFlight,
-      divInFlight, memState
+      divInFlight, memState, fastQ, fastGenPc, frontendEpoch,
+      fetchInflightValid, accBusy, accReqObsolete, branchPred
 `ifdef CONFIG_BSIM
       , prf
       , toHostFifo
@@ -545,7 +617,8 @@ module mkCore(Core);
       commitCsrSnapReg, prf, rat, freeList, tlb, pcReg[2], iCache, dCache,
       if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
       aluRS, muldivRS, memRS, storeBuf, committedStoreBuf, aluBusy, mulInFlight,
-      divInFlight, memState, branchPred
+      divInFlight, memState, fastQ, fastGenPc, frontendEpoch,
+      fetchInflightValid, accBusy, accReqObsolete, branchPred
 `ifdef CONFIG_DIFFTEST
       , difftest, archRegs
 `endif
@@ -574,7 +647,8 @@ module mkCore(Core);
       commitCsrSnapReg, prf, rat, tlb, pcReg[2], iCache, dCache,
       if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
       aluRS, muldivRS, memRS, storeBuf, committedStoreBuf, aluBusy, mulInFlight,
-      divInFlight, memState, branchPred
+      divInFlight, memState, fastQ, fastGenPc, frontendEpoch,
+      fetchInflightValid, accBusy, accReqObsolete, branchPred
 `ifdef CONFIG_DIFFTEST
       , difftest, archRegs
 `endif

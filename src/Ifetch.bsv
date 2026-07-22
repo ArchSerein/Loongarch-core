@@ -15,6 +15,8 @@ import MemTypes::*;
 import Fifo::*;
 import Ehr::*;
 import BranchPredictor::*;
+import FrontendFastPathQueue::*;
+import Decode::*;
 import ICache::*;
 import Tlb::*;
 import Mmu::*;
@@ -150,6 +152,165 @@ function Action doIF2Body(
         if2MissPaddr <= fTrans.pa;
         if2WaitRefill <= True;
         f1f2Fifo.clear();
+      end
+    end
+    endaction
+endfunction
+
+
+// Fast-path queue fetch response stage.
+// The request PC comes from fetchInflight.entry.pc.  After the instruction is
+// available, non-control-flow instructions are forced back to sequential PC so
+// a fast-path BTB alias cannot send load/store/special instructions down an
+// uncorrectable wrong path.
+function Bool frontendInstMayRedirect(Instruction inst);
+    DecodedInst dInst = decode(inst);
+    return dInst.iType == Br || dInst.iType == J || dInst.iType == Jr;
+endfunction
+
+function Addr frontendDeliveryNextPc(Instruction inst, Addr pc, Addr predictedNextPc);
+    return frontendInstMayRedirect(inst) ? predictedNextPc : (pc + 4);
+endfunction
+function Action doFetchProbeRespBody(
+    TlbLookupResult tlbRes,
+    Reg#(FetchInflight) fetchInflight,
+    Reg#(Bool) fetchInflightValid,
+    Reg#(Addr) if2MissPaddr,
+    Reg#(Bool) if2WaitRefill,
+    Fifo#(2, F2D) f2dFifo,
+    ICache iCache,
+    FastPathQueue fastQ,
+    Reg#(Addr) fastGenPc,
+    Reg#(FrontendEpoch) frontendEpoch,
+    Reg#(Bool) accBusy,
+    Reg#(Bool) accReqObsolete,
+    BranchPredictor branchPred
+);
+    action
+    let inflight = fetchInflight;
+    let req = inflight.entry;
+    ICacheProbeResp probeRes = iCache.probeResp;
+
+    MmuResult fTrans = MmuResult{
+      pa: req.pc,
+      mat: getFetchMatType(req.crmd),
+      fromDmw: False,
+      fromTlb: False,
+      excValid: False,
+      ecode: 0,
+      esubcode: 0,
+      badv: req.pc
+    };
+
+    if (req.transType == Translate) begin
+      fTrans = mmuTranslate(req.pc, MmuFetch, req.crmd, req.asid, req.dmw0, req.dmw1, tlbRes);
+    end else if (req.transType == None) begin
+      fTrans.excValid = True;
+      fTrans.ecode = `ECODE_ADE;
+      fTrans.esubcode = `ESUBCODE_ADEF;
+    end
+
+    if (req.epoch != frontendEpoch) begin
+      fetchInflightValid <= False;
+      if2WaitRefill <= False;
+    end else if (req.pc[1:0] != 0) begin
+      f2dFifo.enq(F2D{
+        pc: req.pc,
+        predPc: inflight.nextPc,
+        inst: 0,
+        instPaddr: 0,
+        excp: mkExcp(`ECODE_ADE, `ESUBCODE_ADEF, req.pc)
+      });
+      fetchInflightValid <= False;
+    end else if (fTrans.excValid) begin
+      f2dFifo.enq(F2D{
+        pc: req.pc,
+        predPc: inflight.nextPc,
+        inst: 0,
+        instPaddr: 0,
+        excp: mkExcp(fTrans.ecode, fTrans.esubcode, fTrans.badv)
+      });
+      fetchInflightValid <= False;
+    end else begin
+      Bool fetchUseCache = matUseCache(req.transType, fTrans.mat, req.crmd, MmuFetch);
+      ICacheTag paTag = getITag(fTrans.pa);
+      Bool hit = False;
+      ICacheWayIdx hitWay = 0;
+      Instruction hitInst = 0;
+
+      for (Integer w = 0; w < valueOf(ICacheWays); w = w + 1) begin
+        if (probeRes[w].valid && probeRes[w].tag == paTag) begin
+          hit = True;
+          hitWay = fromInteger(w);
+          hitInst = probeRes[w].inst;
+        end
+      end
+
+      if (fetchUseCache && hit) begin
+        Addr deliveredNextPc = frontendDeliveryNextPc(hitInst, req.pc, inflight.nextPc);
+        iCache.commitHit(req.pc, hitWay);
+        f2dFifo.enq(F2D{
+          pc: req.pc,
+          predPc: deliveredNextPc,
+          inst: hitInst,
+          instPaddr: fTrans.pa,
+          excp: mkNoExcp
+        });
+        if (deliveredNextPc != inflight.nextPc) begin
+          doFrontendRebuild(deliveredNextPc, fastQ, fastGenPc, frontendEpoch,
+            fetchInflightValid, if2WaitRefill);
+        end else begin
+          fetchInflightValid <= False;
+        end
+      end else begin
+`ifdef CONFIG_TRACE_PERFORMANCE
+        perf_icache_miss();
+`endif
+        iCache.refillReq(fTrans.pa, fetchUseCache);
+        if2MissPaddr <= fTrans.pa;
+        if2WaitRefill <= True;
+      end
+    end
+    endaction
+endfunction
+
+function Action doFetchRefillRespBody(
+    Reg#(FetchInflight) fetchInflight,
+    Reg#(Bool) fetchInflightValid,
+    Reg#(Addr) if2MissPaddr,
+    Reg#(Bool) if2WaitRefill,
+    Fifo#(2, F2D) f2dFifo,
+    ICache iCache,
+    FastPathQueue fastQ,
+    Reg#(Addr) fastGenPc,
+    Reg#(FrontendEpoch) frontendEpoch,
+    Reg#(Bool) accBusy,
+    Reg#(Bool) accReqObsolete,
+    BranchPredictor branchPred
+);
+    action
+    let inflight = fetchInflight;
+    let req = inflight.entry;
+    let iResp <- iCache.refillResp;
+
+    if (req.epoch != frontendEpoch) begin
+      fetchInflightValid <= False;
+      if2WaitRefill <= False;
+    end else if (iResp.addr == if2MissPaddr) begin
+      Addr deliveredNextPc = frontendDeliveryNextPc(iResp.inst, req.pc, inflight.nextPc);
+      f2dFifo.enq(F2D{
+        pc: req.pc,
+        predPc: deliveredNextPc,
+        inst: iResp.inst,
+        instPaddr: if2MissPaddr,
+        excp: mkNoExcp
+      });
+      if (deliveredNextPc != inflight.nextPc) begin
+        doFrontendRebuild(deliveredNextPc, fastQ, fastGenPc, frontendEpoch,
+            fetchInflightValid, if2WaitRefill);
+      end else begin
+        fetchInflightValid <= False;
+        if2WaitRefill <= False;
       end
     end
     endaction

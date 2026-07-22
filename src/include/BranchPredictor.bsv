@@ -57,6 +57,8 @@ interface BranchPredictor;
     method Addr predict(Addr pc);
     method FastPredInfo getFastInfo(Addr pc);
     method Action startAccurate(Addr pc);
+    method Bool accurateReady;
+    method Action cancelAccurate();
     method ActionValue#(BPUResult) getAccurateResult();
     method Addr getRefinedPc(Addr pc);
     method Bool needsOverride(Addr pc);
@@ -144,6 +146,12 @@ module mkBranchPredictor(BranchPredictor);
         mbtb.startLookup(pc);
         tage.startPredict(pc, snap.ghist_snapshot);
         ittage.startPredict(pc, snap.phist_snapshot);
+    endmethod
+
+    method Bool accurateReady = accValid;
+
+    method Action cancelAccurate();
+        accValid <= False;
     endmethod
 
     method ActionValue#(BPUResult) getAccurateResult() if (accValid);

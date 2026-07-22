@@ -27,6 +27,7 @@ import Div::*;
 import CoreTypes::*;
 import CoreFunc::*;
 import BranchPredictor::*;
+import FrontendFastPathQueue::*;
 import BranchPredTypes::*;
 import OoOTypes::*;
 import RAT::*;
@@ -73,7 +74,13 @@ function Action doExecALUBody(
     Reg#(Bool) if2WaitRefill,
     RAT rat,
     FreeList freeList,
-    BranchPredictor branchPred
+    BranchPredictor branchPred,
+    FastPathQueue fastQ,
+    Reg#(Addr) fastGenPc,
+    Reg#(FrontendEpoch) frontendEpoch,
+    Reg#(Bool) fetchInflightValid,
+    Reg#(Bool) accBusy,
+    Reg#(Bool) accReqObsolete
 );
   action
     let entry = aluExecEntry;
@@ -137,7 +144,8 @@ function Action doExecALUBody(
       muldivRS.flushAfter(entry.robTag, rob.headTag);
       memRS.flushAfter(entry.robTag, rob.headTag);
       storeBuf.flushAfter(entry.token, rob.headTag);
-      if2WaitRefill <= False;
+      doFrontendRedirect(eInst.targetAddr, fastQ, fastGenPc, frontendEpoch,
+        fetchInflightValid, if2WaitRefill, accBusy, accReqObsolete, branchPred);
       rob.flushAfter(entry.robTag);
       rat.restore(entry.robTag);
       freeList.restore(entry.robTag);

@@ -23,6 +23,7 @@ import ICache::*;
 import DCache::*;
 import CoreTypes::*;
 import BranchPredictor::*;
+import FrontendFastPathQueue::*;
 import BranchPredTypes::*;
 import CoreFunc::*;
 import OoOTypes::*;
@@ -218,6 +219,7 @@ function Action doCommitFlushAndRestore(
     TlbArray tlb,
     ICache iCache,
     DCache dCache,
+    Addr redirectTarget,
     Bool clearLl,
     Reg#(Bool) if2WaitRefill,
     Fifo#(2, F1toF2) f1f2Fifo,
@@ -231,7 +233,14 @@ function Action doCommitFlushAndRestore(
     Reg#(Bool) aluBusy,
     Reg#(Bool) mulInFlight,
     Reg#(Bool) divInFlight,
-    Reg#(MemExecState) memState
+    Reg#(MemExecState) memState,
+    FastPathQueue fastQ,
+    Reg#(Addr) fastGenPc,
+    Reg#(FrontendEpoch) frontendEpoch,
+    Reg#(Bool) fetchInflightValid,
+    Reg#(Bool) accBusy,
+    Reg#(Bool) accReqObsolete,
+    BranchPredictor branchPred
 );
   action
     iCache.squash;
@@ -240,7 +249,8 @@ function Action doCommitFlushAndRestore(
     if (clearLl) begin
       dCache.clearReservation;
     end
-    if2WaitRefill <= False;
+    doFrontendRedirect(redirectTarget, fastQ, fastGenPc, frontendEpoch,
+      fetchInflightValid, if2WaitRefill, accBusy, accReqObsolete, branchPred);
     f1f2Fifo.clear;
     f2dFifo.clear;
     d2rnFifo.clear;
@@ -287,7 +297,14 @@ function Action doCommitTrapAction(
     Reg#(Bool) aluBusy,
     Reg#(Bool) mulInFlight,
     Reg#(Bool) divInFlight,
-    Reg#(MemExecState) memState
+    Reg#(MemExecState) memState,
+    FastPathQueue fastQ,
+    Reg#(Addr) fastGenPc,
+    Reg#(FrontendEpoch) frontendEpoch,
+    Reg#(Bool) fetchInflightValid,
+    Reg#(Bool) accBusy,
+    Reg#(Bool) accReqObsolete,
+    BranchPredictor branchPred
 `ifdef CONFIG_DIFFTEST
     , Difftest difftest
     , Vector#(32, Reg#(Data)) archRegs
@@ -301,10 +318,11 @@ function Action doCommitTrapAction(
 
     Addr exEntry <- csrf.raiseException(trap.ecode, trap.esubcode, head.pc, trap.badv);
     pcReg <= exEntry;
-    doCommitFlushAndRestore(rob, rat, freeList, tlb, iCache, dCache, False,
+    doCommitFlushAndRestore(rob, rat, freeList, tlb, iCache, dCache, exEntry, False,
       if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
       aluRS, muldivRS, memRS, storeBuf, aluBusy, mulInFlight,
-      divInFlight, memState);
+      divInFlight, memState, fastQ, fastGenPc, frontendEpoch,
+      fetchInflightValid, accBusy, accReqObsolete, branchPred);
     commitState <= CommitIdle;
 
 `ifdef CONFIG_DIFFTEST
@@ -363,7 +381,14 @@ function Action doCommitErtnAction(
     Reg#(Bool) aluBusy,
     Reg#(Bool) mulInFlight,
     Reg#(Bool) divInFlight,
-    Reg#(MemExecState) memState
+    Reg#(MemExecState) memState,
+    FastPathQueue fastQ,
+    Reg#(Addr) fastGenPc,
+    Reg#(FrontendEpoch) frontendEpoch,
+    Reg#(Bool) fetchInflightValid,
+    Reg#(Bool) accBusy,
+    Reg#(Bool) accReqObsolete,
+    BranchPredictor branchPred
 `ifdef CONFIG_DIFFTEST
     , Difftest difftest
     , Vector#(32, Reg#(Data)) archRegs
@@ -381,10 +406,11 @@ function Action doCommitErtnAction(
     Bool clearLl = !llbctlKloVal;
     Addr era <- csrf.returnFromException;
     pcReg <= era;
-    doCommitFlushAndRestore(rob, rat, freeList, tlb, iCache, dCache, clearLl,
+    doCommitFlushAndRestore(rob, rat, freeList, tlb, iCache, dCache, era, clearLl,
       if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
       aluRS, muldivRS, memRS, storeBuf, aluBusy, mulInFlight,
-      divInFlight, memState);
+      divInFlight, memState, fastQ, fastGenPc, frontendEpoch,
+      fetchInflightValid, accBusy, accReqObsolete, branchPred);
     commitState <= CommitIdle;
 
 `ifdef CONFIG_TRACE_PERFORMANCE
@@ -440,7 +466,14 @@ function Action doCommitRedirectAction(
     Reg#(Bool) aluBusy,
     Reg#(Bool) mulInFlight,
     Reg#(Bool) divInFlight,
-    Reg#(MemExecState) memState
+    Reg#(MemExecState) memState,
+    FastPathQueue fastQ,
+    Reg#(Addr) fastGenPc,
+    Reg#(FrontendEpoch) frontendEpoch,
+    Reg#(Bool) fetchInflightValid,
+    Reg#(Bool) accBusy,
+    Reg#(Bool) accReqObsolete,
+    BranchPredictor branchPred
 `ifdef CONFIG_BSIM
     , PRF prf
     , Fifo#(2, CpuToHostData) toHostFifo
@@ -477,7 +510,8 @@ function Action doCommitRedirectAction(
         rat, freeList, tlb, pcReg, iCache, dCache,
         if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
         aluRS, muldivRS, memRS, storeBuf, aluBusy, mulInFlight,
-        divInFlight, memState
+        divInFlight, memState, fastQ, fastGenPc, frontendEpoch,
+        fetchInflightValid, accBusy, accReqObsolete, branchPred
 `ifdef CONFIG_DIFFTEST
         , difftest, archRegs
 `endif
@@ -485,10 +519,11 @@ function Action doCommitRedirectAction(
     end else if (head.iType == Idle) begin
       idleLock <= True;
       pcReg <= head.pc + 4;
-      doCommitFlushAndRestore(rob, rat, freeList, tlb, iCache, dCache, False,
+      doCommitFlushAndRestore(rob, rat, freeList, tlb, iCache, dCache, head.pc + 4, False,
         if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
         aluRS, muldivRS, memRS, storeBuf, aluBusy, mulInFlight,
-        divInFlight, memState);
+        divInFlight, memState, fastQ, fastGenPc, frontendEpoch,
+      fetchInflightValid, accBusy, accReqObsolete, branchPred);
 `ifdef CONFIG_TRACE_PERFORMANCE
       inst_count();
 `endif
@@ -537,7 +572,8 @@ function Action doCommitRedirectAction(
         rat, freeList, tlb, pcReg, iCache, dCache,
         if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
         aluRS, muldivRS, memRS, storeBuf, aluBusy, mulInFlight,
-        divInFlight, memState
+        divInFlight, memState, fastQ, fastGenPc, frontendEpoch,
+        fetchInflightValid, accBusy, accReqObsolete, branchPred
 `ifdef CONFIG_DIFFTEST
         , difftest, archRegs
 `endif
@@ -572,7 +608,14 @@ function ActionValue#(CommitNormalResult) doCommitNormalSharedAction(
     Reg#(Bool) aluBusy,
     Reg#(Bool) mulInFlight,
     Reg#(Bool) divInFlight,
-    Reg#(MemExecState) memState
+    Reg#(MemExecState) memState,
+    FastPathQueue fastQ,
+    Reg#(Addr) fastGenPc,
+    Reg#(FrontendEpoch) frontendEpoch,
+    Reg#(Bool) fetchInflightValid,
+    Reg#(Bool) accBusy,
+    Reg#(Bool) accReqObsolete,
+    BranchPredictor branchPred
 `ifdef CONFIG_DIFFTEST
     , Difftest difftest
     , Vector#(32, Reg#(Data)) archRegs
@@ -725,7 +768,8 @@ function ActionValue#(CommitNormalResult) doCommitNormalSharedAction(
         pcReg <= head.pc + 4;
         iCache.squash;
         tlb.squashFetchLookup;
-        if2WaitRefill <= False;
+        doFrontendRedirect(head.pc + 4, fastQ, fastGenPc, frontendEpoch,
+          fetchInflightValid, if2WaitRefill, accBusy, accReqObsolete, branchPred);
         f1f2Fifo.clear;
         f2dFifo.clear;
         d2rnFifo.clear;
@@ -861,6 +905,12 @@ function Action doCommitReclaimAction(
     Reg#(Bool) mulInFlight,
     Reg#(Bool) divInFlight,
     Reg#(MemExecState) memState,
+    FastPathQueue fastQ,
+    Reg#(Addr) fastGenPc,
+    Reg#(FrontendEpoch) frontendEpoch,
+    Reg#(Bool) fetchInflightValid,
+    Reg#(Bool) accBusy,
+    Reg#(Bool) accReqObsolete,
     BranchPredictor branchPred
 `ifdef CONFIG_DIFFTEST
     , Difftest difftest
@@ -876,7 +926,8 @@ function Action doCommitReclaimAction(
       commitCsrSnapReg, prf, rat, tlb, pcReg, iCache, dCache,
       if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
       aluRS, muldivRS, memRS, storeBuf, committedStoreBuf, aluBusy,
-      mulInFlight, divInFlight, memState
+      mulInFlight, divInFlight, memState, fastQ, fastGenPc, frontendEpoch,
+      fetchInflightValid, accBusy, accReqObsolete, branchPred
 `ifdef CONFIG_DIFFTEST
       , difftest, archRegs
 `endif
@@ -940,6 +991,12 @@ function Action doCommitNoReclaimAction(
     Reg#(Bool) mulInFlight,
     Reg#(Bool) divInFlight,
     Reg#(MemExecState) memState,
+    FastPathQueue fastQ,
+    Reg#(Addr) fastGenPc,
+    Reg#(FrontendEpoch) frontendEpoch,
+    Reg#(Bool) fetchInflightValid,
+    Reg#(Bool) accBusy,
+    Reg#(Bool) accReqObsolete,
     BranchPredictor branchPred
 `ifdef CONFIG_DIFFTEST
     , Difftest difftest
@@ -955,7 +1012,8 @@ function Action doCommitNoReclaimAction(
       commitCsrSnapReg, prf, rat, tlb, pcReg, iCache, dCache,
       if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
       aluRS, muldivRS, memRS, storeBuf, committedStoreBuf, aluBusy,
-      mulInFlight, divInFlight, memState
+      mulInFlight, divInFlight, memState, fastQ, fastGenPc, frontendEpoch,
+      fetchInflightValid, accBusy, accReqObsolete, branchPred
 `ifdef CONFIG_DIFFTEST
       , difftest, archRegs
 `endif

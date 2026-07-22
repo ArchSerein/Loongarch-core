@@ -108,9 +108,10 @@ function ExecInst exec(DecodedInst dInst, Data rVal1, Data rVal2, Addr pc, Addr 
     endcase);
   end
 
-  // Only control-flow instructions can redirect fetch.
-  Bool isControlFlow = dInst.iType == Br || dInst.iType == J || dInst.iType == Jr;
-  eInst.mispredict = isControlFlow && (brAddr != ppc);
+  // The frontend may have used a fast-path prediction for any fetched PC.
+  // Non-control-flow instructions must therefore redirect as well when
+  // a SmallBTB alias supplies a non-sequential next PC; their brAddr is pc+4.
+  eInst.mispredict = brAddr != ppc;
   eInst.brTaken = brTaken;
   eInst.targetAddr = brAddr;
 
