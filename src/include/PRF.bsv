@@ -28,6 +28,7 @@ interface PRF;
   method Data rd3(PIndx p);
   method Data rd4(PIndx p);
   method Data rd5(PIndx p);
+  method Data rdDbg(PIndx p);
   method Action cdbWriteLoad(PIndx p, Data v);
   method Action cdbWriteALU (PIndx p, Data v);
   method Action cdbWriteMul (PIndx p, Data v);
@@ -59,6 +60,7 @@ module mkPRF(PRF);
   method Data rd3(PIndx p) = read(p);
   method Data rd4(PIndx p) = read(p);
   method Data rd5(PIndx p) = read(p);
+  method Data rdDbg(PIndx p) = read(p);
   method Bool isReady (PIndx p) = ready[p][5];
   method Bool isReady2(PIndx p) = ready[p][5];
 

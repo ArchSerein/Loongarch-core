@@ -514,6 +514,7 @@ module mkCore(Core);
       aluRS, muldivRS, memRS, storeBuf, idleLock, aluBusy, mulInFlight,
       divInFlight, memState
 `ifdef CONFIG_BSIM
+      , prf
       , toHostFifo
 `endif
 `ifdef CONFIG_DIFFTEST
@@ -626,7 +627,11 @@ module mkCore(Core);
 
   method Bool wsValid = debugWsValidWire;
 
+`ifdef CONFIG_DIFFTEST
   method Data rfRdata = debugInforFlag ? archRegs[debugRegNum] : 0;
+`else
+  method Data rfRdata = debugInforFlag ? prf.rdDbg(rat.lookupRet(debugRegNum)) : 0;
+`endif
 
   method Addr debug0WbPc = debugWbPcWire;
 

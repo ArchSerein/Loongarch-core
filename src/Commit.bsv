@@ -442,6 +442,7 @@ function Action doCommitRedirectAction(
     Reg#(Bool) divInFlight,
     Reg#(MemExecState) memState
 `ifdef CONFIG_BSIM
+    , PRF prf
     , Fifo#(2, CpuToHostData) toHostFifo
 `endif
 `ifdef CONFIG_DIFFTEST
@@ -460,8 +461,9 @@ function Action doCommitRedirectAction(
       Bit#(9) esubcode = head.excp.esubcode;
 `ifdef CONFIG_BSIM
       if (ecode == `ECODE_SYS && esubcode == 1) begin
+        Data exitCode = prf.rdDbg(rat.lookupRet(4));
         $display("this syscall 0x11, finish simulation");
-        toHostFifo.enq(CpuToHostData{c2hType: ExitCode, data: truncate(archRegs[4])});
+        toHostFifo.enq(CpuToHostData{c2hType: ExitCode, data: truncate(exitCode)});
       end
 `endif
       doCommitTrapAction(CommitTrapInfo{
@@ -518,8 +520,9 @@ function Action doCommitRedirectAction(
         Bit#(9) syscallEsubcode = (head.inst[14:0] == 17) ? 1 : `ESUBCODE_NONE;
         esubcode = syscallEsubcode;
         if (esubcode == 1) begin
+          Data exitCode = prf.rdDbg(rat.lookupRet(4));
           $display("this syscall 0x11, finish simulation");
-          toHostFifo.enq(CpuToHostData{c2hType: ExitCode, data: 0});
+          toHostFifo.enq(CpuToHostData{c2hType: ExitCode, data: truncate(exitCode)});
         end
       end
 `endif
