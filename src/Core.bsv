@@ -145,6 +145,26 @@ module mkCore(Core);
     perf_icache_miss_cycle();
   endrule
 
+  rule countFrontendWaitFetchCycles (commitState != CommitInterruptReady && fetchInflightValid);
+    perf_frontend_wait_fetch_cycles();
+  endrule
+
+  rule countFrontendWaitDecodeCycles (commitState != CommitInterruptReady && f2dFifo.notEmpty && !d2rnFifo.notFull);
+    perf_frontend_wait_decode_cycles();
+  endrule
+
+  rule countFpqDepthAndDepthSamples (commitState != CommitInterruptReady && !idleLock);
+    Bit#(64) confirmedDepth = zeroExtend(fastQ.accSeqValue - fastQ.deqSeqValue);
+    Bit#(64) unverifiedDepth = zeroExtend(fastQ.enqSeqValue - fastQ.accSeqValue);
+
+    perf_fpq_confirmed_depth(confirmedDepth);
+    perf_fpq_unverified_depth(unverifiedDepth);
+  endrule
+
+  rule countFpqFullCycles (commitState != CommitInterruptReady && !idleLock && !branchPred.accurateReady && !aluBranchBusy && !fastQ.notFull);
+    perf_fpq_full_cycles();
+  endrule
+
   rule countDispatchDependencyStall (rn2diFifo.notEmpty);
     let rInst = rn2diFifo.first;
     if (!prf.isReady(rInst.pSrc1) || !prf.isReady2(rInst.pSrc2)) begin
@@ -191,10 +211,29 @@ module mkCore(Core);
       Addr actual = refinedNextPc(accResult, accReqPc);
       Bool mismatch = actual != accReqFastPredPc;
       if (mismatch) begin
+        `ifdef CONFIG_TRACE_PERFORMANCE
+            perf_accurate_override();
+        `endif
+        `ifdef CONFIG_TRACE_PERFORMANCE
+            perf_accurate_truncated_entries();
+        `endif
         fastQ.truncateAfterAcc(actual);
         fastGenPc <= actual;
       end else begin
+        `ifdef CONFIG_TRACE_PERFORMANCE
+            perf_accurate_match();
+        `endif
         fastQ.confirmAcc(actual);
+      end
+    end else begin
+      if (accReqObsolete) begin
+        `ifdef CONFIG_TRACE_PERFORMANCE
+            perf_accurate_obsolete_drop();
+        `endif
+      end else if (accReqEpoch != frontendEpoch || accReqSeq != fastQ.accSeqValue) begin
+        `ifdef CONFIG_TRACE_PERFORMANCE
+            perf_accurate_stale_drop();
+        `endif
       end
     end
 
@@ -232,6 +271,16 @@ module mkCore(Core);
     Bool useAccurate = fastQ.fetchUseAccurate;
     Addr nextPc = useAccurate ? entry.selectedPredPc : entry.fastPredPc;
     Bool fastFallback = !useAccurate;
+    if (useAccurate) begin
+      `ifdef CONFIG_TRACE_PERFORMANCE
+          perf_fetch_use_accurate();
+      `endif
+    end else begin
+      `ifdef CONFIG_TRACE_PERFORMANCE
+          perf_fetch_fast_fallback();
+      `endif
+    end
+
     FastPathQSeq deqSeq = fastQ.deqSeqValue;
 
     iCache.probe(entry.pc);
@@ -243,6 +292,12 @@ module mkCore(Core);
     fetchInflightValid <= True;
     fastQ.deqFetch(fastFallback);
 
+    `ifdef CONFIG_TRACE_PERFORMANCE
+
+        perf_fpq_deq_fetch();
+
+    `endif
+
     if (fastFallback && accBusy && accReqSeq == deqSeq && accReqEpoch == entry.epoch) begin
       accReqObsolete <= True;
     end
@@ -251,6 +306,9 @@ module mkCore(Core);
   rule doFrontendAccurateStart (commitState != CommitInterruptReady && !idleLock &&
       !branchPred.accurateReady && !accBusy && fetchInflightValid && fastQ.hasUnverified);
     let entry = fastQ.accFirst;
+    `ifdef CONFIG_TRACE_PERFORMANCE
+        perf_accurate_started();
+    `endif
     branchPred.startAccurate(entry.pc);
     accBusy <= True;
     accReqSeq <= fastQ.accSeqValue;
@@ -265,6 +323,9 @@ module mkCore(Core);
     Addr pc = fastGenPc;
     Addr fastPredPc = branchPred.predict(pc);
     MmuTranslateType transType = getMmuTranslateType(csrf.crmd);
+    `ifdef CONFIG_TRACE_PERFORMANCE
+        perf_fpq_enq_fast();
+    `endif
 
     fastQ.enqFast(FastPathQEntry{
       pc: pc,

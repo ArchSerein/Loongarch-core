@@ -658,6 +658,21 @@ uint64_t fast_mispredict_cnt;
 uint64_t fetch_stall_cycle_cnt;
 uint64_t dispatch_dependency_stall_cycle_cnt;
 uint64_t memory_stall_cycle_cnt;
+uint64_t fpq_enq_fast_cnt;
+uint64_t fpq_deq_fetch_cnt;
+uint64_t fpq_full_cycles_cnt;
+uint64_t fpq_confirmed_depth_cnt;
+uint64_t fpq_unverified_depth_cnt;
+uint64_t fetch_use_accurate_cnt;
+uint64_t fetch_fast_fallback_cnt;
+uint64_t accurate_started_cnt;
+uint64_t accurate_match_cnt;
+uint64_t accurate_override_cnt;
+uint64_t accurate_obsolete_drop_cnt;
+uint64_t accurate_truncated_entries_cnt;
+uint64_t accurate_stale_drop_cnt;
+uint64_t frontend_wait_fetch_cycles_cnt;
+uint64_t frontend_wait_decode_cycles_cnt;
 
 extern "C" void inst_count() {
   ++inst_cnt;
@@ -691,6 +706,51 @@ extern "C" void perf_dispatch_dependency_stall_cycle() {
 }
 extern "C" void perf_memory_stall_cycle() {
   ++memory_stall_cycle_cnt;
+}
+extern "C" void perf_fpq_enq_fast() {
+  ++fpq_enq_fast_cnt;
+}
+extern "C" void perf_fpq_deq_fetch() {
+  ++fpq_deq_fetch_cnt;
+}
+extern "C" void perf_fpq_full_cycles() {
+  ++fpq_full_cycles_cnt;
+}
+extern "C" void perf_fpq_confirmed_depth(std::uint64_t depth) {
+  fpq_confirmed_depth_cnt += depth;
+}
+extern "C" void perf_fpq_unverified_depth(std::uint64_t depth) {
+  fpq_unverified_depth_cnt += depth;
+}
+extern "C" void perf_fetch_use_accurate() {
+  ++fetch_use_accurate_cnt;
+}
+extern "C" void perf_fetch_fast_fallback() {
+  ++fetch_fast_fallback_cnt;
+}
+extern "C" void perf_accurate_started() {
+  ++accurate_started_cnt;
+}
+extern "C" void perf_accurate_match() {
+  ++accurate_match_cnt;
+}
+extern "C" void perf_accurate_override() {
+  ++accurate_override_cnt;
+}
+extern "C" void perf_accurate_obsolete_drop() {
+  ++accurate_obsolete_drop_cnt;
+}
+extern "C" void perf_accurate_truncated_entries() {
+  ++accurate_truncated_entries_cnt;
+}
+extern "C" void perf_accurate_stale_drop() {
+  ++accurate_stale_drop_cnt;
+}
+extern "C" void perf_frontend_wait_fetch_cycles() {
+  ++frontend_wait_fetch_cycles_cnt;
+}
+extern "C" void perf_frontend_wait_decode_cycles() {
+  ++frontend_wait_decode_cycles_cnt;
 }
 #endif
 
@@ -744,6 +804,25 @@ int main(int argc, char** argv) {
   printf("  Fetch Blocked:   %ld (%.2f%%)\n", fetch_stall_cycle_cnt, 100.0 * fetch_stall_cycle_cnt / cycle_den);
   printf("  Dispatch Deps:   %ld (%.2f%%)\n", dispatch_dependency_stall_cycle_cnt, 100.0 * dispatch_dependency_stall_cycle_cnt / cycle_den);
   printf("  Memory Blocked:  %ld (%.2f%%)\n", memory_stall_cycle_cnt, 100.0 * memory_stall_cycle_cnt / cycle_den);
+  printf("Frontend Queue:\n");
+  printf("  FPQ Enq Fast:          %ld\n", fpq_enq_fast_cnt);
+  printf("  FPQ Deq Fetch:         %ld\n", fpq_deq_fetch_cnt);
+  printf("  FPQ Full Cycles:       %ld (%.2f%%)\n", fpq_full_cycles_cnt, 100.0 * fpq_full_cycles_cnt / cycle_den);
+  printf("  FPQ Confirmed Depth:   %ld (avg %.2f)\n", fpq_confirmed_depth_cnt, static_cast<double>(fpq_confirmed_depth_cnt) / cycle_den);
+  printf("  FPQ Unverified Depth:  %ld (avg %.2f)\n", fpq_unverified_depth_cnt, static_cast<double>(fpq_unverified_depth_cnt) / cycle_den);
+  printf("Frontend Predictions:\n");
+  printf("  Fetch Use Accurate:    %ld\n", fetch_use_accurate_cnt);
+  printf("  Fetch Fast Fallback:  %ld\n", fetch_fast_fallback_cnt);
+  printf("Accurate Stats:\n");
+  printf("  Accurate Started:       %ld\n", accurate_started_cnt);
+  printf("  Accurate Match:         %ld\n", accurate_match_cnt);
+  printf("  Accurate Override:      %ld\n", accurate_override_cnt);
+  printf("  Accurate Truncated:     %ld\n", accurate_truncated_entries_cnt);
+  printf("  Accurate Obsolete Drop: %ld\n", accurate_obsolete_drop_cnt);
+  printf("  Accurate Stale Drop:    %ld\n", accurate_stale_drop_cnt);
+  printf("Frontend Wait:\n");
+  printf("  Fetch Wait Cycles:  %ld (%.2f%%)\n", frontend_wait_fetch_cycles_cnt, 100.0 * frontend_wait_fetch_cycles_cnt / cycle_den);
+  printf("  Decode Wait Cycles: %ld (%.2f%%)\n", frontend_wait_decode_cycles_cnt, 100.0 * frontend_wait_decode_cycles_cnt / cycle_den);
   printf("------------------------------\n");
   #endif
 
