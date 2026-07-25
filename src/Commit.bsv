@@ -265,7 +265,7 @@ function Action doCommitFlushAndRestore(
     aluBusy <= False;
     mulInFlight <= False;
     divInFlight <= False;
-    if (memState == MemUncacheWait) begin
+    if (memState == MemUncacheWait || memState == MemCacheWait) begin
       memState <= MemIdle;
     end
   endaction
@@ -763,32 +763,7 @@ function ActionValue#(CommitNormalResult) doCommitNormalSharedAction(
         load: DiffLoadEvent{valid: 0, paddr: 0, vaddr: 0}
       });
 `endif
-    end else if (head.state == RobCompleted) begin
-      if (head.iType == Ibar) begin
-        pcReg <= head.pc + 4;
-        iCache.squash;
-        tlb.squashFetchLookup;
-        doFrontendRedirect(head.pc + 4, fastQ, fastGenPc, frontendEpoch,
-          fetchInflightValid, if2WaitRefill, accBusy, accReqObsolete, branchPred);
-        f1f2Fifo.clear;
-        f2dFifo.clear;
-        d2rnFifo.clear;
-        rn2diFifo.clear;
-        aluRS.clear;
-        muldivRS.clear;
-        memRS.clear;
-        storeBuf.clearSpeculative;
-        rob.clear;
-        // The no-reclaim wrapper intentionally has no FreeList parameter, so
-        // this IBAR flush keeps FreeList methods out of the no-reclaim rule.
-        rat.restoreFromRetirement;
-        aluBusy <= False;
-        mulInFlight <= False;
-        divInFlight <= False;
-        if (memState == MemUncacheWait) begin
-          memState <= MemIdle;
-        end
-      end
+    end else if (head.state == RobCompleted && head.iType != Ibar) begin
       if (head.iType == St) begin
         if (storeBuf.lookupEntry(head.token) matches tagged Valid .s) begin
           commitStoreEntry = s;
@@ -815,7 +790,7 @@ function ActionValue#(CommitNormalResult) doCommitNormalSharedAction(
       end
 
       retired = True;
-      deqRob = (head.iType != Ibar);
+      deqRob = True;
 
 `ifdef CONFIG_DIFFTEST
       Vector#(32, Data) gpr = ?;
@@ -874,6 +849,95 @@ function ActionValue#(CommitNormalResult) doCommitNormalSharedAction(
 
     return CommitNormalResult{retired: retired, deqRob: deqRob, waitTlb: waitTlb};
   endactionvalue
+endfunction
+
+function Action doCommitIbarAction(
+    ROB rob,
+    Reg#(CommitState) commitState,
+`ifdef CONFIG_DIFFTEST
+    Reg#(DiffArchCsrState) csrSnapReg,
+`endif
+    RAT rat,
+    FreeList freeList,
+    TlbArray tlb,
+    Reg#(Addr) pcReg,
+    ICache iCache,
+    Reg#(Bool) if2WaitRefill,
+    Fifo#(2, F1toF2) f1f2Fifo,
+    Fifo#(2, F2D) f2dFifo,
+    Fifo#(2, D2RN) d2rnFifo,
+    Fifo#(2, RenamedInst) rn2diFifo,
+    ResStation#(16) aluRS,
+    ResStation#(4) muldivRS,
+    ResStation#(16) memRS,
+    StoreBuf#(16) storeBuf,
+    Reg#(Bool) aluBusy,
+    Reg#(Bool) mulInFlight,
+    Reg#(Bool) divInFlight,
+    Reg#(MemExecState) memState,
+    FastPathQueue fastQ,
+    Reg#(Addr) fastGenPc,
+    Reg#(FrontendEpoch) frontendEpoch,
+    Reg#(Bool) fetchInflightValid,
+    Reg#(Bool) accBusy,
+    Reg#(Bool) accReqObsolete,
+    BranchPredictor branchPred
+`ifdef CONFIG_DIFFTEST
+    , Difftest difftest
+    , Vector#(32, Reg#(Data)) archRegs
+`endif
+);
+  action
+    let head = rob.head;
+    Addr nextPc = head.pc + 4;
+
+    pcReg <= nextPc;
+    iCache.squash;
+    tlb.squashFetchLookup;
+    doFrontendRedirect(nextPc, fastQ, fastGenPc, frontendEpoch,
+      fetchInflightValid, if2WaitRefill, accBusy, accReqObsolete, branchPred);
+    f1f2Fifo.clear;
+    f2dFifo.clear;
+    d2rnFifo.clear;
+    rn2diFifo.clear;
+    aluRS.clear;
+    muldivRS.clear;
+    memRS.clear;
+    storeBuf.clearSpeculative;
+    rob.clear;
+    rat.restoreFromRetirement;
+    freeList.restoreFromRetRAT(rat.allRetRAT);
+    aluBusy <= False;
+    mulInFlight <= False;
+    divInFlight <= False;
+    if (memState == MemUncacheWait || memState == MemCacheWait) begin
+      memState <= MemIdle;
+    end
+
+`ifdef CONFIG_TRACE_PERFORMANCE
+    inst_count();
+`endif
+    commitState <= CommitIdle;
+
+`ifdef CONFIG_DIFFTEST
+    Vector#(32, Data) gpr = ?;
+    for (Integer i = 0; i < 32; i = i + 1) gpr[i] = archRegs[i];
+    DiffArchCsrState diffCsr = csrSnapReg;
+    difftest.enqTrace(DiffTrace{
+      commit: DiffCommit{
+        valid: True, pc: head.pc, nextPc: nextPc,
+        inst: head.inst, wen: False, wdest: 0, wdata: 0, skip: False,
+        isTlbfill: False, tlbfillIndex: 0
+      },
+      regs: DiffArchGRegState{gpr: gpr},
+      csr: diffCsr,
+      excp: DiffExcpEvent{excpValid: False, eret: False, interrupt: 0,
+        exception: 0, exceptionPC: head.pc, exceptionInst: head.inst},
+      store: DiffStoreEvent{valid: 0, paddr: 0, vaddr: 0, data: 0},
+      load: DiffLoadEvent{valid: 0, paddr: 0, vaddr: 0}
+    });
+`endif
+  endaction
 endfunction
 
 function Action doCommitReclaimAction(

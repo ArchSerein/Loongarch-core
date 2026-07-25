@@ -656,13 +656,44 @@ module mkCore(Core);
     );
   endrule
 
+  rule doCommitIbar (rob.headValid && commitState == CommitReady
+`ifdef CONFIG_DIFFTEST
+      && difftest.enqTraceReady
+`endif
+      && !(rob.head.excp.valid || rob.head.iType == Ertn || rob.head.iType == Idle ||
+       rob.head.iType == Syscall || rob.head.iType == Break)
+      && rob.head.iType == Ibar);
+    doCommitBody(rob
+`ifdef CONFIG_WB_DEBUG
+      , debugWsValidWire, debugWbPcWire
+`ifdef CONFIG_WB_DEBUG_INST
+      , debugWbInstWire
+`endif
+`endif
+    );
+    doCommitIbarAction(rob, commitState,
+`ifdef CONFIG_DIFFTEST
+      csrSnapReg,
+`endif
+      rat, freeList, tlb, pcReg[2], iCache,
+      if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
+      aluRS, muldivRS, memRS, storeBuf, aluBusy, mulInFlight,
+      divInFlight, memState, fastQ, fastGenPc, frontendEpoch,
+      fetchInflightValid, accBusy, accReqObsolete, branchPred
+`ifdef CONFIG_DIFFTEST
+      , difftest, archRegs
+`endif
+    );
+  endrule
+
   rule doCommitReclaim (rob.headValid && commitState == CommitReady
 `ifdef CONFIG_DIFFTEST
       && difftest.enqTraceReady
 `endif
       && !(rob.head.excp.valid || rob.head.iType == Ertn || rob.head.iType == Idle ||
        rob.head.iType == Syscall || rob.head.iType == Break)
-      && isValid(rob.head.oldPdst));
+      && isValid(rob.head.oldPdst)
+      && rob.head.iType != Ibar);
     doCommitBody(rob
 `ifdef CONFIG_WB_DEBUG
       , debugWsValidWire, debugWbPcWire
@@ -692,7 +723,8 @@ module mkCore(Core);
 `endif
       && !(rob.head.excp.valid || rob.head.iType == Ertn || rob.head.iType == Idle ||
        rob.head.iType == Syscall || rob.head.iType == Break)
-      && !isValid(rob.head.oldPdst));
+      && !isValid(rob.head.oldPdst)
+      && rob.head.iType != Ibar);
     doCommitBody(rob
 `ifdef CONFIG_WB_DEBUG
       , debugWsValidWire, debugWbPcWire
