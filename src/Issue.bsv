@@ -100,7 +100,12 @@ function Action doExecALUBody(
     };
 
     Data immVal = fromMaybe(0, entry.imm);
-    ExecInst eInst = exec(dInst, entry.vj, entry.vk, entry.pc, entry.predPc, 0);
+    Data csrVal = 0;
+    if (entry.iType == Cpucfg) begin
+      CsrIndx cpuCfgAddr = truncate(entry.vj) + 14'h00b0;
+      csrVal = cpuCfgValue(cpuCfgAddr);
+    end
+    ExecInst eInst = exec(dInst, entry.vj, entry.vk, entry.pc, entry.predPc, csrVal);
 
     // Write to CDB
     if (entry.pDst matches tagged Valid .pd) begin

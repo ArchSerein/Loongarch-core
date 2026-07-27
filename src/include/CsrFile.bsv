@@ -53,6 +53,20 @@ interface CsrFile;
   `endif
 endinterface
 
+function Data cpuCfgValue(CsrIndx idx);
+  Data res = 0;
+  case (idx)
+    `CPUCFG_1:  res = 32'h0001f1f4;
+    `CPUCFG_2:  res = 0;
+    `CPUCFG_10: res = 32'h00000005;
+    `CPUCFG_11: res = 32'h04080001;
+    `CPUCFG_12: res = 32'h04080001;
+    `CPUCFG_13: res = 0;
+    default:    res = 0;
+  endcase
+  return res;
+endfunction
+
 function Bool updateBadvOnException(Bit#(6) ecode);
   return (ecode == `ECODE_TLBR) || (ecode == `ECODE_ADE) || (ecode == `ECODE_ALE) ||
          (ecode == `ECODE_PIL) || (ecode == `ECODE_PIS) || (ecode == `ECODE_PIF) ||
@@ -578,13 +592,7 @@ module mkCsrFile(CsrFile);
         `CSR_CTAG: res = csr_ctag;
         `CSR_DMW0: res = csr_dmw0; 
         `CSR_DMW1: res = csr_dmw1;
-        `CPUCFG_1: res = 32'h1f1f4;
-        `CPUCFG_2: res = 0;
-        `CPUCFG_10: res = 32'h5;
-        `CPUCFG_11: res = 32'h04080001;
-        `CPUCFG_12: res = 32'h04080001;
-        `CPUCFG_13: res = 0;
-        default: res = 0;
+        default: res = cpuCfgValue(idx);
     endcase
     return res;
   endmethod

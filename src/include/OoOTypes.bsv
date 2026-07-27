@@ -192,7 +192,7 @@ function Bool robTokenOlderThan(RobToken token, RobToken base, RobTag headTag);
 endfunction
 
 function Bool isAlu(IType t);
-  return t == Alu || t == Lu12i || t == Pcaddu12i;
+  return t == Alu || t == Lu12i || t == Pcaddu12i || t == Cpucfg;
 endfunction
 
 function Bool isCsrTlbSpecial(IType t);

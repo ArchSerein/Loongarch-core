@@ -209,6 +209,7 @@ module mkDCache(DCache);
   Reg#(Addr) llAddr <- mkRegU;
   Reg#(MemReqGen) generationReg <- mkReg(0);
   Wire#(Bool) cancelNow <- mkDWire(False);
+  Wire#(Bool) clearReservationReq <- mkDWire(False);
   Reg#(Bool) cacheMaintWait <- mkReg(False);
   Reg#(DCacheIndex) cacheMaintIdx <- mkRegU;
   Reg#(DCacheWayIdx) cacheMaintWay <- mkRegU;
@@ -226,6 +227,10 @@ module mkDCache(DCache);
   Fifo#(2, AxiWriteResp)  bQ  <- mkCFFifo;
 
   DCacheReplace replacer <- mkDCacheReplaceRandom;
+
+  rule applyClearReservation (clearReservationReq);
+    llValid <= False;
+  endrule
 
   function Action issueRead(DCacheIndex idx);
     action
@@ -755,7 +760,7 @@ module mkDCache(DCache);
   endmethod
 
   method Action clearReservation;
-    llValid <= False;
+    clearReservationReq <= True;
   endmethod
 
   method Action squash(Bool clearLl);
