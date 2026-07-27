@@ -246,9 +246,8 @@ function Action doCommitFlushAndRestore(
     iCache.squash;
     tlb.squashReq;
     tlb.squashFetchLookup;
-    if (clearLl) begin
-      dCache.clearReservation;
-    end
+    tlb.squashDataLookup;
+    dCache.squash(clearLl);
     doFrontendRedirect(redirectTarget, fastQ, fastGenPc, frontendEpoch,
       fetchInflightValid, if2WaitRefill, accBusy, accReqObsolete, branchPred);
     f1f2Fifo.clear;
@@ -265,7 +264,7 @@ function Action doCommitFlushAndRestore(
     aluBusy <= False;
     mulInFlight <= False;
     divInFlight <= False;
-    if (memState == MemUncacheWait || memState == MemCacheWait || memState == MemExcpWait) begin
+    if (memState != MemIdle) begin
       memState <= MemIdle;
     end
   endaction
@@ -862,6 +861,7 @@ function Action doCommitIbarAction(
     TlbArray tlb,
     Reg#(Addr) pcReg,
     ICache iCache,
+    DCache dCache,
     Reg#(Bool) if2WaitRefill,
     Fifo#(2, F1toF2) f1f2Fifo,
     Fifo#(2, F2D) f2dFifo,
@@ -894,6 +894,8 @@ function Action doCommitIbarAction(
     pcReg <= nextPc;
     iCache.squash;
     tlb.squashFetchLookup;
+    tlb.squashDataLookup;
+    dCache.squash(False);
     doFrontendRedirect(nextPc, fastQ, fastGenPc, frontendEpoch,
       fetchInflightValid, if2WaitRefill, accBusy, accReqObsolete, branchPred);
     f1f2Fifo.clear;
@@ -910,7 +912,7 @@ function Action doCommitIbarAction(
     aluBusy <= False;
     mulInFlight <= False;
     divInFlight <= False;
-    if (memState == MemUncacheWait || memState == MemCacheWait || memState == MemExcpWait) begin
+    if (memState != MemIdle) begin
       memState <= MemIdle;
     end
 

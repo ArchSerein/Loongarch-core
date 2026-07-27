@@ -120,6 +120,8 @@ module mkCore(Core);
   Reg#(Addr)        memPaddr  <- mkRegU;
   Reg#(ExcpInfo)    memExcpInfo <- mkRegU;
   Reg#(StoreForwardResult) memForward <- mkReg(StoreForwardResult{data: 0, byteEn: 0});
+  Reg#(MemReqGen) memReqGen <- mkReg(0);
+  Reg#(MemReqGen) uncacheStoreGen <- mkReg(0);
 
   // Commit state
   ConfigReg#(CommitState) commitState <- mkConfigReg(CommitIdle);
@@ -427,17 +429,17 @@ module mkCore(Core);
   endrule
 
   rule doExecALUBranch (commitState != CommitInterruptReady && aluBusy && aluBranchBusy);
-    doExecALUBody(aluExecEntry, aluBusy, cdb, rob, pcReg[1], iCache, tlb,
+    doExecALUBody(aluExecEntry, aluBusy, cdb, rob, pcReg[1], iCache, dCache, tlb,
       f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo, aluRS, muldivRS, memRS,
-      storeBuf, if2WaitRefill, rat, freeList, branchPred,
+      storeBuf, memState, memExecEntry, if2WaitRefill, rat, freeList, branchPred,
       fastQ, fastGenPc, frontendEpoch, fetchInflightValid, accBusy, accReqObsolete);
     aluBranchBusy <= False;
   endrule
 
   rule doExecALUNonBranch (commitState != CommitInterruptReady && aluBusy && !aluBranchBusy);
-    doExecALUBody(aluExecEntry, aluBusy, cdb, rob, pcReg[1], iCache, tlb,
+    doExecALUBody(aluExecEntry, aluBusy, cdb, rob, pcReg[1], iCache, dCache, tlb,
       f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo, aluRS, muldivRS, memRS,
-      storeBuf, if2WaitRefill, rat, freeList, branchPred,
+      storeBuf, memState, memExecEntry, if2WaitRefill, rat, freeList, branchPred,
       fastQ, fastGenPc, frontendEpoch, fetchInflightValid, accBusy, accReqObsolete);
     aluBranchBusy <= False;
   endrule
@@ -473,7 +475,7 @@ module mkCore(Core);
   // ============================================================
   Reg#(Bool) memNeedTlb <- mkReg(False);
 
-  rule doIssueMem (commitState == CommitIdle && memState == MemIdle && !storeBuf.hasPendingDrain &&
+  rule doIssueMem (commitState == CommitIdle && !aluBranchBusy && memState == MemIdle && !storeBuf.hasPendingDrain &&
       !(rob.headValid && rob.head.iType == St && rob.head.state == RobCompleted) &&
       !isCsrTlbSpecial(rob.headIType) &&&
       memRS.selectOldestReadyFrom(rob.headTag) matches tagged Valid .entry &&&
@@ -494,12 +496,12 @@ module mkCore(Core);
 
   rule doCollectMemTLB (commitState != CommitInterruptReady && !aluBranchBusy && memState == MemTLBWait && memNeedTlb);
     doCollectMemTLBBody(memState, memExecEntry, memVaddr,
-      memPaddr, memForward, csrf, tlb, iCache, dCache, rob, memRS, storeBuf);
+      memPaddr, memForward, memReqGen, csrf, tlb, iCache, dCache, rob, memRS, storeBuf);
   endrule
 
   rule doCollectMemDirect (commitState != CommitInterruptReady && !aluBranchBusy && memState == MemTLBWait && !memNeedTlb);
     doCollectMemDirectBody(memState, memExecEntry, memVaddr, memPaddr,
-      memForward, csrf, iCache, dCache, rob, memRS, storeBuf);
+      memForward, memReqGen, csrf, iCache, dCache, rob, memRS, storeBuf);
   endrule
 
   rule cancelDeadMemUncache (commitState != CommitInterruptReady && memState == MemUncacheWait &&
@@ -510,13 +512,13 @@ module mkCore(Core);
   rule doIssueMemUncache (commitState != CommitInterruptReady && memState == MemUncacheWait &&
       rob.tokenAlive(memExecEntry.token) && memExecEntry.robTag == rob.headTag && !storeBuf.hasPendingDrain);
     doIssueMemUncacheBody(memState, memExecEntry, memVaddr, memPaddr,
-      memForward, dCache, storeBuf, rob.headTag);
+      memForward, memReqGen, dCache, storeBuf, rob.headTag);
   endrule
 
   rule doCollectMemCache (commitState != CommitInterruptReady && !aluBranchBusy && memState == MemCacheWait &&
       !storeBuf.firstIssuedUncache);
     doCollectMemCacheBody(memState, memExecEntry, memVaddr, memPaddr,
-      memForward, dCache, cdb, rob, memRS);
+      memForward, memReqGen, dCache, cdb, rob, memRS);
   endrule
 
   rule doCollectMemCacopI (commitState != CommitInterruptReady && !aluBranchBusy && memState == MemCacopIWait);
@@ -530,8 +532,11 @@ module mkCore(Core);
   rule drainCommittedStore (commitState != CommitInterruptReady && memState == MemIdle &&
       storeBuf.notEmpty && storeBuf.first.state == StoreCommitted);
     let e = storeBuf.first;
+    MemReqGen storeGen = dCache.generation;
+    uncacheStoreGen <= storeGen;
     dCache.req(MemReq{
       op: St, addr: e.vaddr, paddr: e.paddr, useCache: e.useCache,
+      gen: storeGen, squashable: False,
       data: e.data, byteEn: truncate(e.byteEn),
       size: memByteEnToAxiSize(truncate(e.byteEn)), cacheOp: 5'b0
     });
@@ -545,7 +550,9 @@ module mkCore(Core);
   rule completeIssuedUncacheStore (commitState == CommitIdle &&
       storeBuf.notEmpty && storeBuf.first.state == StoreIssued && !storeBuf.first.useCache);
     let done <- dCache.resp;
-    storeBuf.complete(storeBuf.first.owner);
+    if (done.op == St && done.gen == uncacheStoreGen) begin
+      storeBuf.complete(storeBuf.first.owner);
+    end
   endrule
 
   // ============================================================
@@ -680,7 +687,7 @@ module mkCore(Core);
 `ifdef CONFIG_DIFFTEST
       csrSnapReg,
 `endif
-      rat, freeList, tlb, pcReg[2], iCache,
+      rat, freeList, tlb, pcReg[2], iCache, dCache,
       if2WaitRefill, f1f2Fifo, f2dFifo, d2rnFifo, rn2diFifo,
       aluRS, muldivRS, memRS, storeBuf, aluBusy, mulInFlight,
       divInFlight, memState, fastQ, fastGenPc, frontendEpoch,

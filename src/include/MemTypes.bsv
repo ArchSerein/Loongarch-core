@@ -4,6 +4,7 @@ import Types::*;
 typedef Data MemResp;
 
 typedef enum{Ld, St, Ll, Sc, Barrier, Cacop} MemOp deriving(Eq, Bits);
+typedef Bit#(16) MemReqGen;
 
 function Bit#(3) memByteEnToAxiSize(Bit#(WordSz) byteEn);
     case (byteEn)
@@ -17,6 +18,8 @@ typedef struct{
     Addr  addr;   // virtual address for cache index/word select
     Addr  paddr;  // physical address for tag compare and external memory
     Bool  useCache;
+    MemReqGen gen;
+    Bool  squashable;
     Data  data;
     Bit#(WordSz) byteEn;
     Bit#(3) size;

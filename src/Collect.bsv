@@ -101,15 +101,30 @@ function StoreBufEntry makeStoreEntry(RSEntry entry, Addr vaddr, Addr paddr, Boo
   };
 endfunction
 
-function MemReq makeMemReq(RSEntry entry, Addr vaddr, Addr paddr, Bool useCache, MemOp memOp, Data wData, Bit#(WordSz) byteEn);
+function MemReq makeMemReq(RSEntry entry, Addr vaddr, Addr paddr, Bool useCache, MemOp memOp, Data wData, Bit#(WordSz) byteEn, MemReqGen gen, Bool squashable);
   Bool isCacop = (entry.iType == Cacop);
   return MemReq{
     op: memOp, addr: vaddr, paddr: paddr,
     useCache: (memOp == Cacop || memOp == Barrier) ? True : useCache,
+    gen: gen, squashable: squashable,
     data: wData, byteEn: byteEn,
     size: memByteEnToAxiSize(truncate(fromMaybe(5'b0, entry.mask))),
     cacheOp: isCacop ? fromMaybe(0, entry.cacheOp) : 5'b0
   };
+endfunction
+
+function MemOp expectedDCacheRespOp(RSEntry entry);
+  MemOp ret = Ld;
+  if (entry.isLoad) begin
+    ret = (entry.iType == Ll) ? Ll : Ld;
+  end else if (entry.iType == Sc) begin
+    ret = Sc;
+  end else if (entry.iType == Dbar) begin
+    ret = Barrier;
+  end else if (entry.iType == Cacop) begin
+    ret = Cacop;
+  end
+  return ret;
 endfunction
 
 function Action doCollectMemTLBBody(
@@ -118,6 +133,7 @@ function Action doCollectMemTLBBody(
     Reg#(Addr) memVaddr,
     Reg#(Addr) memPaddr,
     Reg#(StoreForwardResult) memForward,
+    Reg#(MemReqGen) memReqGen,
     CsrFile csrf,
     TlbArray tlb,
     ICache iCache,
@@ -175,7 +191,8 @@ function Action doCollectMemTLBBody(
             end else if (isCacop) begin
               memOp = Cacop;
             end
-            let cacheReq = makeMemReq(entry, vaddr, dTrans.pa, memUseCache, memOp, wData, byteEn);
+            MemReqGen reqGen = dCache.generation;
+            let cacheReq = makeMemReq(entry, vaddr, dTrans.pa, memUseCache, memOp, wData, byteEn, reqGen, True);
             memForward <= entry.isLoad ?
               storeBuf.forwardForLoad(entry.token, rob.headTag, dTrans.pa) :
               StoreForwardResult{data: 0, byteEn: 0};
@@ -187,6 +204,7 @@ function Action doCollectMemTLBBody(
             end else begin
               if (memOp == Cacop) dCache.cacop(cacheReq);
               else dCache.req(cacheReq);
+              memReqGen <= reqGen;
               memState <= MemCacheWait;
             end
           end
@@ -202,6 +220,7 @@ function Action doCollectMemDirectBody(
     Reg#(Addr) memVaddr,
     Reg#(Addr) memPaddr,
     Reg#(StoreForwardResult) memForward,
+    Reg#(MemReqGen) memReqGen,
     CsrFile csrf,
     ICache iCache,
     DCache dCache,
@@ -248,7 +267,8 @@ function Action doCollectMemDirectBody(
           end else if (isCacop) begin
             memOp = Cacop;
           end
-          let cacheReq = makeMemReq(entry, vaddr, paddr, memUseCache, memOp, wData, byteEn);
+          MemReqGen reqGen = dCache.generation;
+          let cacheReq = makeMemReq(entry, vaddr, paddr, memUseCache, memOp, wData, byteEn, reqGen, True);
           memForward <= entry.isLoad ?
             storeBuf.forwardForLoad(entry.token, rob.headTag, paddr) :
             StoreForwardResult{data: 0, byteEn: 0};
@@ -260,6 +280,7 @@ function Action doCollectMemDirectBody(
           end else begin
             if (memOp == Cacop) dCache.cacop(cacheReq);
             else dCache.req(cacheReq);
+            memReqGen <= reqGen;
             memState <= MemCacheWait;
           end
         end
@@ -274,6 +295,7 @@ function Action doIssueMemUncacheBody(
     Reg#(Addr) memVaddr,
     Reg#(Addr) memPaddr,
     Reg#(StoreForwardResult) memForward,
+    Reg#(MemReqGen) memReqGen,
     DCache dCache,
     StoreBuf#(16) storeBuf,
     RobTag headTag
@@ -283,9 +305,12 @@ function Action doIssueMemUncacheBody(
     Addr vaddr = memVaddr;
     Addr paddr = memPaddr;
     ByteMask mask = fromMaybe(5'b0, entry.mask);
+    MemReqGen reqGen = dCache.generation;
     memForward <= storeBuf.forwardForLoad(entry.token, headTag, paddr);
+    memReqGen <= reqGen;
     dCache.req(MemReq{
       op: Ld, addr: vaddr, paddr: paddr, useCache: False,
+      gen: reqGen, squashable: True,
       data: 0, byteEn: 0,
       size: memByteEnToAxiSize(truncate(mask)), cacheOp: 0
     });
@@ -299,6 +324,7 @@ function Action doCollectMemCacheBody(
     Reg#(Addr) memVaddr,
     Reg#(Addr) memPaddr,
     Reg#(StoreForwardResult) memForward,
+    Reg#(MemReqGen) memReqGen,
     DCache dCache,
     CDB cdb,
     ROB rob,
@@ -307,9 +333,15 @@ function Action doCollectMemCacheBody(
   action
     let d <- dCache.resp;
     let entry = memExecEntry;
-    memState <= MemIdle;
+    Bool live = rob.tokenAlive(entry.token);
+    Bool respMatches = d.gen == memReqGen && d.op == expectedDCacheRespOp(entry);
 
-    if (rob.tokenAlive(entry.token)) begin
+    if (!live) begin
+      memState <= MemIdle;
+    end else if (!respMatches) begin
+      memState <= MemCacheWait;
+    end else begin
+      memState <= MemIdle;
       if (entry.isLoad) begin
         ByteMask m = fromMaybe(5'b00000, entry.mask);
         StoreForwardResult fwd = memForward;

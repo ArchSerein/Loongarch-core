@@ -62,6 +62,7 @@ function Action doExecALUBody(
     ROB rob,
     Reg#(Addr) pcReg,
     ICache iCache,
+    DCache dCache,
     TlbArray tlb,
     Fifo#(2, F1toF2) f1f2Fifo,
     Fifo#(2, F2D) f2dFifo,
@@ -71,6 +72,8 @@ function Action doExecALUBody(
     ResStation#(4) muldivRS,
     ResStation#(16) memRS,
     StoreBuf#(16) storeBuf,
+    Reg#(MemExecState) memState,
+    Reg#(RSEntry) memExecEntry,
     Reg#(Bool) if2WaitRefill,
     RAT rat,
     FreeList freeList,
@@ -136,6 +139,17 @@ function Action doExecALUBody(
       pcReg <= eInst.targetAddr;
       iCache.squash;
       tlb.squashFetchLookup;
+      Bool memYounger = memState != MemIdle &&
+        robTokenYoungerThan(memExecEntry.token, entry.token, rob.headTag);
+      if (memYounger) begin
+        if (memState == MemCacheWait) begin
+          dCache.squash(False);
+        end
+        if (memState == MemTLBWait) begin
+          tlb.squashDataLookup;
+        end
+        memState <= MemIdle;
+      end
       f1f2Fifo.clear;
       f2dFifo.clear;
       d2rnFifo.clear;
