@@ -207,7 +207,8 @@ typedef enum {
   MemUncacheWait, // translated MMIO load waiting to reach ROB head
   MemCacopIWait,  // waiting for I-Cache cacop response
   MemIbarWait,    // waiting for full I-Cache invalidation
-  MemTLBOpWait    // waiting for TLB operation response (Tlbrd/Tlbwr/etc.)
+  MemTLBOpWait,   // waiting for TLB operation response (Tlbrd/Tlbwr/etc.)
+  MemExcpWait     // latched memory alignment exception to report
 } MemExecState deriving(Bits, Eq);
 
 // Normalize a logical register index for renaming: R0 is never renamed

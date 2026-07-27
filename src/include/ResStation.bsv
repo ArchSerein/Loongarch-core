@@ -3,6 +3,13 @@ import ProcTypes::*;
 import Vector::*;
 import OoOTypes::*;
 
+typedef struct {
+  Bool valid;
+  Bit#(5) age;
+  Bit#(TLog#(size)) index;
+  RSEntry entry;
+} RSReadyCandidate#(numeric type size);
+
 // ============================================================
 // Reservation Station (parameterized)
 // Tomasulo-style: CDB wakeup + oldest-ready selection
@@ -50,6 +57,72 @@ module mkResStation(ResStation#(size))
 
   function Bit#(TLog#(size)) nextPtr(Bit#(TLog#(size)) ptr);
     return (ptr == maxIndex) ? 0 : ptr + 1;
+  endfunction
+
+  function RSReadyCandidate#(size) chooseOlderReady(
+      RSReadyCandidate#(size) a,
+      RSReadyCandidate#(size) b
+  );
+    RSReadyCandidate#(size) ret = a;
+    if (!a.valid) begin
+      ret = b;
+    end else if (b.valid &&
+        (b.age < a.age || (b.age == a.age && b.index < a.index))) begin
+      ret = b;
+    end
+    return ret;
+  endfunction
+
+  function RSReadyCandidate#(size) reduceReadyCandidates(
+      Vector#(size, RSReadyCandidate#(size)) stage0
+  );
+    // Current RS instantiations are 4 or 16 entries.  Keeping the stages
+    // explicit prevents the ROB-age selector from elaborating as a serial fold.
+    Vector#(size, RSReadyCandidate#(size)) stage1 = stage0;
+    for (Integer i = 0; i < valueOf(size) / 2; i = i + 1) begin
+      stage1[i] = chooseOlderReady(stage0[2 * i], stage0[2 * i + 1]);
+    end
+
+    Vector#(size, RSReadyCandidate#(size)) stage2 = stage1;
+    for (Integer i = 0; i < valueOf(size) / 4; i = i + 1) begin
+      stage2[i] = chooseOlderReady(stage1[2 * i], stage1[2 * i + 1]);
+    end
+
+    Vector#(size, RSReadyCandidate#(size)) stage3 = stage2;
+    for (Integer i = 0; i < valueOf(size) / 8; i = i + 1) begin
+      stage3[i] = chooseOlderReady(stage2[2 * i], stage2[2 * i + 1]);
+    end
+
+    Vector#(size, RSReadyCandidate#(size)) stage4 = stage3;
+    for (Integer i = 0; i < valueOf(size) / 16; i = i + 1) begin
+      stage4[i] = chooseOlderReady(stage3[2 * i], stage3[2 * i + 1]);
+    end
+
+    return stage4[0];
+  endfunction
+
+  function Bool balancedOr(Bit#(size) stage0);
+    Bit#(size) stage1 = stage0;
+    for (Integer i = 0; i < valueOf(size) / 2; i = i + 1) begin
+      stage1[i] = stage0[2 * i] | stage0[2 * i + 1];
+    end
+
+    Bit#(size) stage2 = stage1;
+    for (Integer i = 0; i < valueOf(size) / 4; i = i + 1) begin
+      stage2[i] = stage1[2 * i] | stage1[2 * i + 1];
+    end
+
+    Bit#(size) stage3 = stage2;
+    for (Integer i = 0; i < valueOf(size) / 8; i = i + 1) begin
+      stage3[i] = stage2[2 * i] | stage2[2 * i + 1];
+    end
+
+    Bit#(size) stage4 = stage3;
+    for (Integer i = 0; i < valueOf(size) / 16; i = i + 1) begin
+      stage4[i] = stage3[2 * i] | stage3[2 * i + 1];
+    end
+
+    return unpack(stage4[0]);
   endfunction
 
   (* fire_when_enabled *)
@@ -214,33 +287,31 @@ module mkResStation(ResStation#(size))
   endmethod
 
   method Maybe#(RSEntry) selectOldestReadyForAlu(RobTag headTag, Bool headValid);
-    Maybe#(RSEntry) ret = tagged Invalid;
-    Bool foundHeadBranch = False;
+    Maybe#(RSEntry) headBranch = tagged Invalid;
 
     for (Integer i = 0; i < valueOf(size); i = i + 1) begin
       RSEntry e = entries[fromInteger(i)];
       if (validMask[i] == 1 && isBranch(e.iType) && headValid && e.robTag == headTag &&
           !isValid(e.qj) && !isValid(e.qk)) begin
-        ret = tagged Valid e;
-        foundHeadBranch = True;
+        headBranch = tagged Valid e;
       end
     end
 
-    if (!foundHeadBranch) begin
-      Bit#(5) bestAge = 0;
-      Bool found = False;
-      for (Integer i = 0; i < valueOf(size); i = i + 1) begin
-        RSEntry e = entries[fromInteger(i)];
-        Bit#(5) entryAge = e.robTag - headTag;
-        if (validMask[i] == 1 && !isBranch(e.iType) && !isValid(e.qj) && !isValid(e.qk) &&
-            (!found || entryAge < bestAge)) begin
-          ret = tagged Valid e;
-          bestAge = entryAge;
-          found = True;
-        end
-      end
+    Vector#(size, RSReadyCandidate#(size)) candidates = newVector;
+    for (Integer i = 0; i < valueOf(size); i = i + 1) begin
+      Bit#(TLog#(size)) idx = fromInteger(i);
+      RSEntry e = entries[idx];
+      candidates[i] = RSReadyCandidate {
+        valid: validMask[i] == 1 && !isBranch(e.iType) && !isValid(e.qj) && !isValid(e.qk),
+        age: e.robTag - headTag,
+        index: idx,
+        entry: e
+      };
     end
-    return ret;
+
+    RSReadyCandidate#(size) winner = reduceReadyCandidates(candidates);
+    Maybe#(RSEntry) nonBranch = winner.valid ? tagged Valid winner.entry : tagged Invalid;
+    return isValid(headBranch) ? headBranch : nonBranch;
   endmethod
 
   method Action wakeup(Vector#(4, CDBMessage) cdbs);
@@ -267,33 +338,31 @@ module mkResStation(ResStation#(size))
   endmethod
 
   method Maybe#(RSEntry) selectOldestReadyFrom(RobTag headTag);
-    Maybe#(RSEntry) ret = tagged Invalid;
-    Bit#(5) bestAge = 0;
-    Bool found = False;
+    Vector#(size, RSReadyCandidate#(size)) candidates = newVector;
     for (Integer i = 0; i < valueOf(size); i = i + 1) begin
-      RSEntry e = entries[fromInteger(i)];
-      Bit#(5) entryAge = e.robTag - headTag;
-      if (validMask[i] == 1 && !isValid(e.qj) && !isValid(e.qk) &&
-          (!found || entryAge < bestAge)) begin
-        ret = tagged Valid e;
-        bestAge = entryAge;
-        found = True;
-      end
+      Bit#(TLog#(size)) idx = fromInteger(i);
+      RSEntry e = entries[idx];
+      candidates[i] = RSReadyCandidate {
+        valid: validMask[i] == 1 && !isValid(e.qj) && !isValid(e.qk),
+        age: e.robTag - headTag,
+        index: idx,
+        entry: e
+      };
     end
-    return ret;
+
+    RSReadyCandidate#(size) winner = reduceReadyCandidates(candidates);
+    return winner.valid ? tagged Valid winner.entry : tagged Invalid;
   endmethod
 
   method Bool hasOlderStore(RobTag tag, RobTag headTag);
-    Bool ret = False;
     Bit#(5) tagAge = tag - headTag;
+    Bit#(size) olderStoreMask = 0;
     for (Integer i = 0; i < valueOf(size); i = i + 1) begin
       RSEntry e = entries[fromInteger(i)];
       Bit#(5) entryAge = e.robTag - headTag;
-      if (validMask[i] == 1 && e.isStore && e.robTag != tag && entryAge < tagAge) begin
-        ret = True;
-      end
+      olderStoreMask[i] = pack(validMask[i] == 1 && e.isStore && e.robTag != tag && entryAge < tagAge);
     end
-    return ret;
+    return balancedOr(olderStoreMask);
   endmethod
 
   method Action remove(RobToken token);

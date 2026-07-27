@@ -195,6 +195,7 @@ function Action doIssueMemBody(
     Reg#(RSEntry) memExecEntry,
     Reg#(Addr) memVaddr,
     Reg#(Addr) memPaddr,
+    Reg#(ExcpInfo) memExcpInfo,
     Reg#(Bool) memNeedTlb,
     Reg#(MemExecState) memState,
     CsrFile csrf,
@@ -221,9 +222,12 @@ function Action doIssueMemBody(
       ExcpInfo excp = checkMemHasExcp(entry.mask, vaddr, mkNoExcp);
 
       if (excp.valid) begin
-        rob.updateExcp(entry.token, excp);
-        rob.updateMem(entry.token, RobCompleted);
-        memRS.remove(entry.token);
+        memExecEntry <= entry;
+        memVaddr <= vaddr;
+        memPaddr <= 0;
+        memNeedTlb <= False;
+        memExcpInfo <= excp;
+        memState <= MemExcpWait;
       end else begin
         memExecEntry <= entry;
         memVaddr <= vaddr;
@@ -239,6 +243,24 @@ function Action doIssueMemBody(
         end
       end
     end
+  endaction
+endfunction
+
+function Action doReportMemExcpBody(
+    Reg#(MemExecState) memState,
+    Reg#(RSEntry) memExecEntry,
+    Reg#(ExcpInfo) memExcpInfo,
+    ROB rob,
+    ResStation#(16) memRS
+);
+  action
+    let entry = memExecEntry;
+    if (rob.tokenAlive(entry.token)) begin
+      rob.updateExcp(entry.token, memExcpInfo);
+      rob.updateMem(entry.token, RobCompleted);
+      memRS.remove(entry.token);
+    end
+    memState <= MemIdle;
   endaction
 endfunction
 

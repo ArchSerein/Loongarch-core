@@ -265,7 +265,7 @@ function Action doCommitFlushAndRestore(
     aluBusy <= False;
     mulInFlight <= False;
     divInFlight <= False;
-    if (memState == MemUncacheWait || memState == MemCacheWait) begin
+    if (memState == MemUncacheWait || memState == MemCacheWait || memState == MemExcpWait) begin
       memState <= MemIdle;
     end
   endaction
@@ -910,7 +910,7 @@ function Action doCommitIbarAction(
     aluBusy <= False;
     mulInFlight <= False;
     divInFlight <= False;
-    if (memState == MemUncacheWait || memState == MemCacheWait) begin
+    if (memState == MemUncacheWait || memState == MemCacheWait || memState == MemExcpWait) begin
       memState <= MemIdle;
     end
 

@@ -118,6 +118,7 @@ module mkCore(Core);
 
   Reg#(Addr)        memVaddr  <- mkRegU;
   Reg#(Addr)        memPaddr  <- mkRegU;
+  Reg#(ExcpInfo)    memExcpInfo <- mkRegU;
   Reg#(StoreForwardResult) memForward <- mkReg(StoreForwardResult{data: 0, byteEn: 0});
 
   // Commit state
@@ -483,8 +484,12 @@ module mkCore(Core);
       (entry.iType == Ld || entry.robTag == rob.headTag) &&
       (entry.iType != St || storeBuf.notFull) &&
       (!entry.isLoad || !memRS.hasOlderStore(entry.robTag, rob.headTag)));
-    doIssueMemBody(entry, memExecEntry, memVaddr, memPaddr, memNeedTlb,
-      memState, csrf, tlb, iCache, rob, memRS, storeBuf);
+    doIssueMemBody(entry, memExecEntry, memVaddr, memPaddr, memExcpInfo,
+      memNeedTlb, memState, csrf, tlb, iCache, rob, memRS, storeBuf);
+  endrule
+
+  rule doReportMemExcp (commitState != CommitInterruptReady && !aluBranchBusy && memState == MemExcpWait);
+    doReportMemExcpBody(memState, memExecEntry, memExcpInfo, rob, memRS);
   endrule
 
   rule doCollectMemTLB (commitState != CommitInterruptReady && !aluBranchBusy && memState == MemTLBWait && memNeedTlb);
