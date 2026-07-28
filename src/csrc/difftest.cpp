@@ -290,9 +290,6 @@ int Difftest::step(std::uint64_t main_time) {
             ref_preexecuted_commit_ = false;
             ignore_store_compare[index] = true;
         } else {
-            if (is_difftest_device_access(dut.store[index])) {
-                ignore_store_compare[index] = true;
-            }
             do_instr_commit(index);
         }
         dut.commit[index].valid = 0;

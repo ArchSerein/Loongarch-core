@@ -1,5 +1,6 @@
 import Types::*;
 import ProcTypes::*;
+import CoreTypes::*;
 import Ehr::*;
 import ConfigReg::*;
 import Fifo::*;
@@ -12,8 +13,7 @@ import DiffTypes::*;
 
 interface CsrFile;
   method Action setInterrupt(Bit#(8) val);
-  method Bool interruptDetected;
-  method Bool hasInterrupt(Maybe#(CsrIndx) csrIdx, Data writeVal, Bool blockedBySideEffect);
+  method InterruptInfo interruptDetected;
   method Data crmd;
   method Data prmd;
   method Data ecfg;
@@ -53,6 +53,20 @@ interface CsrFile;
   `endif
 endinterface
 
+function Data cpuCfgValue(CsrIndx idx);
+  Data res = 0;
+  case (idx)
+    `CPUCFG_1:  res = 32'h0001f1f4;
+    `CPUCFG_2:  res = 0;
+    `CPUCFG_10: res = 32'h00000005;
+    `CPUCFG_11: res = 32'h04080001;
+    `CPUCFG_12: res = 32'h04080001;
+    `CPUCFG_13: res = 0;
+    default:    res = 0;
+  endcase
+  return res;
+endfunction
+
 function Bool updateBadvOnException(Bit#(6) ecode);
   return (ecode == `ECODE_TLBR) || (ecode == `ECODE_ADE) || (ecode == `ECODE_ALE) ||
          (ecode == `ECODE_PIL) || (ecode == `ECODE_PIS) || (ecode == `ECODE_PIF) ||
@@ -84,46 +98,32 @@ function Data csrEstatWithInterrupts(Data estat, Bool timerIntPending, Bit#(8) i
   return nextEstat;
 endfunction
 
-function Bool csrIsInterruptControlCsr(CsrIndx idx);
-  return idx == `CSR_CRMD || idx == `CSR_ECFG || idx == `CSR_ESTAT ||
-    idx == `CSR_TCFG || idx == `CSR_TICLR;
+function Bit#(4) interruptNoOf(Bit#(13) enabledVector);
+  Bit#(4) interruptNo = 0;
+  if      (enabledVector[12] == 1'b1) interruptNo = 12;
+  else if (enabledVector[11] == 1'b1) interruptNo = 11;
+  else if (enabledVector[10] == 1'b1) interruptNo = 10;
+  else if (enabledVector[9]  == 1'b1) interruptNo = 9;
+  else if (enabledVector[8]  == 1'b1) interruptNo = 8;
+  else if (enabledVector[7]  == 1'b1) interruptNo = 7;
+  else if (enabledVector[6]  == 1'b1) interruptNo = 6;
+  else if (enabledVector[5]  == 1'b1) interruptNo = 5;
+  else if (enabledVector[4]  == 1'b1) interruptNo = 4;
+  else if (enabledVector[3]  == 1'b1) interruptNo = 3;
+  else if (enabledVector[2]  == 1'b1) interruptNo = 2;
+  else if (enabledVector[1]  == 1'b1) interruptNo = 1;
+  else if (enabledVector[0]  == 1'b1) interruptNo = 0;
+  return interruptNo;
 endfunction
 
-function Tuple3#(Data, Data, Data) csrInterruptCsrView(
-  Maybe#(CsrIndx) csrIdx, Data writeVal, Data curCrmd, Data curEcfg,
-  Data curEstat);
-  Data nextCrmd = curCrmd;
-  Data nextEcfg = curEcfg;
-  Data nextEstat = curEstat;
-
-  if (csrIdx matches tagged Valid .idx) begin
-    case (idx)
-      `CSR_CRMD: nextCrmd = (writeVal & 32'h000001FF) | (curCrmd & 32'hFFFFFE00);
-      `CSR_ECFG: nextEcfg = (writeVal & 32'h00001BFF) | (curEcfg & 32'hFFFFE400);
-      `CSR_ESTAT: nextEstat = (writeVal & 32'h00000003) | (curEstat & 32'hFFFFFFFC);
-      `CSR_TCFG: begin
-        if (writeVal[`CSR_TCFG_EN] == 1'b1 && writeVal[`CSR_TCFG_INITV] == 0) begin
-          nextEstat = curEstat | 32'h00000800;
-        end
-      end
-      `CSR_TICLR: begin
-        if (writeVal[`CSR_TICLR_CLR] == 1'b1) begin
-          nextEstat = curEstat & 32'hFFFFF7FF;
-        end
-      end
-      default: begin end
-    endcase
-  end
-
-  return tuple3(nextCrmd, nextEcfg, nextEstat);
-endfunction
-
-function Data csrPendingInterruptBits(Data ecfg, Data estat);
-  return estat & ecfg & 32'h00001fff;
-endfunction
-
-function Bool csrHasInterrupt(Data crmd, Data ecfg, Data estat);
-  return crmd[`CSR_CRMD_IE] == 1'b1 && csrPendingInterruptBits(ecfg, estat) != 0;
+function InterruptInfo interruptInfoOf(Data crmd, Data ecfg, Data estat);
+  Data enabled = estat & ecfg & 32'h00001fff;
+  Bit#(13) enabledVector = enabled[12:0];
+  return InterruptInfo{
+    valid: crmd[`CSR_CRMD_IE] == 1'b1 && enabledVector != 0,
+    enabledVector: enabledVector,
+    interruptNo: interruptNoOf(enabledVector)
+  };
 endfunction
 
 function Data setTimerIntPending(Data estat);
@@ -136,28 +136,6 @@ function Data clearTimerIntPending(Data estat);
   Data nextEstat = estat;
   nextEstat[`CSR_ESTAT_IS_2] = 1'b0;
   return nextEstat;
-endfunction
-
-function Data updateTimerView(Data tcfg, Data tval, Bool timerInt, Bool wrote_tcfg, Bool cleared_timer_int);
-  Data next_tval = tval;
-  Bool next_timerInt = timerInt;
-
-  if (!wrote_tcfg && !cleared_timer_int && tcfg[`CSR_TCFG_EN] == 1) begin
-    if (next_tval != 0) begin
-      let tval_next = next_tval - 1;
-      if (tval_next == 0) begin
-        next_timerInt = True;
-        if (tcfg[`CSR_TCFG_PERIOD] == 1)
-          next_tval = {tcfg[`CSR_TCFG_INITV], 2'b0};
-        else
-          next_tval = 0;
-      end else begin
-        next_tval = tval_next;
-      end
-    end
-  end
-
-  return (next_timerInt ? 32'h80000000 : 32'h0) | next_tval;
 endfunction
 
 `ifdef CONFIG_DIFFTEST
@@ -540,25 +518,9 @@ module mkCsrFile(CsrFile);
     externalInterrupt <= val;
   endmethod
 
-  method Bool interruptDetected;
-    return csrHasInterrupt(csr_crmd, csr_ecfg,
+  method InterruptInfo interruptDetected;
+    return interruptInfoOf(csr_crmd, csr_ecfg,
       csrEstatWithInterrupts(csr_estat, timerIntPending, externalInterrupt));
-  endmethod
-
-  method Bool hasInterrupt(Maybe#(CsrIndx) csrIdx, Data writeVal,
-      Bool blockedBySideEffect);
-    Data estatWithInterrupts = csrEstatWithInterrupts(csr_estat, timerIntPending,
-      externalInterrupt);
-    let intCsrView = csrInterruptCsrView(csrIdx, writeVal, csr_crmd, csr_ecfg,
-      estatWithInterrupts);
-    Bool hasIntRaw = csrHasInterrupt(tpl_1(intCsrView), tpl_2(intCsrView),
-      tpl_3(intCsrView));
-    Bool writesInterruptCsr = False;
-    if (csrIdx matches tagged Valid .idx) begin
-      writesInterruptCsr = csrIsInterruptControlCsr(idx);
-    end
-
-    return !blockedBySideEffect && !writesInterruptCsr && hasIntRaw;
   endmethod
 
   method Data crmd;
@@ -630,13 +592,7 @@ module mkCsrFile(CsrFile);
         `CSR_CTAG: res = csr_ctag;
         `CSR_DMW0: res = csr_dmw0; 
         `CSR_DMW1: res = csr_dmw1;
-        `CPUCFG_1: res = 32'h1f1f4;
-        `CPUCFG_2: res = 0;
-        `CPUCFG_10: res = 32'h5;
-        `CPUCFG_11: res = 32'h04080001;
-        `CPUCFG_12: res = 32'h04080001;
-        `CPUCFG_13: res = 0;
-        default: res = 0;
+        default: res = cpuCfgValue(idx);
     endcase
     return res;
   endmethod

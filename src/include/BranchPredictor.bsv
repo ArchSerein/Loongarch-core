@@ -10,7 +10,7 @@ import PredMeta::*;
 import Vector::*;
 
 // ============================================================================
-// Branch Prediction Unit — Top-Level Integration
+// Branch Prediction Unit - Top-Level Integration
 // ============================================================================
 // Integrates all sub-predictors into a two-layer branch prediction system:
 //
@@ -57,6 +57,8 @@ interface BranchPredictor;
     method Addr predict(Addr pc);
     method FastPredInfo getFastInfo(Addr pc);
     method Action startAccurate(Addr pc);
+    method Bool accurateReady;
+    method Action cancelAccurate();
     method ActionValue#(BPUResult) getAccurateResult();
     method Addr getRefinedPc(Addr pc);
     method Bool needsOverride(Addr pc);
@@ -66,6 +68,7 @@ interface BranchPredictor;
     );
 
     method Action commit(Addr pc);
+    method Action commitHistory(Bool actualTaken, Addr actualTarget, CfiType cfiType);
     method ActionValue#(Maybe#(PredictorUndoEntry)) rollbackStep();
     method Bool needRollback(Addr pc);
     method UndoLogPtr getRollbackTarget(Addr pc);
@@ -145,6 +148,12 @@ module mkBranchPredictor(BranchPredictor);
         ittage.startPredict(pc, snap.phist_snapshot);
     endmethod
 
+    method Bool accurateReady = accValid;
+
+    method Action cancelAccurate();
+        accValid <= False;
+    endmethod
+
     method ActionValue#(BPUResult) getAccurateResult() if (accValid);
         Maybe#(MBtbEntry) mbtbRes = mbtb.lookupResult(accPc);
         TagePredInfo     tageRes  = tage.predictResult();
@@ -210,7 +219,13 @@ module mkBranchPredictor(BranchPredictor);
     );
         smallBtb.update(pc, cfiType, actualTarget, actualTaken);
         mbtb.update(pc, cfiType, actualTarget);
+    endmethod
 
+    method Action commit(Addr pc);
+        predQueue.deq(pc);
+    endmethod
+
+    method Action commitHistory(Bool actualTaken, Addr actualTarget, CfiType cfiType);
         if (cfiType == CFI_COND) begin
             hist.updateGhr(actualTaken);
         end else if (cfiType == CFI_JAL || cfiType == CFI_CALL) begin
@@ -220,17 +235,14 @@ module mkBranchPredictor(BranchPredictor);
         end
     endmethod
 
-    method Action commit(Addr pc);
-        predQueue.deq(pc);
-    endmethod
-
     method ActionValue#(Maybe#(PredictorUndoEntry)) rollbackStep();
         Maybe#(PredictorUndoEntry) result = tagged Invalid;
 
         if (rollbackActive && rollbackPos != rollbackTarget) begin
-            undoLog.pop();
-            UndoLogPtr idx = undoLog.getTail();
+            // tail points to the next free slot; restore the newest entry.
+            UndoLogPtr idx = undoLog.getTail() - 1;
             PredictorUndoEntry e = undoLog.read(idx);
+            undoLog.pop();
 
             case (e.upd_type)
                 UPD_SMALL_BTB: begin

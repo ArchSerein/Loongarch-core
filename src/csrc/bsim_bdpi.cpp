@@ -410,6 +410,15 @@ void run_pending_difftest() {
 
   const int state = difftest->step(diff_main_time);
   ++diff_main_time;
+  instr_commit_t* commit_info = difftest->get_instr_commit(0);
+  std::uint32_t pc 	 = commit_info->pc;
+  std::uint32_t inst = commit_info->inst;
+  std::uint8_t wen 	 = commit_info->wen;
+  std::uint8_t wdest = commit_info->wdest;
+  std::uint32_t wdata= commit_info->wdata;
+  std::fprintf(stderr,
+	"[BDPIDIFF] diff info pc=0x%08x inst=0x%08x wen=%u wdest=%u wdata=0x%08x\n",
+	pc, inst, wen, wdest, wdata);
   if (state == STATE_ABORT) {
     std::cerr << "\nbsim: DIFFTEST MISMATCH\n";
     difftest->display();
@@ -584,16 +593,14 @@ extern "C" void bdpi_difftest_instr_commit(unsigned char valid, unsigned int pc,
                                            unsigned char wen, unsigned char wdest,
                                            unsigned int wdata, unsigned char skip,
                                            unsigned char is_tlbfill,
-                                           unsigned char tlbfill_index) {
+                                           unsigned char tlbfill_index,
+                                           unsigned char csr_rstat,
+                                           unsigned int csr_data) {
   Difftest* difftest = active_difftest();
   if (difftest == nullptr) {
     return;
   }
   (void)skip;
-
-  std::fprintf(stderr,
-               "[BDPIDIFF] commit valid=%u pc=0x%08x inst=0x%08x wen=%u wdest=%u wdata=0x%08x\n",
-               valid, pc, inst, wen, wdest, wdata);
 
   instr_commit_t* commit = difftest->get_instr_commit(0);
   commit->valid = valid;
@@ -606,6 +613,8 @@ extern "C" void bdpi_difftest_instr_commit(unsigned char valid, unsigned int pc,
   commit->wdata = wdata;
   commit->is_TLBFILL = (is_tlbfill != 0) ? 1 : 0;
   commit->TLBFILL_index = tlbfill_index;
+  commit->csr_rstat = (csr_rstat != 0) ? 1 : 0;
+  commit->csr_data = csr_data;
   commit->is_CNTinst = 0;
   commit->timer_64_value = last_timer_64_value;
 
@@ -632,6 +641,7 @@ extern "C" void bdpi_difftest_instr_commit(unsigned char valid, unsigned int pc,
   if (valid != 0) {
     trigger_difftest();
   }
+  run_pending_difftest();
 }
 #endif
 
@@ -643,9 +653,26 @@ uint64_t icache_miss_cnt;
 uint64_t icache_miss_cycle_cnt;
 uint64_t dcache_miss_cnt;
 uint64_t dcache_miss_cycle_cnt;
-uint64_t branch_cnt;
-uint64_t branch_mispredict_cnt;
-uint64_t stall_cycles[4]; // 0: IF, 1: ID/RR, 2: EXE, 3: MEM
+uint64_t tage_mispredict_cnt;
+uint64_t fast_mispredict_cnt;
+uint64_t fetch_stall_cycle_cnt;
+uint64_t dispatch_dependency_stall_cycle_cnt;
+uint64_t memory_stall_cycle_cnt;
+uint64_t fpq_enq_fast_cnt;
+uint64_t fpq_deq_fetch_cnt;
+uint64_t fpq_full_cycles_cnt;
+uint64_t fpq_confirmed_depth_cnt;
+uint64_t fpq_unverified_depth_cnt;
+uint64_t fetch_use_accurate_cnt;
+uint64_t fetch_fast_fallback_cnt;
+uint64_t accurate_started_cnt;
+uint64_t accurate_match_cnt;
+uint64_t accurate_override_cnt;
+uint64_t accurate_obsolete_drop_cnt;
+uint64_t accurate_truncated_entries_cnt;
+uint64_t accurate_stale_drop_cnt;
+uint64_t frontend_wait_fetch_cycles_cnt;
+uint64_t frontend_wait_decode_cycles_cnt;
 
 extern "C" void inst_count() {
   ++inst_cnt;
@@ -665,12 +692,65 @@ extern "C" void perf_dcache_miss() {
 extern "C" void perf_dcache_miss_cycle() {
   ++dcache_miss_cycle_cnt;
 }
-extern "C" void perf_branch_exec(unsigned char mispredict) {
-  ++branch_cnt;
-  if (mispredict) ++branch_mispredict_cnt;
+extern "C" void perf_branch_mispredict_tage() {
+  ++tage_mispredict_cnt;
 }
-extern "C" void perf_pipeline_stall(unsigned char stage) {
-  if (stage < 4) ++stall_cycles[stage];
+extern "C" void perf_branch_mispredict_fast() {
+  ++fast_mispredict_cnt;
+}
+extern "C" void perf_fetch_stall_cycle() {
+  ++fetch_stall_cycle_cnt;
+}
+extern "C" void perf_dispatch_dependency_stall_cycle() {
+  ++dispatch_dependency_stall_cycle_cnt;
+}
+extern "C" void perf_memory_stall_cycle() {
+  ++memory_stall_cycle_cnt;
+}
+extern "C" void perf_fpq_enq_fast() {
+  ++fpq_enq_fast_cnt;
+}
+extern "C" void perf_fpq_deq_fetch() {
+  ++fpq_deq_fetch_cnt;
+}
+extern "C" void perf_fpq_full_cycles() {
+  ++fpq_full_cycles_cnt;
+}
+extern "C" void perf_fpq_confirmed_depth(std::uint64_t depth) {
+  fpq_confirmed_depth_cnt += depth;
+}
+extern "C" void perf_fpq_unverified_depth(std::uint64_t depth) {
+  fpq_unverified_depth_cnt += depth;
+}
+extern "C" void perf_fetch_use_accurate() {
+  ++fetch_use_accurate_cnt;
+}
+extern "C" void perf_fetch_fast_fallback() {
+  ++fetch_fast_fallback_cnt;
+}
+extern "C" void perf_accurate_started() {
+  ++accurate_started_cnt;
+}
+extern "C" void perf_accurate_match() {
+  ++accurate_match_cnt;
+}
+extern "C" void perf_accurate_override() {
+  ++accurate_override_cnt;
+}
+extern "C" void perf_accurate_obsolete_drop() {
+  ++accurate_obsolete_drop_cnt;
+}
+extern "C" void perf_accurate_truncated_entries() {
+  ++accurate_truncated_entries_cnt;
+}
+extern "C" void perf_accurate_stale_drop() {
+  ++accurate_stale_drop_cnt;
+}
+extern "C" void perf_frontend_wait_fetch_cycles() {
+  ++frontend_wait_fetch_cycles_cnt;
+}
+extern "C" void perf_frontend_wait_decode_cycles() {
+  ++frontend_wait_decode_cycles_cnt;
 }
 #endif
 
@@ -706,22 +786,43 @@ int main(int argc, char** argv) {
   }
 
   #ifdef CONFIG_TRACE_PERFORMANCE
-  double ipc = static_cast<double>(inst_cnt) / static_cast<double>(cycle_cnt);
+  double ipc = cycle_cnt ? static_cast<double>(inst_cnt) / static_cast<double>(cycle_cnt) : 0.0;
+  double inst_den = inst_cnt ? static_cast<double>(inst_cnt) : 1.0;
+  double cycle_den = cycle_cnt ? static_cast<double>(cycle_cnt) : 1.0;
   printf("\n--- Performance Statistics ---\n");
   printf("Cycles:            0x%lx (%ld)\n", cycle_cnt, cycle_cnt);
   printf("Instructions:      0x%lx (%ld)\n", inst_cnt, inst_cnt);
   printf("IPC:               %f\n", ipc);
   printf("ICache Misses:     %ld\n", icache_miss_cnt);
-  printf("ICache Miss Cycles:%ld (%.2f%%)\n", icache_miss_cycle_cnt, 100.0 * icache_miss_cycle_cnt / cycle_cnt);
+  printf("ICache Miss Cycles:%ld (%.2f%%)\n", icache_miss_cycle_cnt, 100.0 * icache_miss_cycle_cnt / cycle_den);
   printf("DCache Misses:     %ld\n", dcache_miss_cnt);
-  printf("DCache Miss Cycles:%ld (%.2f%%)\n", dcache_miss_cycle_cnt, 100.0 * dcache_miss_cycle_cnt / cycle_cnt);
-  printf("Branches:          %ld\n", branch_cnt);
-  printf("Mispredicts:       %ld (%.2f%%)\n", branch_mispredict_cnt, branch_cnt ? 100.0 * branch_mispredict_cnt / branch_cnt : 0);
+  printf("DCache Miss Cycles:%ld (%.2f%%)\n", dcache_miss_cycle_cnt, 100.0 * dcache_miss_cycle_cnt / cycle_den);
+  printf("Mispredicts:\n");
+  printf("  (IT)TAGE:        %ld (%.2f%% of instructions)\n", tage_mispredict_cnt, 100.0 * tage_mispredict_cnt / inst_den);
+  printf("  Fast Path:       %ld (%.2f%% of instructions)\n", fast_mispredict_cnt, 100.0 * fast_mispredict_cnt / inst_den);
   printf("Stall Cycles:\n");
-  printf("  IF:              %ld (%.2f%%)\n", stall_cycles[0], 100.0 * stall_cycles[0] / cycle_cnt);
-  printf("  ID/RR:           %ld (%.2f%%)\n", stall_cycles[1], 100.0 * stall_cycles[1] / cycle_cnt);
-  printf("  EXE:             %ld (%.2f%%)\n", stall_cycles[2], 100.0 * stall_cycles[2] / cycle_cnt);
-  printf("  MEM:             %ld (%.2f%%)\n", stall_cycles[3], 100.0 * stall_cycles[3] / cycle_cnt);
+  printf("  Fetch Blocked:   %ld (%.2f%%)\n", fetch_stall_cycle_cnt, 100.0 * fetch_stall_cycle_cnt / cycle_den);
+  printf("  Dispatch Deps:   %ld (%.2f%%)\n", dispatch_dependency_stall_cycle_cnt, 100.0 * dispatch_dependency_stall_cycle_cnt / cycle_den);
+  printf("  Memory Blocked:  %ld (%.2f%%)\n", memory_stall_cycle_cnt, 100.0 * memory_stall_cycle_cnt / cycle_den);
+  printf("Frontend Queue:\n");
+  printf("  FPQ Enq Fast:          %ld\n", fpq_enq_fast_cnt);
+  printf("  FPQ Deq Fetch:         %ld\n", fpq_deq_fetch_cnt);
+  printf("  FPQ Full Cycles:       %ld (%.2f%%)\n", fpq_full_cycles_cnt, 100.0 * fpq_full_cycles_cnt / cycle_den);
+  printf("  FPQ Confirmed Depth:   %ld (avg %.2f)\n", fpq_confirmed_depth_cnt, static_cast<double>(fpq_confirmed_depth_cnt) / cycle_den);
+  printf("  FPQ Unverified Depth:  %ld (avg %.2f)\n", fpq_unverified_depth_cnt, static_cast<double>(fpq_unverified_depth_cnt) / cycle_den);
+  printf("Frontend Predictions:\n");
+  printf("  Fetch Use Accurate:    %ld\n", fetch_use_accurate_cnt);
+  printf("  Fetch Fast Fallback:  %ld\n", fetch_fast_fallback_cnt);
+  printf("Accurate Stats:\n");
+  printf("  Accurate Started:       %ld\n", accurate_started_cnt);
+  printf("  Accurate Match:         %ld\n", accurate_match_cnt);
+  printf("  Accurate Override:      %ld\n", accurate_override_cnt);
+  printf("  Accurate Truncated:     %ld\n", accurate_truncated_entries_cnt);
+  printf("  Accurate Obsolete Drop: %ld\n", accurate_obsolete_drop_cnt);
+  printf("  Accurate Stale Drop:    %ld\n", accurate_stale_drop_cnt);
+  printf("Frontend Wait:\n");
+  printf("  Fetch Wait Cycles:  %ld (%.2f%%)\n", frontend_wait_fetch_cycles_cnt, 100.0 * frontend_wait_fetch_cycles_cnt / cycle_den);
+  printf("  Decode Wait Cycles: %ld (%.2f%%)\n", frontend_wait_decode_cycles_cnt, 100.0 * frontend_wait_decode_cycles_cnt / cycle_den);
   printf("------------------------------\n");
   #endif
 

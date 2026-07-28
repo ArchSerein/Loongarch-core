@@ -21,7 +21,7 @@ import CoreFunc::*;
 // Decode Stage: Instruction Decode
 // Translates 32-bit instruction word into pipeline control signals (DecodedInst)
 // and handles early exception detection (unsupported instructions, system calls).
-function Action doDecodeBody(Fifo#(2, F2D) f2dFifo, Fifo#(2, D2R) d2rFifo);
+function Action doDecodeBody(Fifo#(2, F2D) f2dFifo, Fifo#(2, D2RN) d2rnFifo);
     action
     let fetchPkt = f2dFifo.first();
     Instruction inst = fetchPkt.inst;
@@ -47,16 +47,10 @@ function Action doDecodeBody(Fifo#(2, F2D) f2dFifo, Fifo#(2, D2R) d2rFifo);
     end
 
     // Send decoded instruction to Register Read stage
-    d2rFifo.enq(D2R{
+    d2rnFifo.enq(D2RN{
       pc: fetchPkt.pc, 
       predPc: fetchPkt.predPc,
-`ifdef CONFIG_DIFFTEST
       inst: inst,
-`else
-`ifdef CONFIG_WB_DEBUG_INST
-      inst: inst,
-`endif
-`endif
       dInst: dInst, 
       excp: dExcp
     });

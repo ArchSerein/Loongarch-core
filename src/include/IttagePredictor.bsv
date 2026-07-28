@@ -154,73 +154,108 @@ module mkIttagePredictor(IttagePredictor);
     // Read SRAM outputs, re-derive provider, compute the final provider entry
     // (new conf + new target on mispredict, written once), issue any
     // allocation / confidence-decrement writes.
-    rule finishUpdate (updState == IttageRead);
-        Addr                   pc   = updPc;
-        Addr                   tgt  = updTgt;
-        Bool                   mispr = updMis;
-        Bit#(IttagePathHistSz) hist = updHist;
+rule finishUpdate_Correct (updState == IttageRead && !updMis);
+    Addr                   pc   = updPc;
+    Bit#(IttagePathHistSz) hist = updHist;
 
-        Integer prov = -1;
-        Bit#(IttageLogEntries) pIdx = 0;
+    Integer prov = -1;
+    Bit#(IttageLogEntries) pIdx = 0;
 
-        for (Integer t = valueOf(IttageNumTables) - 1; t >= 0; t = t - 1) begin
-            Integer hLen = getHistoryLen(t);
-            Bit#(IttageTagSz) tag = getIttageTag(hist, pc, hLen);
-            IttageEntry entry = unpackIttageWord(srams[t].read);
-            if (entry.tag == tag) begin
-                if (prov == -1) begin
-                    prov = t;
-                    pIdx = getIttageIndex(hist, pc, hLen);
-                end
+    // 1. 寻找 Provider
+    for (Integer t = valueOf(IttageNumTables) - 1; t >= 0; t = t - 1) begin
+        Integer hLen = getHistoryLen(t);
+        Bit#(IttageTagSz) tag = getIttageTag(hist, pc, hLen);
+        IttageEntry entry = unpackIttageWord(srams[t].read);
+        if (entry.tag == tag) begin
+            if (prov == -1) begin
+                prov = t;
+                pIdx = getIttageIndex(hist, pc, hLen);
             end
         end
+    end
 
-        // ---- Provider: compute new conf (+ new target on mispredict), write once ----
-        if (prov >= 0) begin
-            IttageEntry provEntry = unpackIttageWord(srams[prov].read);
-            Bit#(IttageConfSz) newConf = updateConf(provEntry.conf, !mispr);
-            Addr            newTarget = mispr ? tgt : provEntry.target;
-            IttageEntry newProvEntry = IttageEntry{
-                tag:    provEntry.tag,
-                target: newTarget,
-                conf:   newConf
-            };
-            srams[prov].put(8'hFF, padIttageAddr(pIdx), packIttageWord(newProvEntry));
-        end
+    // 2. 更新 Provider: 仅增加置信度，目标地址不变
+    if (prov >= 0) begin
+        IttageEntry provEntry = unpackIttageWord(srams[prov].read);
+        Bit#(IttageConfSz) newConf = updateConf(provEntry.conf, True); // True for correct
+        IttageEntry newProvEntry = IttageEntry{
+            tag:    provEntry.tag,
+            target: provEntry.target, // Keep original target
+            conf:   newConf
+        };
+        srams[prov].put(8'hFF, padIttageAddr(pIdx), packIttageWord(newProvEntry));
+    end
 
-        // ---- On misprediction: allocate in a longer table ----
-        if (mispr) begin
-            Integer allocTarget = -1;
-            Integer startTable = (prov >= 0) ? prov + 1 : 0;
-            for (Integer t = startTable; t < valueOf(IttageNumTables); t = t + 1) begin
-                if (allocTarget < 0) begin
-                    IttageEntry e = unpackIttageWord(srams[t].read);
-                    if (e.conf == 0)
-                        allocTarget = t;
-                end
-            end
+    updState <= IttageIdle;
+endrule
 
-            if (allocTarget >= 0) begin
-                Integer t = allocTarget;
-                Integer hLen = getHistoryLen(t);
-                Bit#(IttageLogEntries) idx = getIttageIndex(hist, pc, hLen);
-                Bit#(IttageTagSz) tag = getIttageTag(hist, pc, hLen);
-                srams[t].put(8'hFF, padIttageAddr(idx),
-                    packIttageWord(IttageEntry{tag: tag, target: tgt, conf: 1}));
-            end else if (prov >= 0) begin
-                // No zero-confidence slot: decrement confidence in longer tables.
-                for (Integer t = prov + 1; t < valueOf(IttageNumTables); t = t + 1) begin
-                    IttageEntry e = unpackIttageWord(srams[t].read);
-                    e.conf = updateConf(e.conf, False);
-                    Integer hLen = getHistoryLen(t);
-                    Bit#(IttageLogEntries) idx = getIttageIndex(hist, pc, hLen);
-                    srams[t].put(8'hFF, padIttageAddr(idx), packIttageWord(e));
-                end
-            end
-        end
-
-        updState <= IttageIdle;
-    endrule
+	rule finishUpdate_Mispredict (updState == IttageRead && updMis);
+	    Addr                   pc   = updPc;
+	    Addr                   tgt  = updTgt;
+	    Bit#(IttagePathHistSz) hist = updHist;
+	
+	    Integer prov = -1;
+	    Bit#(IttageLogEntries) pIdx = 0;
+	
+	    // 1. 寻找 Provider
+	    for (Integer t = valueOf(IttageNumTables) - 1; t >= 0; t = t - 1) begin
+	        Integer hLen = getHistoryLen(t);
+	        Bit#(IttageTagSz) tag = getIttageTag(hist, pc, hLen);
+	        IttageEntry entry = unpackIttageWord(srams[t].read);
+	        if (entry.tag == tag) begin
+	            if (prov == -1) begin
+	                prov = t;
+	                pIdx = getIttageIndex(hist, pc, hLen);
+	            end
+	        end
+	    end
+	
+	    // 2. 更新 Provider: 降低置信度，更新目标地址
+	    if (prov >= 0) begin
+	        IttageEntry provEntry = unpackIttageWord(srams[prov].read);
+	        Bit#(IttageConfSz) newConf = updateConf(provEntry.conf, False); // False for mispredict
+	        IttageEntry newProvEntry = IttageEntry{
+	            tag:    provEntry.tag,
+	            target: tgt, // Update to the correct target
+	            conf:   newConf
+	        };
+	        srams[prov].put(8'hFF, padIttageAddr(pIdx), packIttageWord(newProvEntry));
+	    end
+	
+	    // 3. 分配或降级 (Allocation / Penalty)
+	    Integer allocTarget = -1;
+	    Integer startTable = (prov >= 0) ? prov + 1 : 0;
+	    
+	    // 3.1 寻找 conf 为 0 的表
+	    for (Integer t = startTable; t < valueOf(IttageNumTables); t = t + 1) begin
+	        if (allocTarget < 0) begin
+	            IttageEntry e = unpackIttageWord(srams[t].read);
+	            if (e.conf == 0)
+	                allocTarget = t;
+	        end
+	    end
+	
+	    // 3.2 执行分配或降级置信度
+	    if (allocTarget >= 0) begin
+	        Integer t = allocTarget;
+	        Integer hLen = getHistoryLen(t);
+	        Bit#(IttageLogEntries) idx = getIttageIndex(hist, pc, hLen);
+	        Bit#(IttageTagSz) tag = getIttageTag(hist, pc, hLen);
+	        srams[t].put(8'hFF, padIttageAddr(idx),
+	            packIttageWord(IttageEntry{tag: tag, target: tgt, conf: 1}));
+	    end else if (prov >= 0) begin
+	        // 没找到空位，降低长历史表的置信度以供后续驱逐
+	        for (Integer t = prov + 1; t < valueOf(IttageNumTables); t = t + 1) begin
+	            IttageEntry e = unpackIttageWord(srams[t].read);
+	            e.conf = updateConf(e.conf, False);
+	            Integer hLen = getHistoryLen(t);
+	            Bit#(IttageLogEntries) idx = getIttageIndex(hist, pc, hLen);
+	            srams[t].put(8'hFF, padIttageAddr(idx), packIttageWord(e));
+	        end
+	    end
+	
+	    updState <= IttageIdle;
+	endrule
 
     // ---- startPredict: issue 4 SRAM reads, latch pc+pathHist ----
     method Action startPredict(Addr pc, Bit#(IttagePathHistSz) pathHist) if (updState == IttageIdle);
