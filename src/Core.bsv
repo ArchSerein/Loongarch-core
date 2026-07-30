@@ -809,7 +809,7 @@ module mkCore(Core);
 `ifdef CONFIG_DIFFTEST
   method Data rfRdata = debugInforFlag ? archRegs[debugRegNum] : 0;
 `else
-  method Data rfRdata = debugInforFlag ? prf.rdDbg(rat.lookupRet(debugRegNum)) : 0;
+  method Data rfRdata = debugInforFlag ? zeroExtend(debugRegNum) : 0;
 `endif
 
   method Addr debug0WbPc = debugWbPcWire;
