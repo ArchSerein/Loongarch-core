@@ -129,6 +129,8 @@ module mkCore(Core);
   Reg#(DiffArchCsrState) csrSnapReg <- mkRegU;
 `endif
   Reg#(CommitCsrSnapshot) commitCsrSnapReg <- mkRegU;
+  Reg#(PendingCsrCommit) pendingCsrCommit <- mkRegU;
+  Reg#(Bool) pendingCsrValid <- mkReg(False);
 
   Reg#(Bool)         idleLock <- mkReg(False);
 
@@ -580,6 +582,51 @@ module mkCore(Core);
       commitCsrSnapReg, csrf, rob, commitState);
   endrule
 
+  rule doPrepareCsrCommit (rob.headValid && commitState == CommitReady &&
+      !rob.head.excp.valid && isCsr(rob.head.iType) && !pendingCsrValid);
+    let pending <- prepareCsrCommit(rob,
+`ifdef CONFIG_DIFFTEST
+      csrSnapReg,
+`endif
+      commitCsrSnapReg, prf);
+    pendingCsrCommit <= pending;
+    pendingCsrValid <= True;
+    commitState <= CommitCsrWriteback;
+  endrule
+
+  rule doCommitCsrWriteback (rob.headValid && commitState == CommitCsrWriteback &&
+      pendingCsrValid && sameRobToken(rob.head.token, pendingCsrCommit.token)
+`ifdef CONFIG_DIFFTEST
+      && difftest.enqTraceReady
+`endif
+  );
+    doCommitBody(rob
+`ifdef CONFIG_WB_DEBUG
+      , debugWsValidWire, debugWbPcWire
+`ifdef CONFIG_WB_DEBUG_INST
+      , debugWbInstWire
+`endif
+`endif
+    );
+    doApplyPendingCsrCommitAction(rob, commitState, pendingCsrCommit,
+      pendingCsrValid, csrf, prf, rat, freeList, dCache, aluRS, muldivRS, memRS
+`ifdef CONFIG_DIFFTEST
+      , csrSnapReg, difftest, archRegs
+`endif
+    );
+  endrule
+
+  rule doCommitCsrWritebackTokenMismatch (rob.headValid &&
+      commitState == CommitCsrWriteback && pendingCsrValid &&
+      !sameRobToken(rob.head.token, pendingCsrCommit.token));
+`ifdef CONFIG_BSIM
+    $display("CSR COMMIT ERROR: pending token does not match ROB head");
+    $finish(1);
+`endif
+    pendingCsrValid <= False;
+    commitState <= CommitIdle;
+  endrule
+
   rule doCommitInterrupt (rob.headValid && commitState == CommitInterruptReady
 `ifdef CONFIG_DIFFTEST
       && difftest.enqTraceReady
@@ -605,6 +652,7 @@ module mkCore(Core);
       , difftest, archRegs
 `endif
     );
+    pendingCsrValid <= False;
   endrule
 
   rule doCommitErtn (rob.headValid && commitState == CommitReady
@@ -633,6 +681,7 @@ module mkCore(Core);
       , difftest, archRegs
 `endif
     );
+    pendingCsrValid <= False;
   endrule
 
   rule doCommitRedirect (rob.headValid && commitState == CommitReady
@@ -666,6 +715,7 @@ module mkCore(Core);
       , difftest, archRegs
 `endif
     );
+    pendingCsrValid <= False;
   endrule
 
   rule doCommitIbar (rob.headValid && commitState == CommitReady
@@ -696,6 +746,7 @@ module mkCore(Core);
       , difftest, archRegs
 `endif
     );
+    pendingCsrValid <= False;
   endrule
 
   rule doCommitReclaim (rob.headValid && commitState == CommitReady
@@ -704,6 +755,7 @@ module mkCore(Core);
 `endif
       && !(rob.head.excp.valid || rob.head.iType == Ertn || rob.head.iType == Idle ||
        rob.head.iType == Syscall || rob.head.iType == Break)
+      && !isCsr(rob.head.iType)
       && isValid(rob.head.oldPdst)
       && rob.head.iType != Ibar);
     doCommitBody(rob
@@ -735,6 +787,7 @@ module mkCore(Core);
 `endif
       && !(rob.head.excp.valid || rob.head.iType == Ertn || rob.head.iType == Idle ||
        rob.head.iType == Syscall || rob.head.iType == Break)
+      && !isCsr(rob.head.iType)
       && !isValid(rob.head.oldPdst)
       && rob.head.iType != Ibar);
     doCommitBody(rob

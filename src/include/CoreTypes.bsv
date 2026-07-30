@@ -143,5 +143,6 @@ typedef enum {
   CommitIdle,
   CommitReady,
   CommitInterruptReady,
+  CommitCsrWriteback,
   CommitTLBWait
 } CommitState deriving(Bits, Eq);
