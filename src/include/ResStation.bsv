@@ -7,19 +7,59 @@ function Bool rsOperandsReady(RSOperandState operands);
   return !isValid(operands.qj) && !isValid(operands.qk);
 endfunction
 
-function RSOperandState wakeupOneOperandState(RSOperandState operands, CDBMessage cdb);
-  RSOperandState ret = operands;
-  if (cdb.valid) begin
-    if (ret.qj matches tagged Valid .q &&& q == cdb.tag) begin
-      ret.qj = tagged Invalid;
-      ret.vj = cdb.value;
-    end
-    if (ret.qk matches tagged Valid .q &&& q == cdb.tag) begin
-      ret.qk = tagged Invalid;
-      ret.vk = cdb.value;
-    end
+function Bool cdbMatches(Maybe#(PIndx) q, CDBMessage cdb);
+  Bool ret = False;
+  if (q matches tagged Valid .p) begin
+    ret = cdb.valid && p == cdb.tag;
   end
   return ret;
+endfunction
+
+function Bit#(4) cdbHitMask(Maybe#(PIndx) q, Vector#(4, CDBMessage) cdbs);
+  Bit#(4) hits = 0;
+  for (Integer k = 0; k < 4; k = k + 1) begin
+    hits[k] = pack(cdbMatches(q, cdbs[k]));
+  end
+  return hits;
+endfunction
+
+function Data cdbOneHotValue(Vector#(4, CDBMessage) cdbs, Bit#(4) hits);
+  Data v0 = (hits[0] == 1'b1) ? cdbs[0].value : 0;
+  Data v1 = (hits[1] == 1'b1) ? cdbs[1].value : 0;
+  Data v2 = (hits[2] == 1'b1) ? cdbs[2].value : 0;
+  Data v3 = (hits[3] == 1'b1) ? cdbs[3].value : 0;
+  return (v0 | v1) | (v2 | v3);
+endfunction
+
+function Bool wakeupCollision(
+    Maybe#(PIndx) q,
+    Vector#(4, CDBMessage) cdbs,
+    CDBMessage commitCdb
+);
+  Bit#(4) cdbHits = cdbHitMask(q, cdbs);
+  Bit#(3) cdbHitCount = pack(countOnes(cdbHits));
+  Bool multiCdb = cdbHitCount > 1;
+  Bool commitOverlap = cdbHits != 0 && cdbMatches(q, commitCdb);
+  return multiCdb || commitOverlap;
+endfunction
+
+function Maybe#(Data) wakeupValueFor(
+    Maybe#(PIndx) q,
+    Vector#(4, CDBMessage) cdbs,
+    CDBMessage commitCdb
+);
+  Bit#(4) cdbHits = cdbHitMask(q, cdbs);
+  Bool hasCdb = cdbHits != 0;
+  Bool hasCommit = cdbMatches(q, commitCdb);
+  Data cdbValue = cdbOneHotValue(cdbs, cdbHits);
+  // Ordinary FU CDB wakeup wins over commit wakeup; BSIM flags overlaps above.
+  if (hasCdb) begin
+    return tagged Valid cdbValue;
+  end else if (hasCommit) begin
+    return tagged Valid commitCdb.value;
+  end else begin
+    return tagged Invalid;
+  end
 endfunction
 
 function RSOperandState wakeupOperandState(
@@ -28,11 +68,28 @@ function RSOperandState wakeupOperandState(
     CDBMessage commitCdb
 );
   RSOperandState ret = operands;
-  for (Integer k = 0; k < 4; k = k + 1) begin
-    ret = wakeupOneOperandState(ret, cdbs[k]);
+  Maybe#(Data) wakeJ = wakeupValueFor(operands.qj, cdbs, commitCdb);
+  Maybe#(Data) wakeK = wakeupValueFor(operands.qk, cdbs, commitCdb);
+
+  if (wakeJ matches tagged Valid .v) begin
+    ret.qj = tagged Invalid;
+    ret.vj = v;
   end
-  ret = wakeupOneOperandState(ret, commitCdb);
+  if (wakeK matches tagged Valid .v) begin
+    ret.qk = tagged Invalid;
+    ret.vk = v;
+  end
+
   return ret;
+endfunction
+
+function Bool operandWakeupCollision(
+    RSOperandState operands,
+    Vector#(4, CDBMessage) cdbs,
+    CDBMessage commitCdb
+);
+  return wakeupCollision(operands.qj, cdbs, commitCdb) ||
+         wakeupCollision(operands.qk, cdbs, commitCdb);
 endfunction
 
 typedef struct {
@@ -91,7 +148,8 @@ interface MemRS;
 endinterface
 
 module mkAluRS(AluRS);
-  Vector#(16, Reg#(AluIssueEntry)) entries <- replicateM(mkRegU);
+  Vector#(16, Reg#(AluRSPayload)) payloads <- replicateM(mkRegU);
+  Vector#(16, Reg#(RSOperandState)) operands <- replicateM(mkRegU);
   Reg#(Bit#(16)) validMask <- mkReg(0);
   Reg#(Bit#(4)) enqP <- mkReg(0);
   Reg#(Bit#(5)) count <- mkReg(0);
@@ -159,8 +217,8 @@ module mkAluRS(AluRS);
       Bit#(16) keepMask = 0;
 
       for (Integer i = 0; i < 16; i = i + 1) begin
-        AluIssueEntry e = entries[fromInteger(i)];
-        Bit#(5) entryAge = e.payload.robTag - headTag;
+        AluRSPayload payload = payloads[fromInteger(i)];
+        Bit#(5) entryAge = payload.robTag - headTag;
         Bool keep = validMask[i] == 1 && entryAge <= flushAge;
         keepMask[i] = pack(keep);
       end
@@ -172,7 +230,7 @@ module mkAluRS(AluRS);
       if (removeReq matches tagged Valid .token) begin
         for (Integer i = 0; i < 16; i = i + 1) begin
           Bit#(4) idx = fromInteger(i);
-          if (validMask[idx] == 1 && sameRobToken(entries[idx].payload.token, token)) begin
+          if (validMask[idx] == 1 && sameRobToken(payloads[idx].token, token)) begin
             removePos = tagged Valid idx;
           end
         end
@@ -189,20 +247,31 @@ module mkAluRS(AluRS);
             allocPos = tagged Valid idx;
           end
         end
-        RSOperandState enqOperands = wakeupOperandState(enqEntry.operands, cdbReq, commitCdbReq);
-        enqEntry = AluIssueEntry{payload: enqEntry.payload, operands: enqOperands};
+`ifdef CONFIG_BSIM
+        if (operandWakeupCollision(enqEntry.operands, cdbReq, commitCdbReq)) begin
+          $display("ALU RS WAKEUP ERROR: multiple wakeups hit enqueued operand");
+          $finish(1);
+        end
+`endif
       end
 
       for (Integer i = 0; i < 16; i = i + 1) begin
         Bit#(4) idx = fromInteger(i);
         if (allocPos matches tagged Valid .ap &&& ap == idx) begin
-          entries[idx] <= enqEntry;
+          payloads[idx] <= enqEntry.payload;
+          operands[idx] <= wakeupOperandState(enqEntry.operands, cdbReq, commitCdbReq);
         end else begin
-          AluIssueEntry e = entries[idx];
+          RSOperandState curOperands = operands[idx];
           if (validMask[idx] == 1) begin
-            RSOperandState nextOperands = wakeupOperandState(e.operands, cdbReq, commitCdbReq);
-            if (nextOperands != e.operands) begin
-              entries[idx] <= AluIssueEntry{payload: e.payload, operands: nextOperands};
+`ifdef CONFIG_BSIM
+            if (operandWakeupCollision(curOperands, cdbReq, commitCdbReq)) begin
+              $display("ALU RS WAKEUP ERROR: multiple wakeups hit existing operand");
+              $finish(1);
+            end
+`endif
+            RSOperandState nextOperands = wakeupOperandState(curOperands, cdbReq, commitCdbReq);
+            if (nextOperands != curOperands) begin
+              operands[idx] <= nextOperands;
             end
           end
         end
@@ -236,22 +305,25 @@ module mkAluRS(AluRS);
     Maybe#(AluIssueEntry) headBranch = tagged Invalid;
 
     for (Integer i = 0; i < 16; i = i + 1) begin
-      AluIssueEntry e = entries[fromInteger(i)];
-      if (validMask[i] == 1 && isBranch(e.payload.iType) && headValid &&
-          e.payload.robTag == headTag && rsOperandsReady(e.operands)) begin
-        headBranch = tagged Valid e;
+      Bit#(4) idx = fromInteger(i);
+      AluRSPayload payload = payloads[idx];
+      RSOperandState operand = operands[idx];
+      if (validMask[i] == 1 && isBranch(payload.iType) && headValid &&
+          payload.robTag == headTag && rsOperandsReady(operand)) begin
+        headBranch = tagged Valid AluIssueEntry{payload: payload, operands: operand};
       end
     end
 
     Vector#(16, AluRSReadyCandidate) candidates = newVector;
     for (Integer i = 0; i < 16; i = i + 1) begin
       Bit#(4) idx = fromInteger(i);
-      AluIssueEntry e = entries[idx];
+      AluRSPayload payload = payloads[idx];
+      RSOperandState operand = operands[idx];
       candidates[i] = AluRSReadyCandidate{
-        valid: validMask[i] == 1 && !isBranch(e.payload.iType) && rsOperandsReady(e.operands),
-        age: e.payload.robTag - headTag,
+        valid: validMask[i] == 1 && !isBranch(payload.iType) && rsOperandsReady(operand),
+        age: payload.robTag - headTag,
         index: idx,
-        entry: e
+        entry: AluIssueEntry{payload: payload, operands: operand}
       };
     end
 
@@ -282,7 +354,8 @@ module mkAluRS(AluRS);
 endmodule
 
 module mkMulDivRS(MulDivRS);
-  Vector#(4, Reg#(MulDivIssueEntry)) entries <- replicateM(mkRegU);
+  Vector#(4, Reg#(MulDivRSPayload)) payloads <- replicateM(mkRegU);
+  Vector#(4, Reg#(RSOperandState)) operands <- replicateM(mkRegU);
   Reg#(Bit#(4)) validMask <- mkReg(0);
   Reg#(Bit#(2)) enqP <- mkReg(0);
   Reg#(Bit#(3)) count <- mkReg(0);
@@ -313,8 +386,8 @@ module mkMulDivRS(MulDivRS);
       Bit#(4) keepMask = 0;
 
       for (Integer i = 0; i < 4; i = i + 1) begin
-        MulDivIssueEntry e = entries[fromInteger(i)];
-        Bit#(5) entryAge = e.payload.robTag - headTag;
+        MulDivRSPayload payload = payloads[fromInteger(i)];
+        Bit#(5) entryAge = payload.robTag - headTag;
         Bool keep = validMask[i] == 1 && entryAge <= flushAge;
         keepMask[i] = pack(keep);
       end
@@ -326,7 +399,7 @@ module mkMulDivRS(MulDivRS);
       if (removeReq matches tagged Valid .token) begin
         for (Integer i = 0; i < 4; i = i + 1) begin
           Bit#(2) idx = fromInteger(i);
-          if (validMask[idx] == 1 && sameRobToken(entries[idx].payload.token, token)) begin
+          if (validMask[idx] == 1 && sameRobToken(payloads[idx].token, token)) begin
             removePos = tagged Valid idx;
           end
         end
@@ -343,20 +416,31 @@ module mkMulDivRS(MulDivRS);
             allocPos = tagged Valid idx;
           end
         end
-        RSOperandState enqOperands = wakeupOperandState(enqEntry.operands, cdbReq, commitCdbReq);
-        enqEntry = MulDivIssueEntry{payload: enqEntry.payload, operands: enqOperands};
+`ifdef CONFIG_BSIM
+        if (operandWakeupCollision(enqEntry.operands, cdbReq, commitCdbReq)) begin
+          $display("MULDIV RS WAKEUP ERROR: multiple wakeups hit enqueued operand");
+          $finish(1);
+        end
+`endif
       end
 
       for (Integer i = 0; i < 4; i = i + 1) begin
         Bit#(2) idx = fromInteger(i);
         if (allocPos matches tagged Valid .ap &&& ap == idx) begin
-          entries[idx] <= enqEntry;
+          payloads[idx] <= enqEntry.payload;
+          operands[idx] <= wakeupOperandState(enqEntry.operands, cdbReq, commitCdbReq);
         end else begin
-          MulDivIssueEntry e = entries[idx];
+          RSOperandState curOperands = operands[idx];
           if (validMask[idx] == 1) begin
-            RSOperandState nextOperands = wakeupOperandState(e.operands, cdbReq, commitCdbReq);
-            if (nextOperands != e.operands) begin
-              entries[idx] <= MulDivIssueEntry{payload: e.payload, operands: nextOperands};
+`ifdef CONFIG_BSIM
+            if (operandWakeupCollision(curOperands, cdbReq, commitCdbReq)) begin
+              $display("MULDIV RS WAKEUP ERROR: multiple wakeups hit existing operand");
+              $finish(1);
+            end
+`endif
+            RSOperandState nextOperands = wakeupOperandState(curOperands, cdbReq, commitCdbReq);
+            if (nextOperands != curOperands) begin
+              operands[idx] <= nextOperands;
             end
           end
         end
@@ -399,9 +483,10 @@ module mkMulDivRS(MulDivRS);
     Bool found = False;
     for (Integer i = 0; i < 4; i = i + 1) begin
       Bit#(2) idx = enqP + fromInteger(i);
-      MulDivIssueEntry e = entries[idx];
-      if (!found && validMask[idx] == 1 && rsOperandsReady(e.operands)) begin
-        ret = tagged Valid e;
+      MulDivRSPayload payload = payloads[idx];
+      RSOperandState operand = operands[idx];
+      if (!found && validMask[idx] == 1 && rsOperandsReady(operand)) begin
+        ret = tagged Valid MulDivIssueEntry{payload: payload, operands: operand};
         found = True;
       end
     end
@@ -422,7 +507,8 @@ module mkMulDivRS(MulDivRS);
 endmodule
 
 module mkMemRS(MemRS);
-  Vector#(16, Reg#(MemIssueEntry)) entries <- replicateM(mkRegU);
+  Vector#(16, Reg#(MemRSPayload)) payloads <- replicateM(mkRegU);
+  Vector#(16, Reg#(RSOperandState)) operands <- replicateM(mkRegU);
   Reg#(Bit#(16)) validMask <- mkReg(0);
   Reg#(Bit#(4)) enqP <- mkReg(0);
   Reg#(Bit#(5)) count <- mkReg(0);
@@ -511,8 +597,8 @@ module mkMemRS(MemRS);
       Bit#(16) keepMask = 0;
 
       for (Integer i = 0; i < 16; i = i + 1) begin
-        MemIssueEntry e = entries[fromInteger(i)];
-        Bit#(5) entryAge = e.payload.robTag - headTag;
+        MemRSPayload payload = payloads[fromInteger(i)];
+        Bit#(5) entryAge = payload.robTag - headTag;
         Bool keep = validMask[i] == 1 && entryAge <= flushAge;
         keepMask[i] = pack(keep);
       end
@@ -524,7 +610,7 @@ module mkMemRS(MemRS);
       if (removeReq matches tagged Valid .token) begin
         for (Integer i = 0; i < 16; i = i + 1) begin
           Bit#(4) idx = fromInteger(i);
-          if (validMask[idx] == 1 && sameRobToken(entries[idx].payload.token, token)) begin
+          if (validMask[idx] == 1 && sameRobToken(payloads[idx].token, token)) begin
             removePos = tagged Valid idx;
           end
         end
@@ -541,20 +627,31 @@ module mkMemRS(MemRS);
             allocPos = tagged Valid idx;
           end
         end
-        RSOperandState enqOperands = wakeupOperandState(enqEntry.operands, cdbReq, commitCdbReq);
-        enqEntry = MemIssueEntry{payload: enqEntry.payload, operands: enqOperands};
+`ifdef CONFIG_BSIM
+        if (operandWakeupCollision(enqEntry.operands, cdbReq, commitCdbReq)) begin
+          $display("MEM RS WAKEUP ERROR: multiple wakeups hit enqueued operand");
+          $finish(1);
+        end
+`endif
       end
 
       for (Integer i = 0; i < 16; i = i + 1) begin
         Bit#(4) idx = fromInteger(i);
         if (allocPos matches tagged Valid .ap &&& ap == idx) begin
-          entries[idx] <= enqEntry;
+          payloads[idx] <= enqEntry.payload;
+          operands[idx] <= wakeupOperandState(enqEntry.operands, cdbReq, commitCdbReq);
         end else begin
-          MemIssueEntry e = entries[idx];
+          RSOperandState curOperands = operands[idx];
           if (validMask[idx] == 1) begin
-            RSOperandState nextOperands = wakeupOperandState(e.operands, cdbReq, commitCdbReq);
-            if (nextOperands != e.operands) begin
-              entries[idx] <= MemIssueEntry{payload: e.payload, operands: nextOperands};
+`ifdef CONFIG_BSIM
+            if (operandWakeupCollision(curOperands, cdbReq, commitCdbReq)) begin
+              $display("MEM RS WAKEUP ERROR: multiple wakeups hit existing operand");
+              $finish(1);
+            end
+`endif
+            RSOperandState nextOperands = wakeupOperandState(curOperands, cdbReq, commitCdbReq);
+            if (nextOperands != curOperands) begin
+              operands[idx] <= nextOperands;
             end
           end
         end
@@ -596,12 +693,13 @@ module mkMemRS(MemRS);
     Vector#(16, MemRSReadyCandidate) candidates = newVector;
     for (Integer i = 0; i < 16; i = i + 1) begin
       Bit#(4) idx = fromInteger(i);
-      MemIssueEntry e = entries[idx];
+      MemRSPayload payload = payloads[idx];
+      RSOperandState operand = operands[idx];
       candidates[i] = MemRSReadyCandidate{
-        valid: validMask[i] == 1 && rsOperandsReady(e.operands),
-        age: e.payload.robTag - headTag,
+        valid: validMask[i] == 1 && rsOperandsReady(operand),
+        age: payload.robTag - headTag,
         index: idx,
-        entry: e
+        entry: MemIssueEntry{payload: payload, operands: operand}
       };
     end
 
@@ -613,10 +711,10 @@ module mkMemRS(MemRS);
     Bit#(5) tagAge = tag - headTag;
     Bit#(16) olderStoreMask = 0;
     for (Integer i = 0; i < 16; i = i + 1) begin
-      MemIssueEntry e = entries[fromInteger(i)];
-      Bit#(5) entryAge = e.payload.robTag - headTag;
-      olderStoreMask[i] = pack(validMask[i] == 1 && e.payload.isStore &&
-        e.payload.robTag != tag && entryAge < tagAge);
+      MemRSPayload payload = payloads[fromInteger(i)];
+      Bit#(5) entryAge = payload.robTag - headTag;
+      olderStoreMask[i] = pack(validMask[i] == 1 && payload.isStore &&
+        payload.robTag != tag && entryAge < tagAge);
     end
     return balancedOr(olderStoreMask);
   endmethod
