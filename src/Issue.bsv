@@ -43,20 +43,20 @@ import Perf::*;
 `include "CsrAddr.bsv"
 
 function Action doIssueALUBody(
-    RSEntry entry,
-    Reg#(RSEntry) aluExecEntry,
-    ResStation#(16) aluRS,
+    AluIssueEntry entry,
+    Reg#(AluIssueEntry) aluExecEntry,
+    AluRS aluRS,
     Reg#(Bool) aluBusy
 );
   action
     aluExecEntry <= entry;
-    aluRS.remove(entry.token);
+    aluRS.remove(entry.payload.token);
     aluBusy <= True;
   endaction
 endfunction
 
 function Action doExecALUBody(
-    Reg#(RSEntry) aluExecEntry,
+    Reg#(AluIssueEntry) aluExecEntry,
     Reg#(Bool) aluBusy,
     CDB cdb,
     ROB rob,
@@ -68,12 +68,12 @@ function Action doExecALUBody(
     Fifo#(2, F2D) f2dFifo,
     Fifo#(2, D2RN) d2rnFifo,
     Fifo#(2, RenamedInst) rn2diFifo,
-    ResStation#(16) aluRS,
-    ResStation#(4) muldivRS,
-    ResStation#(16) memRS,
+    AluRS aluRS,
+    MulDivRS muldivRS,
+    MemRS memRS,
     StoreBuf#(16) storeBuf,
     Reg#(MemExecState) memState,
-    Reg#(RSEntry) memExecEntry,
+    Reg#(MemIssueEntry) memExecEntry,
     Reg#(Bool) if2WaitRefill,
     RAT rat,
     FreeList freeList,
@@ -91,36 +91,36 @@ function Action doExecALUBody(
 
     // Construct DecodedInst for exec function
     DecodedInst dInst = DecodedInst{
-      iType: entry.iType,
-      aluFunc: entry.aluFunc, muldivFunc: entry.muldivFunc,
-      brFunc: entry.brFunc,
+      iType: entry.payload.iType,
+      aluFunc: entry.payload.aluFunc, muldivFunc: tagged Invalid,
+      brFunc: entry.payload.brFunc,
       dst: tagged Invalid, src1: tagged Invalid, src2: tagged Invalid,
       csr: tagged Invalid,
-      imm: entry.imm, cacheOp: entry.cacheOp, mask: entry.mask
+      imm: entry.payload.imm, cacheOp: tagged Invalid, mask: tagged Invalid
     };
 
-    Data immVal = fromMaybe(0, entry.imm);
+    Data immVal = fromMaybe(0, entry.payload.imm);
     Data csrVal = 0;
-    if (entry.iType == Cpucfg) begin
-      CsrIndx cpuCfgAddr = truncate(entry.vj) + 14'h00b0;
+    if (entry.payload.iType == Cpucfg) begin
+      CsrIndx cpuCfgAddr = truncate(entry.operands.vj) + 14'h00b0;
       csrVal = cpuCfgValue(cpuCfgAddr);
     end
-    ExecInst eInst = exec(dInst, entry.vj, entry.vk, entry.pc, entry.predPc, csrVal);
+    ExecInst eInst = exec(dInst, entry.operands.vj, entry.operands.vk, entry.payload.pc, entry.payload.predPc, csrVal);
 
     // Write to CDB
-    if (entry.pDst matches tagged Valid .pd) begin
+    if (entry.payload.pDst matches tagged Valid .pd) begin
       cdb.sendALU(pd, eInst.data);
     end
 
     // Update ROB
-    rob.updateALU(entry.token, RobCompleted);
-    rob.updateBranch(entry.token, eInst.mispredict, eInst.targetAddr);
+    rob.updateALU(entry.payload.token, RobCompleted);
+    rob.updateBranch(entry.payload.token, eInst.mispredict, eInst.targetAddr);
 
     // Train the predictor for every resolved control-flow instruction.
     // Misprediction only controls recovery; correct predictions must still
     // train the BTB and direction counter.
     CfiType cfiType = CFI_NONE;
-    case (entry.iType)
+    case (entry.payload.iType)
       Br: cfiType = CFI_COND;
       J:  cfiType = CFI_JAL;
       Jr: cfiType = CFI_JALR;
@@ -128,14 +128,14 @@ function Action doExecALUBody(
     if (cfiType != CFI_NONE) begin
       // For a conditional branch, targetAddr is the resolved next PC and is
       // pc+4 when not taken.  The BTB must retain the static taken target.
-      Addr bpuTarget = (entry.iType == Br) ? (entry.pc + immVal) : eInst.targetAddr;
-      branchPred.executeUpdate(entry.pc, bpuTarget, eInst.brTaken, cfiType);
+      Addr bpuTarget = (entry.payload.iType == Br) ? (entry.payload.pc + immVal) : eInst.targetAddr;
+      branchPred.executeUpdate(entry.payload.pc, bpuTarget, eInst.brTaken, cfiType);
     end
 
     // Branch mispredict recovery
     if (eInst.mispredict) begin
 `ifdef CONFIG_TRACE_PERFORMANCE
-      if (entry.iType == Br || entry.iType == Jr) begin
+      if (entry.payload.iType == Br || entry.payload.iType == Jr) begin
         perf_branch_mispredict_tage();
       end else begin
         perf_branch_mispredict_fast();
@@ -145,7 +145,7 @@ function Action doExecALUBody(
       iCache.squash;
       tlb.squashFetchLookup;
       Bool memYounger = memState != MemIdle &&
-        robTokenYoungerThan(memExecEntry.token, entry.token, rob.headTag);
+        robTokenYoungerThan(memExecEntry.payload.token, entry.payload.token, rob.headTag);
       if (memYounger) begin
         if (memState == MemCacheWait) begin
           dCache.squash(False);
@@ -159,59 +159,59 @@ function Action doExecALUBody(
       f2dFifo.clear;
       d2rnFifo.clear;
       rn2diFifo.clear;
-      aluRS.flushAfter(entry.robTag, rob.headTag);
-      muldivRS.flushAfter(entry.robTag, rob.headTag);
-      memRS.flushAfter(entry.robTag, rob.headTag);
-      storeBuf.flushAfter(entry.token, rob.headTag);
+      aluRS.flushAfter(entry.payload.robTag, rob.headTag);
+      muldivRS.flushAfter(entry.payload.robTag, rob.headTag);
+      memRS.flushAfter(entry.payload.robTag, rob.headTag);
+      storeBuf.flushAfter(entry.payload.token, rob.headTag);
       doFrontendRedirect(eInst.targetAddr, fastQ, fastGenPc, frontendEpoch,
         fetchInflightValid, if2WaitRefill, accBusy, accReqObsolete, branchPred);
-      rob.flushAfter(entry.robTag);
-      rat.restore(entry.robTag);
-      freeList.restore(entry.robTag);
+      rob.flushAfter(entry.payload.robTag);
+      rat.restore(entry.payload.robTag);
+      freeList.restore(entry.payload.robTag);
 
     end
   endaction
 endfunction
 
 function Action doIssueMulBody(
-    RSEntry entry,
+    MulDivIssueEntry entry,
     Mul_ifc mulUnit,
-    Reg#(RSEntry) mulExecEntry,
-    ResStation#(4) muldivRS,
+    Reg#(MulDivIssueEntry) mulExecEntry,
+    MulDivRS muldivRS,
     Reg#(Bool) mulInFlight
 );
   action
-    let mdFunc = fromMaybe(?, entry.muldivFunc);
+    let mdFunc = fromMaybe(?, entry.payload.muldivFunc);
     // MulhWu is unsigned; MulW and MulhW are signed.
     Bool is_signed = (mdFunc == MulW || mdFunc == MulhW);
-    mulUnit.start(is_signed, entry.vj, entry.vk);
+    mulUnit.start(is_signed, entry.operands.vj, entry.operands.vk);
     mulExecEntry <= entry;
-    muldivRS.remove(entry.token);
+    muldivRS.remove(entry.payload.token);
     mulInFlight <= True;
   endaction
 endfunction
 
 function Action doIssueDivBody(
-    RSEntry entry,
+    MulDivIssueEntry entry,
     Div_ifc divUnit,
-    Reg#(RSEntry) divExecEntry,
-    ResStation#(4) muldivRS,
+    Reg#(MulDivIssueEntry) divExecEntry,
+    MulDivRS muldivRS,
     Reg#(Bool) divInFlight
 );
   action
-    let mdFunc = fromMaybe(?, entry.muldivFunc);
+    let mdFunc = fromMaybe(?, entry.payload.muldivFunc);
     // DivWu/ModWu are unsigned; DivW/ModW are signed.
     Bool is_signed = (mdFunc == DivW || mdFunc == ModW);
-    divUnit.start(is_signed, entry.vj, entry.vk);
+    divUnit.start(is_signed, entry.operands.vj, entry.operands.vk);
     divExecEntry <= entry;
-    muldivRS.remove(entry.token);
+    muldivRS.remove(entry.payload.token);
     divInFlight <= True;
   endaction
 endfunction
 
 function Action doIssueMemBody(
-    RSEntry entry,
-    Reg#(RSEntry) memExecEntry,
+    MemIssueEntry entry,
+    Reg#(MemIssueEntry) memExecEntry,
     Reg#(Addr) memVaddr,
     Reg#(Addr) memPaddr,
     Reg#(ExcpInfo) memExcpInfo,
@@ -221,24 +221,24 @@ function Action doIssueMemBody(
     TlbArray tlb,
     ICache iCache,
     ROB rob,
-    ResStation#(16) memRS,
+    MemRS memRS,
     StoreBuf#(16) storeBuf
 );
   action
-    if (entry.iType == Ibar) begin
+    if (entry.payload.iType == Ibar) begin
       iCache.invalidate;
       memExecEntry <= entry;
       memState <= MemIbarWait;
-    end else if (entry.iType == Dbar) begin
+    end else if (entry.payload.iType == Dbar) begin
       memExecEntry <= entry;
       memVaddr <= 0;
       memPaddr <= 0;
       memNeedTlb <= False;
       memState <= MemTLBWait;
     end else begin
-      Data immVal = fromMaybe(0, entry.imm);
-      Addr vaddr = entry.vj + immVal;
-      ExcpInfo excp = checkMemHasExcp(entry.mask, vaddr, mkNoExcp);
+      Data immVal = fromMaybe(0, entry.payload.imm);
+      Addr vaddr = entry.operands.vj + immVal;
+      ExcpInfo excp = checkMemHasExcp(entry.payload.mask, vaddr, mkNoExcp);
 
       if (excp.valid) begin
         memExecEntry <= entry;
@@ -267,17 +267,17 @@ endfunction
 
 function Action doReportMemExcpBody(
     Reg#(MemExecState) memState,
-    Reg#(RSEntry) memExecEntry,
+    Reg#(MemIssueEntry) memExecEntry,
     Reg#(ExcpInfo) memExcpInfo,
     ROB rob,
-    ResStation#(16) memRS
+    MemRS memRS
 );
   action
     let entry = memExecEntry;
-    if (rob.tokenAlive(entry.token)) begin
-      rob.updateExcp(entry.token, memExcpInfo);
-      rob.updateMem(entry.token, RobCompleted);
-      memRS.remove(entry.token);
+    if (rob.tokenAlive(entry.payload.token)) begin
+      rob.updateExcp(entry.payload.token, memExcpInfo);
+      rob.updateMem(entry.payload.token, RobCompleted);
+      memRS.remove(entry.payload.token);
     end
     memState <= MemIdle;
   endaction

@@ -38,7 +38,7 @@ endfunction
 
 function Action doCollectMulBody(
     Reg#(Bool) mulInFlight,
-    Reg#(RSEntry) mulExecEntry,
+    Reg#(MulDivIssueEntry) mulExecEntry,
     Mul_ifc mulUnit,
     CDB cdb,
     ROB rob
@@ -46,25 +46,25 @@ function Action doCollectMulBody(
   action
     let entry = mulExecEntry;
     mulInFlight <= False;
-    if (rob.tokenAlive(entry.token)) begin
-      let mdFunc = fromMaybe(?, entry.muldivFunc);
+    if (rob.tokenAlive(entry.payload.token)) begin
+      let mdFunc = fromMaybe(?, entry.payload.muldivFunc);
       Data result = ?;
       case (mdFunc)
         MulW:    result = truncate(mulUnit.result);
         MulhW:   result = truncateLSB(mulUnit.result);
         MulhWu:  result = truncateLSB(mulUnit.result);
       endcase
-      if (entry.pDst matches tagged Valid .pd) begin
+      if (entry.payload.pDst matches tagged Valid .pd) begin
         cdb.sendMul(pd, result);
       end
-      rob.updateMul(entry.token, RobCompleted);
+      rob.updateMul(entry.payload.token, RobCompleted);
     end
   endaction
 endfunction
 
 function Action doCollectDivBody(
     Reg#(Bool) divInFlight,
-    Reg#(RSEntry) divExecEntry,
+    Reg#(MulDivIssueEntry) divExecEntry,
     Div_ifc divUnit,
     CDB cdb,
     ROB rob
@@ -72,8 +72,8 @@ function Action doCollectDivBody(
   action
     let entry = divExecEntry;
     divInFlight <= False;
-    if (rob.tokenAlive(entry.token)) begin
-      let mdFunc = fromMaybe(?, entry.muldivFunc);
+    if (rob.tokenAlive(entry.payload.token)) begin
+      let mdFunc = fromMaybe(?, entry.payload.muldivFunc);
       Data result = ?;
       case (mdFunc)
         DivW:    result = truncate(divUnit.result);
@@ -81,17 +81,17 @@ function Action doCollectDivBody(
         ModW:    result = truncateLSB(divUnit.result);
         ModWu:   result = truncateLSB(divUnit.result);
       endcase
-      if (entry.pDst matches tagged Valid .pd) begin
+      if (entry.payload.pDst matches tagged Valid .pd) begin
         cdb.sendDiv(pd, result);
       end
-      rob.updateDiv(entry.token, RobCompleted);
+      rob.updateDiv(entry.payload.token, RobCompleted);
     end
   endaction
 endfunction
 
-function StoreBufEntry makeStoreEntry(RSEntry entry, Addr vaddr, Addr paddr, Bool useCache, Data data, Bit#(WordSz) byteEn);
+function StoreBufEntry makeStoreEntry(MemIssueEntry entry, Addr vaddr, Addr paddr, Bool useCache, Data data, Bit#(WordSz) byteEn);
   return StoreBufEntry{
-    owner: entry.token,
+    owner: entry.payload.token,
     state: StoreSpeculative,
     vaddr: vaddr,
     paddr: paddr,
@@ -101,27 +101,27 @@ function StoreBufEntry makeStoreEntry(RSEntry entry, Addr vaddr, Addr paddr, Boo
   };
 endfunction
 
-function MemReq makeMemReq(RSEntry entry, Addr vaddr, Addr paddr, Bool useCache, MemOp memOp, Data wData, Bit#(WordSz) byteEn, MemReqGen gen, Bool squashable);
-  Bool isCacop = (entry.iType == Cacop);
+function MemReq makeMemReq(MemIssueEntry entry, Addr vaddr, Addr paddr, Bool useCache, MemOp memOp, Data wData, Bit#(WordSz) byteEn, MemReqGen gen, Bool squashable);
+  Bool isCacop = (entry.payload.iType == Cacop);
   return MemReq{
     op: memOp, addr: vaddr, paddr: paddr,
     useCache: (memOp == Cacop || memOp == Barrier) ? True : useCache,
     gen: gen, squashable: squashable,
     data: wData, byteEn: byteEn,
-    size: memByteEnToAxiSize(truncate(fromMaybe(5'b0, entry.mask))),
-    cacheOp: isCacop ? fromMaybe(0, entry.cacheOp) : 5'b0
+    size: memByteEnToAxiSize(truncate(fromMaybe(5'b0, entry.payload.mask))),
+    cacheOp: isCacop ? fromMaybe(0, entry.payload.cacheOp) : 5'b0
   };
 endfunction
 
-function MemOp expectedDCacheRespOp(RSEntry entry);
+function MemOp expectedDCacheRespOp(MemIssueEntry entry);
   MemOp ret = Ld;
-  if (entry.isLoad) begin
-    ret = (entry.iType == Ll) ? Ll : Ld;
-  end else if (entry.iType == Sc) begin
+  if (entry.payload.isLoad) begin
+    ret = (entry.payload.iType == Ll) ? Ll : Ld;
+  end else if (entry.payload.iType == Sc) begin
     ret = Sc;
-  end else if (entry.iType == Dbar) begin
+  end else if (entry.payload.iType == Dbar) begin
     ret = Barrier;
-  end else if (entry.iType == Cacop) begin
+  end else if (entry.payload.iType == Cacop) begin
     ret = Cacop;
   end
   return ret;
@@ -129,7 +129,7 @@ endfunction
 
 function Action doCollectMemTLBBody(
     Reg#(MemExecState) memState,
-    Reg#(RSEntry) memExecEntry,
+    Reg#(MemIssueEntry) memExecEntry,
     Reg#(Addr) memVaddr,
     Reg#(Addr) memPaddr,
     Reg#(StoreForwardResult) memForward,
@@ -139,67 +139,67 @@ function Action doCollectMemTLBBody(
     ICache iCache,
     DCache dCache,
     ROB rob,
-    ResStation#(16) memRS,
+    MemRS memRS,
     StoreBuf#(16) storeBuf
 );
   action
     let tlbRes <- tlb.dataLookupResp;
     let entry = memExecEntry;
-    if (!rob.tokenAlive(entry.token)) begin
+    if (!rob.tokenAlive(entry.payload.token)) begin
       memState <= MemIdle;
     end else begin
       Addr vaddr = memVaddr;
-      MmuAccessType accessType = entry.isStore ? MmuStore : MmuLoad;
+      MmuAccessType accessType = entry.payload.isStore ? MmuStore : MmuLoad;
       MmuResult dTrans = mmuTranslate(vaddr, accessType, csrf.crmd, csrf.asid,
         csrf.dmw0, csrf.dmw1, tlbRes);
       if (dTrans.excValid) begin
         ExcpInfo memExcp = mkExcp(dTrans.ecode, dTrans.esubcode, dTrans.badv);
-        rob.updateExcp(entry.token, memExcp);
-        rob.updateMem(entry.token, RobCompleted);
-        memRS.remove(entry.token);
+        rob.updateExcp(entry.payload.token, memExcp);
+        rob.updateMem(entry.payload.token, RobCompleted);
+        memRS.remove(entry.payload.token);
         memState <= MemIdle;
       end else begin
         memPaddr <= dTrans.pa;
-        Bit#(5) cacheOp = fromMaybe(0, entry.cacheOp);
-        Bool isCacop = (entry.iType == Cacop);
+        Bit#(5) cacheOp = fromMaybe(0, entry.payload.cacheOp);
+        Bool isCacop = (entry.payload.iType == Cacop);
         if (isCacop && cacheOp[2:0] == 3'b000) begin
           iCache.cacop(cacheOp, vaddr, dTrans.pa);
           memState <= MemCacopIWait;
         end else begin
           Bool memUseCache = matUseCache(Translate, dTrans.mat, csrf.crmd, accessType);
-          if (entry.iType == St) begin
-            ByteMask m = fromMaybe(5'b00000, entry.mask);
-            let storePkt = selectStoreData(entry.vk, vaddr[1:0], m[3:0]);
+          if (entry.payload.iType == St) begin
+            ByteMask m = fromMaybe(5'b00000, entry.payload.mask);
+            let storePkt = selectStoreData(entry.operands.vk, vaddr[1:0], m[3:0]);
             storeBuf.enqSpeculative(makeStoreEntry(entry, vaddr, dTrans.pa, memUseCache,
               tpl_2(storePkt), tpl_1(storePkt)));
-            rob.updateMemInfo(entry.token, vaddr, dTrans.pa, memUseCache, entry.mask);
-            rob.updateMem(entry.token, RobCompleted);
-            memRS.remove(entry.token);
+            rob.updateMemInfo(entry.payload.token, vaddr, dTrans.pa, memUseCache, entry.payload.mask);
+            rob.updateMem(entry.payload.token, RobCompleted);
+            memRS.remove(entry.payload.token);
             memState <= MemIdle;
           end else begin
             Bit#(WordSz) byteEn = 4'b0000;
             Data wData = 0;
             MemOp memOp = Ld;
-            if (entry.isLoad) begin
-              memOp = (entry.iType == Ll) ? Ll : Ld;
-            end else if (entry.iType == Sc) begin
-              ByteMask m = fromMaybe(5'b00000, entry.mask);
-              let storePkt = selectStoreData(entry.vk, vaddr[1:0], m[3:0]);
+            if (entry.payload.isLoad) begin
+              memOp = (entry.payload.iType == Ll) ? Ll : Ld;
+            end else if (entry.payload.iType == Sc) begin
+              ByteMask m = fromMaybe(5'b00000, entry.payload.mask);
+              let storePkt = selectStoreData(entry.operands.vk, vaddr[1:0], m[3:0]);
               byteEn = tpl_1(storePkt); wData = tpl_2(storePkt); memOp = Sc;
-            end else if (entry.iType == Dbar) begin
+            end else if (entry.payload.iType == Dbar) begin
               memOp = Barrier;
             end else if (isCacop) begin
               memOp = Cacop;
             end
             MemReqGen reqGen = dCache.generation;
             let cacheReq = makeMemReq(entry, vaddr, dTrans.pa, memUseCache, memOp, wData, byteEn, reqGen, True);
-            memForward <= entry.isLoad ?
-              storeBuf.forwardForLoad(entry.token, rob.headTag, dTrans.pa) :
+            memForward <= entry.payload.isLoad ?
+              storeBuf.forwardForLoad(entry.payload.token, rob.headTag, dTrans.pa) :
               StoreForwardResult{data: 0, byteEn: 0};
             if (memOp != Barrier) begin
-              rob.updateMemInfo(entry.token, vaddr, dTrans.pa, memUseCache, entry.mask);
+              rob.updateMemInfo(entry.payload.token, vaddr, dTrans.pa, memUseCache, entry.payload.mask);
             end
-            if (entry.iType == Ld && !memUseCache && entry.robTag != rob.headTag) begin
+            if (entry.payload.iType == Ld && !memUseCache && entry.payload.robTag != rob.headTag) begin
               memState <= MemUncacheWait;
             end else begin
               if (memOp == Cacop) dCache.cacop(cacheReq);
@@ -216,7 +216,7 @@ endfunction
 
 function Action doCollectMemDirectBody(
     Reg#(MemExecState) memState,
-    Reg#(RSEntry) memExecEntry,
+    Reg#(MemIssueEntry) memExecEntry,
     Reg#(Addr) memVaddr,
     Reg#(Addr) memPaddr,
     Reg#(StoreForwardResult) memForward,
@@ -225,57 +225,57 @@ function Action doCollectMemDirectBody(
     ICache iCache,
     DCache dCache,
     ROB rob,
-    ResStation#(16) memRS,
+    MemRS memRS,
     StoreBuf#(16) storeBuf
 );
   action
     let entry = memExecEntry;
-    if (!rob.tokenAlive(entry.token)) begin
+    if (!rob.tokenAlive(entry.payload.token)) begin
       memState <= MemIdle;
     end else begin
       Addr vaddr = memVaddr;
       Addr paddr = memPaddr;
-      Bit#(5) cacheOp = fromMaybe(0, entry.cacheOp);
-      Bool isCacop = (entry.iType == Cacop);
+      Bit#(5) cacheOp = fromMaybe(0, entry.payload.cacheOp);
+      Bool isCacop = (entry.payload.iType == Cacop);
       if (isCacop && cacheOp[2:0] == 3'b000) begin
         iCache.cacop(cacheOp, vaddr, paddr);
         memState <= MemCacopIWait;
       end else begin
-        MmuAccessType accessType = entry.isStore ? MmuStore : MmuLoad;
+        MmuAccessType accessType = entry.payload.isStore ? MmuStore : MmuLoad;
         Bool memUseCache = matUseCache(Direct, Cc, csrf.crmd, accessType);
-        if (entry.iType == St) begin
-          ByteMask m = fromMaybe(5'b00000, entry.mask);
-          let storePkt = selectStoreData(entry.vk, vaddr[1:0], m[3:0]);
+        if (entry.payload.iType == St) begin
+          ByteMask m = fromMaybe(5'b00000, entry.payload.mask);
+          let storePkt = selectStoreData(entry.operands.vk, vaddr[1:0], m[3:0]);
           storeBuf.enqSpeculative(makeStoreEntry(entry, vaddr, paddr, memUseCache,
             tpl_2(storePkt), tpl_1(storePkt)));
-          rob.updateMemInfo(entry.token, vaddr, paddr, memUseCache, entry.mask);
-          rob.updateMem(entry.token, RobCompleted);
-          memRS.remove(entry.token);
+          rob.updateMemInfo(entry.payload.token, vaddr, paddr, memUseCache, entry.payload.mask);
+          rob.updateMem(entry.payload.token, RobCompleted);
+          memRS.remove(entry.payload.token);
           memState <= MemIdle;
         end else begin
           Bit#(WordSz) byteEn = 4'b0000;
           Data wData = 0;
           MemOp memOp = Ld;
-          if (entry.isLoad) begin
-            memOp = (entry.iType == Ll) ? Ll : Ld;
-          end else if (entry.iType == Sc) begin
-            ByteMask m = fromMaybe(5'b00000, entry.mask);
-            let storePkt = selectStoreData(entry.vk, vaddr[1:0], m[3:0]);
+          if (entry.payload.isLoad) begin
+            memOp = (entry.payload.iType == Ll) ? Ll : Ld;
+          end else if (entry.payload.iType == Sc) begin
+            ByteMask m = fromMaybe(5'b00000, entry.payload.mask);
+            let storePkt = selectStoreData(entry.operands.vk, vaddr[1:0], m[3:0]);
             byteEn = tpl_1(storePkt); wData = tpl_2(storePkt); memOp = Sc;
-          end else if (entry.iType == Dbar) begin
+          end else if (entry.payload.iType == Dbar) begin
             memOp = Barrier;
           end else if (isCacop) begin
             memOp = Cacop;
           end
           MemReqGen reqGen = dCache.generation;
           let cacheReq = makeMemReq(entry, vaddr, paddr, memUseCache, memOp, wData, byteEn, reqGen, True);
-          memForward <= entry.isLoad ?
-            storeBuf.forwardForLoad(entry.token, rob.headTag, paddr) :
+          memForward <= entry.payload.isLoad ?
+            storeBuf.forwardForLoad(entry.payload.token, rob.headTag, paddr) :
             StoreForwardResult{data: 0, byteEn: 0};
           if (memOp != Barrier) begin
-            rob.updateMemInfo(entry.token, vaddr, paddr, memUseCache, entry.mask);
+            rob.updateMemInfo(entry.payload.token, vaddr, paddr, memUseCache, entry.payload.mask);
           end
-          if (entry.iType == Ld && !memUseCache && entry.robTag != rob.headTag) begin
+          if (entry.payload.iType == Ld && !memUseCache && entry.payload.robTag != rob.headTag) begin
             memState <= MemUncacheWait;
           end else begin
             if (memOp == Cacop) dCache.cacop(cacheReq);
@@ -291,7 +291,7 @@ endfunction
 
 function Action doIssueMemUncacheBody(
     Reg#(MemExecState) memState,
-    Reg#(RSEntry) memExecEntry,
+    Reg#(MemIssueEntry) memExecEntry,
     Reg#(Addr) memVaddr,
     Reg#(Addr) memPaddr,
     Reg#(StoreForwardResult) memForward,
@@ -304,9 +304,9 @@ function Action doIssueMemUncacheBody(
     let entry = memExecEntry;
     Addr vaddr = memVaddr;
     Addr paddr = memPaddr;
-    ByteMask mask = fromMaybe(5'b0, entry.mask);
+    ByteMask mask = fromMaybe(5'b0, entry.payload.mask);
     MemReqGen reqGen = dCache.generation;
-    memForward <= storeBuf.forwardForLoad(entry.token, headTag, paddr);
+    memForward <= storeBuf.forwardForLoad(entry.payload.token, headTag, paddr);
     memReqGen <= reqGen;
     dCache.req(MemReq{
       op: Ld, addr: vaddr, paddr: paddr, useCache: False,
@@ -320,7 +320,7 @@ endfunction
 
 function Action doCollectMemCacheBody(
     Reg#(MemExecState) memState,
-    Reg#(RSEntry) memExecEntry,
+    Reg#(MemIssueEntry) memExecEntry,
     Reg#(Addr) memVaddr,
     Reg#(Addr) memPaddr,
     Reg#(StoreForwardResult) memForward,
@@ -328,12 +328,12 @@ function Action doCollectMemCacheBody(
     DCache dCache,
     CDB cdb,
     ROB rob,
-    ResStation#(16) memRS
+    MemRS memRS
 );
   action
     let d <- dCache.resp;
     let entry = memExecEntry;
-    Bool live = rob.tokenAlive(entry.token);
+    Bool live = rob.tokenAlive(entry.payload.token);
     Bool respMatches = d.gen == memReqGen && d.op == expectedDCacheRespOp(entry);
 
     if (!live) begin
@@ -342,64 +342,64 @@ function Action doCollectMemCacheBody(
       memState <= MemCacheWait;
     end else begin
       memState <= MemIdle;
-      if (entry.isLoad) begin
-        ByteMask m = fromMaybe(5'b00000, entry.mask);
+      if (entry.payload.isLoad) begin
+        ByteMask m = fromMaybe(5'b00000, entry.payload.mask);
         StoreForwardResult fwd = memForward;
         Data rawData = coreApplyByteMask(d.data, fwd.data, truncate(fwd.byteEn));
         Data loadData = ?;
-        if (entry.iType == Ll)
+        if (entry.payload.iType == Ll)
           loadData = rawData;
         else
           loadData = selectLoadData(rawData, memVaddr[1:0], m[3:0], m[4] == 1'b1);
-        if (entry.pDst matches tagged Valid .pd) begin
+        if (entry.payload.pDst matches tagged Valid .pd) begin
           cdb.sendLoad(pd, loadData);
         end
-        rob.updateMem(entry.token, RobCompleted);
-      end else if (entry.iType == Sc) begin
-        if (entry.pDst matches tagged Valid .pd) begin
+        rob.updateMem(entry.payload.token, RobCompleted);
+      end else if (entry.payload.iType == Sc) begin
+        if (entry.payload.pDst matches tagged Valid .pd) begin
           cdb.sendLoad(pd, d.data);
         end
-        rob.updateMem(entry.token, RobCompleted);
+        rob.updateMem(entry.payload.token, RobCompleted);
       end else begin
-        rob.updateMem(entry.token, RobCompleted);
+        rob.updateMem(entry.payload.token, RobCompleted);
       end
-      memRS.remove(entry.token);
+      memRS.remove(entry.payload.token);
     end
   endaction
 endfunction
 
 function Action doCollectMemCacopIBody(
     Reg#(MemExecState) memState,
-    Reg#(RSEntry) memExecEntry,
+    Reg#(MemIssueEntry) memExecEntry,
     ICache iCache,
     ROB rob,
-    ResStation#(16) memRS
+    MemRS memRS
 );
   action
     let done <- iCache.cacopResp;
     let entry = memExecEntry;
     memState <= MemIdle;
-    if (rob.tokenAlive(entry.token)) begin
-      rob.updateMem(entry.token, RobCompleted);
-      memRS.remove(entry.token);
+    if (rob.tokenAlive(entry.payload.token)) begin
+      rob.updateMem(entry.payload.token, RobCompleted);
+      memRS.remove(entry.payload.token);
     end
   endaction
 endfunction
 
 function Action doCollectMemIbarBody(
     Reg#(MemExecState) memState,
-    Reg#(RSEntry) memExecEntry,
+    Reg#(MemIssueEntry) memExecEntry,
     ICache iCache,
     ROB rob,
-    ResStation#(16) memRS
+    MemRS memRS
 );
   action
     let done <- iCache.invalidateResp;
     let entry = memExecEntry;
     memState <= MemIdle;
-    if (rob.tokenAlive(entry.token)) begin
-      rob.updateMem(entry.token, RobCompleted);
-      memRS.remove(entry.token);
+    if (rob.tokenAlive(entry.payload.token)) begin
+      rob.updateMem(entry.payload.token, RobCompleted);
+      memRS.remove(entry.payload.token);
     end
   endaction
 endfunction

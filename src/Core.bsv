@@ -67,9 +67,9 @@ module mkCore(Core);
   FreeList           freeList <- mkFreeList;
   ROB                     rob <- mkROB;
   CDB                     cdb <- mkCDB;
-  ResStation#(16)      aluRS <- mkResStation;
-  ResStation#(4)   muldivRS <- mkResStation;
-  ResStation#(16)      memRS <- mkResStation;
+  AluRS              aluRS <- mkAluRS;
+  MulDivRS        muldivRS <- mkMulDivRS;
+  MemRS              memRS <- mkMemRS;
   StoreBuf#(16)     storeBuf <- mkStoreBuf;
   StoreForwardBuf#(16) committedStoreBuf <- mkStoreForwardBuf;
 
@@ -105,16 +105,16 @@ module mkCore(Core);
   // Execution state
   Reg#(Bool)         aluBusy <- mkReg(False);
   Reg#(Bool)   aluBranchBusy <- mkReg(False);
-  Reg#(RSEntry)   aluExecEntry <- mkRegU;
+  Reg#(AluIssueEntry)   aluExecEntry <- mkRegU;
 
   Reg#(Bool)     mulInFlight <- mkReg(False);
-  Reg#(RSEntry)  mulExecEntry <- mkRegU;
+  Reg#(MulDivIssueEntry)  mulExecEntry <- mkRegU;
 
   Reg#(Bool)     divInFlight <- mkReg(False);
-  Reg#(RSEntry)  divExecEntry <- mkRegU;
+  Reg#(MulDivIssueEntry)  divExecEntry <- mkRegU;
 
   Reg#(MemExecState) memState <- mkReg(MemIdle);
-  Reg#(RSEntry)   memExecEntry <- mkRegU;
+  Reg#(MemIssueEntry)   memExecEntry <- mkRegU;
 
   Reg#(Addr)        memVaddr  <- mkRegU;
   Reg#(Addr)        memPaddr  <- mkRegU;
@@ -427,7 +427,7 @@ module mkCore(Core);
       !coreIsBarrier(rob.headIType) &&&
       aluRS.selectOldestReadyForAlu(rob.headTag, rob.headValid) matches tagged Valid .entry);
     doIssueALUBody(entry, aluExecEntry, aluRS, aluBusy);
-    aluBranchBusy <= isBranch(entry.iType);
+    aluBranchBusy <= isBranch(entry.payload.iType);
   endrule
 
   rule doExecALUBranch (commitState != CommitInterruptReady && aluBusy && aluBranchBusy);
@@ -453,14 +453,14 @@ module mkCore(Core);
   rule doIssueMul (commitState == CommitIdle && !mulInFlight && !isCsrTlbSpecial(rob.headIType) &&
       !coreIsBarrier(rob.headIType) &&&
       muldivRS.selectOldestReady matches tagged Valid .entry &&&
-      isMulFunc(fromMaybe(?, entry.muldivFunc)));
+      isMulFunc(fromMaybe(?, entry.payload.muldivFunc)));
     doIssueMulBody(entry, mulUnit, mulExecEntry, muldivRS, mulInFlight);
   endrule
 
   rule doIssueDiv (commitState == CommitIdle && !divInFlight && !isCsrTlbSpecial(rob.headIType) &&
       !coreIsBarrier(rob.headIType) &&&
       muldivRS.selectOldestReady matches tagged Valid .entry &&&
-      isDivFunc(fromMaybe(?, entry.muldivFunc)));
+      isDivFunc(fromMaybe(?, entry.payload.muldivFunc)));
     doIssueDivBody(entry, divUnit, divExecEntry, muldivRS, divInFlight);
   endrule
 
@@ -485,9 +485,9 @@ module mkCore(Core);
       // LL/SC, barriers and cache maintenance have architectural side
       // effects and are serialized.  A translated MMIO load is delayed
       // again below until it reaches the head.
-      (entry.iType == Ld || entry.robTag == rob.headTag) &&
-      (entry.iType != St || storeBuf.notFull) &&
-      (!entry.isLoad || !memRS.hasOlderStore(entry.robTag, rob.headTag)));
+      (entry.payload.iType == Ld || entry.payload.robTag == rob.headTag) &&
+      (entry.payload.iType != St || storeBuf.notFull) &&
+      (!entry.payload.isLoad || !memRS.hasOlderStore(entry.payload.robTag, rob.headTag)));
     doIssueMemBody(entry, memExecEntry, memVaddr, memPaddr, memExcpInfo,
       memNeedTlb, memState, csrf, tlb, iCache, rob, memRS, storeBuf);
   endrule
@@ -507,12 +507,12 @@ module mkCore(Core);
   endrule
 
   rule cancelDeadMemUncache (commitState != CommitInterruptReady && memState == MemUncacheWait &&
-      !rob.tokenAlive(memExecEntry.token));
+      !rob.tokenAlive(memExecEntry.payload.token));
     memState <= MemIdle;
   endrule
 
   rule doIssueMemUncache (commitState != CommitInterruptReady && memState == MemUncacheWait &&
-      rob.tokenAlive(memExecEntry.token) && memExecEntry.robTag == rob.headTag && !storeBuf.hasPendingDrain);
+      rob.tokenAlive(memExecEntry.payload.token) && memExecEntry.payload.robTag == rob.headTag && !storeBuf.hasPendingDrain);
     doIssueMemUncacheBody(memState, memExecEntry, memVaddr, memPaddr,
       memForward, memReqGen, dCache, storeBuf, rob.headTag);
   endrule
