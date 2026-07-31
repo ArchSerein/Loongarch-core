@@ -17,6 +17,9 @@ interface ROB;
   method RobHeadStatus headStatus;   // narrow head execution/status view
   method RobHeadCommitMeta headCommitMeta; // narrow head commit metadata view
   method RobMemInfo headMemInfo;     // narrow head memory metadata view
+  method RobToken headToken;         // current head token, for snapshot validation
+  method RobState headState;         // current head ROB state, for guards
+  method Bool headExcpValid;         // current head exception-valid bit, for guards
   method RobTag headTag;             // current head tag
   method IType headIType;            // head entry's iType (unguarded, for issue blocking)
   method Action deq;                 // advance head (CM)
@@ -309,6 +312,19 @@ module mkROB(ROB);
 
   method RobMemInfo headMemInfo;
     return (count != 0) ? memInfo[headPtr] : defaultHeadMemInfo();
+  endmethod
+
+  method RobToken headToken;
+    return (count != 0) ? staticEntries[headPtr].token :
+      RobToken{index: headPtr, epoch: epoch};
+  endmethod
+
+  method RobState headState;
+    return (count != 0) ? execStatus[headPtr].state : RobIssued;
+  endmethod
+
+  method Bool headExcpValid;
+    return count != 0 && execStatus[headPtr].excp.valid;
   endmethod
 
   method RobTag headTag = headPtr;

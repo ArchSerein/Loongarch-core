@@ -479,7 +479,7 @@ module mkCore(Core);
   Reg#(Bool) memNeedTlb <- mkReg(False);
 
   rule doIssueMem (commitState == CommitIdle && !aluBranchBusy && memState == MemIdle && !storeBuf.hasPendingDrain &&
-      !(rob.headValid && rob.headStatus.iType == St && rob.headStatus.state == RobCompleted) &&
+      !(rob.headValid && rob.headIType == St && rob.headState == RobCompleted) &&
       !isCsrTlbSpecial(rob.headIType) &&&
       memRS.selectOldestReadyFrom(rob.headTag) matches tagged Valid .entry &&&
       // Only ordinary loads may execute away from the ROB head.  Stores,
@@ -562,7 +562,7 @@ module mkCore(Core);
   // CM Stage: Commit
   // ============================================================
   rule doCollectCommitTLB (commitState == CommitTLBWait && rob.headValid &&
-      sameRobToken(rob.headStatus.token, commitHeadSnapReg.status.token));
+      sameRobToken(rob.headToken, commitHeadSnapReg.status.token));
     doCollectCommitTLBBody(commitState, commitHeadSnapReg, tlb, rob, csrf
 `ifdef CONFIG_DIFFTEST
       , csrSnapReg, archRegs, difftest
@@ -575,8 +575,8 @@ module mkCore(Core);
 
 
   rule takeCsrSnapshot (rob.headValid && commitState == CommitIdle &&
-      (rob.headStatus.state == RobCompleted || rob.headStatus.excp.valid ||
-       isCsrTlbSpecial(rob.headStatus.iType)));
+      (rob.headState == RobCompleted || rob.headExcpValid ||
+       isCsrTlbSpecial(rob.headIType)));
     takeCsrSnapshotBody(
 `ifdef CONFIG_DIFFTEST
       csrSnapReg,
@@ -585,7 +585,7 @@ module mkCore(Core);
   endrule
 
   rule doPrepareCsrCommit (rob.headValid && commitState == CommitReady &&
-      sameRobToken(rob.headStatus.token, commitHeadSnapReg.status.token) &&
+      sameRobToken(rob.headToken, commitHeadSnapReg.status.token) &&
       !commitHeadSnapReg.status.excp.valid &&
       isCsr(commitHeadSnapReg.status.iType) && !pendingCsrValid);
     let pending <- prepareCsrCommit(commitHeadSnapReg,
@@ -599,7 +599,7 @@ module mkCore(Core);
   endrule
 
   rule doCommitCsrWriteback (rob.headValid && commitState == CommitCsrWriteback &&
-      pendingCsrValid && sameRobToken(rob.headStatus.token, pendingCsrCommit.token)
+      pendingCsrValid && sameRobToken(rob.headToken, pendingCsrCommit.token)
 `ifdef CONFIG_DIFFTEST
       && difftest.enqTraceReady
 `endif
@@ -622,7 +622,7 @@ module mkCore(Core);
 
   rule doCommitCsrWritebackTokenMismatch (commitState == CommitCsrWriteback &&
       pendingCsrValid &&
-      (!rob.headValid || !sameRobToken(rob.headStatus.token, pendingCsrCommit.token)));
+      (!rob.headValid || !sameRobToken(rob.headToken, pendingCsrCommit.token)));
 `ifdef CONFIG_BSIM
     $display("CSR COMMIT ERROR: pending token does not match ROB head");
     $finish(1);
@@ -632,7 +632,7 @@ module mkCore(Core);
   endrule
 
   rule doCommitInterrupt (rob.headValid && commitState == CommitInterruptReady &&
-      sameRobToken(rob.headStatus.token, commitHeadSnapReg.status.token)
+      sameRobToken(rob.headToken, commitHeadSnapReg.status.token)
 `ifdef CONFIG_DIFFTEST
       && difftest.enqTraceReady
 `endif
@@ -661,7 +661,7 @@ module mkCore(Core);
   endrule
 
   rule doCommitErtn (rob.headValid && commitState == CommitReady &&
-      sameRobToken(rob.headStatus.token, commitHeadSnapReg.status.token)
+      sameRobToken(rob.headToken, commitHeadSnapReg.status.token)
 `ifdef CONFIG_DIFFTEST
       && difftest.enqTraceReady
 `endif
@@ -691,7 +691,7 @@ module mkCore(Core);
   endrule
 
   rule doCommitRedirect (rob.headValid && commitState == CommitReady &&
-      sameRobToken(rob.headStatus.token, commitHeadSnapReg.status.token)
+      sameRobToken(rob.headToken, commitHeadSnapReg.status.token)
 `ifdef CONFIG_DIFFTEST
       && difftest.enqTraceReady
 `endif
@@ -726,7 +726,7 @@ module mkCore(Core);
   endrule
 
   rule doCommitIbar (rob.headValid && commitState == CommitReady &&
-      sameRobToken(rob.headStatus.token, commitHeadSnapReg.status.token)
+      sameRobToken(rob.headToken, commitHeadSnapReg.status.token)
 `ifdef CONFIG_DIFFTEST
       && difftest.enqTraceReady
 `endif
@@ -759,7 +759,7 @@ module mkCore(Core);
   endrule
 
   rule doCommitReclaim (rob.headValid && commitState == CommitReady &&
-      sameRobToken(rob.headStatus.token, commitHeadSnapReg.status.token)
+      sameRobToken(rob.headToken, commitHeadSnapReg.status.token)
 `ifdef CONFIG_DIFFTEST
       && difftest.enqTraceReady
 `endif
@@ -793,7 +793,7 @@ module mkCore(Core);
   endrule
 
   rule doCommitNoReclaim (rob.headValid && commitState == CommitReady &&
-      sameRobToken(rob.headStatus.token, commitHeadSnapReg.status.token)
+      sameRobToken(rob.headToken, commitHeadSnapReg.status.token)
 `ifdef CONFIG_DIFFTEST
       && difftest.enqTraceReady
 `endif

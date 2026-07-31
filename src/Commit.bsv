@@ -736,10 +736,10 @@ function Action doApplyPendingCsrCommitAction(
 `endif
 );
   action
-    RobHeadStatus currentHeadStatus = rob.headStatus;
+    RobToken currentHeadToken = rob.headToken;
     PendingCsrCommit pending = pendingCsrCommit;
 
-    if (!rob.headValid || !sameRobToken(currentHeadStatus.token, pending.token)) begin
+    if (!rob.headValid || !sameRobToken(currentHeadToken, pending.token)) begin
 `ifdef CONFIG_BSIM
       $display("CSR COMMIT ERROR: pending token does not match ROB head");
       $finish(1);
