@@ -129,6 +129,7 @@ module mkCore(Core);
   Reg#(DiffArchCsrState) csrSnapReg <- mkRegU;
 `endif
   Reg#(CommitCsrSnapshot) commitCsrSnapReg <- mkRegU;
+  Reg#(CommitHeadSnapshot) commitHeadSnapReg <- mkRegU;
   Reg#(PendingCsrCommit) pendingCsrCommit <- mkRegU;
   Reg#(Bool) pendingCsrValid <- mkReg(False);
 
@@ -478,7 +479,7 @@ module mkCore(Core);
   Reg#(Bool) memNeedTlb <- mkReg(False);
 
   rule doIssueMem (commitState == CommitIdle && !aluBranchBusy && memState == MemIdle && !storeBuf.hasPendingDrain &&
-      !(rob.headValid && rob.head.iType == St && rob.head.state == RobCompleted) &&
+      !(rob.headValid && rob.headStatus.iType == St && rob.headStatus.state == RobCompleted) &&
       !isCsrTlbSpecial(rob.headIType) &&&
       memRS.selectOldestReadyFrom(rob.headTag) matches tagged Valid .entry &&&
       // Only ordinary loads may execute away from the ROB head.  Stores,
@@ -560,8 +561,9 @@ module mkCore(Core);
   // ============================================================
   // CM Stage: Commit
   // ============================================================
-  rule doCollectCommitTLB (commitState == CommitTLBWait);
-    doCollectCommitTLBBody(commitState, tlb, rob, csrf
+  rule doCollectCommitTLB (commitState == CommitTLBWait && rob.headValid &&
+      sameRobToken(rob.headStatus.token, commitHeadSnapReg.status.token));
+    doCollectCommitTLBBody(commitState, commitHeadSnapReg, tlb, rob, csrf
 `ifdef CONFIG_DIFFTEST
       , csrSnapReg, archRegs, difftest
 `endif
@@ -573,18 +575,20 @@ module mkCore(Core);
 
 
   rule takeCsrSnapshot (rob.headValid && commitState == CommitIdle &&
-      (rob.head.state == RobCompleted || rob.head.excp.valid ||
-       isCsrTlbSpecial(rob.head.iType)));
+      (rob.headStatus.state == RobCompleted || rob.headStatus.excp.valid ||
+       isCsrTlbSpecial(rob.headStatus.iType)));
     takeCsrSnapshotBody(
 `ifdef CONFIG_DIFFTEST
       csrSnapReg,
 `endif
-      commitCsrSnapReg, csrf, rob, commitState);
+      commitCsrSnapReg, commitHeadSnapReg, csrf, rob, commitState);
   endrule
 
   rule doPrepareCsrCommit (rob.headValid && commitState == CommitReady &&
-      !rob.head.excp.valid && isCsr(rob.head.iType) && !pendingCsrValid);
-    let pending <- prepareCsrCommit(rob,
+      sameRobToken(rob.headStatus.token, commitHeadSnapReg.status.token) &&
+      !commitHeadSnapReg.status.excp.valid &&
+      isCsr(commitHeadSnapReg.status.iType) && !pendingCsrValid);
+    let pending <- prepareCsrCommit(commitHeadSnapReg,
 `ifdef CONFIG_DIFFTEST
       csrSnapReg,
 `endif
@@ -595,12 +599,12 @@ module mkCore(Core);
   endrule
 
   rule doCommitCsrWriteback (rob.headValid && commitState == CommitCsrWriteback &&
-      pendingCsrValid && sameRobToken(rob.head.token, pendingCsrCommit.token)
+      pendingCsrValid && sameRobToken(rob.headStatus.token, pendingCsrCommit.token)
 `ifdef CONFIG_DIFFTEST
       && difftest.enqTraceReady
 `endif
   );
-    doCommitBody(rob
+    doCommitBody(commitHeadSnapReg
 `ifdef CONFIG_WB_DEBUG
       , debugWsValidWire, debugWbPcWire
 `ifdef CONFIG_WB_DEBUG_INST
@@ -616,9 +620,9 @@ module mkCore(Core);
     );
   endrule
 
-  rule doCommitCsrWritebackTokenMismatch (rob.headValid &&
-      commitState == CommitCsrWriteback && pendingCsrValid &&
-      !sameRobToken(rob.head.token, pendingCsrCommit.token));
+  rule doCommitCsrWritebackTokenMismatch (commitState == CommitCsrWriteback &&
+      pendingCsrValid &&
+      (!rob.headValid || !sameRobToken(rob.headStatus.token, pendingCsrCommit.token)));
 `ifdef CONFIG_BSIM
     $display("CSR COMMIT ERROR: pending token does not match ROB head");
     $finish(1);
@@ -627,7 +631,8 @@ module mkCore(Core);
     commitState <= CommitIdle;
   endrule
 
-  rule doCommitInterrupt (rob.headValid && commitState == CommitInterruptReady
+  rule doCommitInterrupt (rob.headValid && commitState == CommitInterruptReady &&
+      sameRobToken(rob.headStatus.token, commitHeadSnapReg.status.token)
 `ifdef CONFIG_DIFFTEST
       && difftest.enqTraceReady
 `endif
@@ -639,7 +644,7 @@ module mkCore(Core);
         isInterrupt: True,
         interruptNo: commitCsrSnapReg.interruptInfo.interruptNo
       },
-      rob, commitState, csrf,
+      commitHeadSnapReg, rob, commitState, csrf,
 `ifdef CONFIG_DIFFTEST
       csrSnapReg,
 `endif
@@ -655,12 +660,13 @@ module mkCore(Core);
     pendingCsrValid <= False;
   endrule
 
-  rule doCommitErtn (rob.headValid && commitState == CommitReady
+  rule doCommitErtn (rob.headValid && commitState == CommitReady &&
+      sameRobToken(rob.headStatus.token, commitHeadSnapReg.status.token)
 `ifdef CONFIG_DIFFTEST
       && difftest.enqTraceReady
 `endif
-      && rob.head.iType == Ertn);
-    doCommitBody(rob
+      && commitHeadSnapReg.status.iType == Ertn);
+    doCommitBody(commitHeadSnapReg
 `ifdef CONFIG_WB_DEBUG
       , debugWsValidWire, debugWbPcWire
 `ifdef CONFIG_WB_DEBUG_INST
@@ -668,7 +674,7 @@ module mkCore(Core);
 `endif
 `endif
     );
-    doCommitErtnAction(rob, commitState, csrf,
+    doCommitErtnAction(commitHeadSnapReg, rob, commitState, csrf,
 `ifdef CONFIG_DIFFTEST
       csrSnapReg,
 `endif
@@ -684,13 +690,14 @@ module mkCore(Core);
     pendingCsrValid <= False;
   endrule
 
-  rule doCommitRedirect (rob.headValid && commitState == CommitReady
+  rule doCommitRedirect (rob.headValid && commitState == CommitReady &&
+      sameRobToken(rob.headStatus.token, commitHeadSnapReg.status.token)
 `ifdef CONFIG_DIFFTEST
       && difftest.enqTraceReady
 `endif
-      && (rob.head.excp.valid || rob.head.iType == Idle ||
-       rob.head.iType == Syscall || rob.head.iType == Break));
-    doCommitBody(rob
+      && (commitHeadSnapReg.status.excp.valid || commitHeadSnapReg.status.iType == Idle ||
+       commitHeadSnapReg.status.iType == Syscall || commitHeadSnapReg.status.iType == Break));
+    doCommitBody(commitHeadSnapReg
 `ifdef CONFIG_WB_DEBUG
       , debugWsValidWire, debugWbPcWire
 `ifdef CONFIG_WB_DEBUG_INST
@@ -698,7 +705,7 @@ module mkCore(Core);
 `endif
 `endif
     );
-    doCommitRedirectAction(rob, commitState, csrf,
+    doCommitRedirectAction(commitHeadSnapReg, rob, commitState, csrf,
 `ifdef CONFIG_DIFFTEST
       csrSnapReg,
 `endif
@@ -718,14 +725,16 @@ module mkCore(Core);
     pendingCsrValid <= False;
   endrule
 
-  rule doCommitIbar (rob.headValid && commitState == CommitReady
+  rule doCommitIbar (rob.headValid && commitState == CommitReady &&
+      sameRobToken(rob.headStatus.token, commitHeadSnapReg.status.token)
 `ifdef CONFIG_DIFFTEST
       && difftest.enqTraceReady
 `endif
-      && !(rob.head.excp.valid || rob.head.iType == Ertn || rob.head.iType == Idle ||
-       rob.head.iType == Syscall || rob.head.iType == Break)
-      && rob.head.iType == Ibar);
-    doCommitBody(rob
+      && !(commitHeadSnapReg.status.excp.valid || commitHeadSnapReg.status.iType == Ertn ||
+       commitHeadSnapReg.status.iType == Idle || commitHeadSnapReg.status.iType == Syscall ||
+       commitHeadSnapReg.status.iType == Break)
+      && commitHeadSnapReg.status.iType == Ibar);
+    doCommitBody(commitHeadSnapReg
 `ifdef CONFIG_WB_DEBUG
       , debugWsValidWire, debugWbPcWire
 `ifdef CONFIG_WB_DEBUG_INST
@@ -733,7 +742,7 @@ module mkCore(Core);
 `endif
 `endif
     );
-    doCommitIbarAction(rob, commitState,
+    doCommitIbarAction(commitHeadSnapReg, rob, commitState,
 `ifdef CONFIG_DIFFTEST
       csrSnapReg,
 `endif
@@ -749,16 +758,18 @@ module mkCore(Core);
     pendingCsrValid <= False;
   endrule
 
-  rule doCommitReclaim (rob.headValid && commitState == CommitReady
+  rule doCommitReclaim (rob.headValid && commitState == CommitReady &&
+      sameRobToken(rob.headStatus.token, commitHeadSnapReg.status.token)
 `ifdef CONFIG_DIFFTEST
       && difftest.enqTraceReady
 `endif
-      && !(rob.head.excp.valid || rob.head.iType == Ertn || rob.head.iType == Idle ||
-       rob.head.iType == Syscall || rob.head.iType == Break)
-      && !isCsr(rob.head.iType)
-      && isValid(rob.head.oldPdst)
-      && rob.head.iType != Ibar);
-    doCommitBody(rob
+      && !(commitHeadSnapReg.status.excp.valid || commitHeadSnapReg.status.iType == Ertn ||
+       commitHeadSnapReg.status.iType == Idle || commitHeadSnapReg.status.iType == Syscall ||
+       commitHeadSnapReg.status.iType == Break)
+      && !isCsr(commitHeadSnapReg.status.iType)
+      && isValid(commitHeadSnapReg.meta.oldPdst)
+      && commitHeadSnapReg.status.iType != Ibar);
+    doCommitBody(commitHeadSnapReg
 `ifdef CONFIG_WB_DEBUG
       , debugWsValidWire, debugWbPcWire
 `ifdef CONFIG_WB_DEBUG_INST
@@ -766,7 +777,7 @@ module mkCore(Core);
 `endif
 `endif
     );
-    doCommitReclaimAction(rob, commitState, csrf,
+    doCommitReclaimAction(commitHeadSnapReg, rob, commitState, csrf,
 `ifdef CONFIG_DIFFTEST
       csrSnapReg,
 `endif
@@ -781,16 +792,18 @@ module mkCore(Core);
     );
   endrule
 
-  rule doCommitNoReclaim (rob.headValid && commitState == CommitReady
+  rule doCommitNoReclaim (rob.headValid && commitState == CommitReady &&
+      sameRobToken(rob.headStatus.token, commitHeadSnapReg.status.token)
 `ifdef CONFIG_DIFFTEST
       && difftest.enqTraceReady
 `endif
-      && !(rob.head.excp.valid || rob.head.iType == Ertn || rob.head.iType == Idle ||
-       rob.head.iType == Syscall || rob.head.iType == Break)
-      && !isCsr(rob.head.iType)
-      && !isValid(rob.head.oldPdst)
-      && rob.head.iType != Ibar);
-    doCommitBody(rob
+      && !(commitHeadSnapReg.status.excp.valid || commitHeadSnapReg.status.iType == Ertn ||
+       commitHeadSnapReg.status.iType == Idle || commitHeadSnapReg.status.iType == Syscall ||
+       commitHeadSnapReg.status.iType == Break)
+      && !isCsr(commitHeadSnapReg.status.iType)
+      && !isValid(commitHeadSnapReg.meta.oldPdst)
+      && commitHeadSnapReg.status.iType != Ibar);
+    doCommitBody(commitHeadSnapReg
 `ifdef CONFIG_WB_DEBUG
       , debugWsValidWire, debugWbPcWire
 `ifdef CONFIG_WB_DEBUG_INST
@@ -798,7 +811,7 @@ module mkCore(Core);
 `endif
 `endif
     );
-    doCommitNoReclaimAction(rob, commitState, csrf,
+    doCommitNoReclaimAction(commitHeadSnapReg, rob, commitState, csrf,
 `ifdef CONFIG_DIFFTEST
       csrSnapReg,
 `endif

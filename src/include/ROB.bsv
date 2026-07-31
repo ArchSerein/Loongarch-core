@@ -14,7 +14,10 @@ interface ROB;
   method RobToken enqToken;          // next dynamic instruction token
   method SpecEpoch currentEpoch;     // current speculative epoch
   method Action enq(RobEntry e);     // insert at tail
-  method RobEntry head;              // peek head entry (CM)
+  method RobEntry head;              // compatibility full head entry (CM)
+  method RobHeadStatus headStatus;   // narrow head execution/status view
+  method RobHeadCommitMeta headCommitMeta; // narrow head commit metadata view
+  method RobMemInfo headMemInfo;     // narrow head memory metadata view
   method RobTag headTag;             // current head tag
   method IType headIType;            // head entry's iType (unguarded, for issue blocking)
   method Action deq;                 // advance head (CM)
@@ -100,6 +103,75 @@ module mkROB(ROB);
       paddr: e.memPaddr,
       useCache: e.memUseCache,
       mask: e.memMask
+    };
+  endfunction
+
+  function ExcpInfo defaultExcpInfo();
+    return ExcpInfo{valid: False, ecode: 0, esubcode: 0, badv: 0};
+  endfunction
+
+  function RobHeadStatus headStatusFromParts(RobStaticEntry staticEntry, RobExecStatus status);
+    return RobHeadStatus{
+      token: staticEntry.token,
+      state: status.state,
+      iType: staticEntry.iType,
+      excp: status.excp,
+      isBranch: staticEntry.isBranch,
+      isStore: staticEntry.isStore,
+      isCsr: staticEntry.isCsr,
+      isTlb: staticEntry.isTlb,
+      isSpecial: staticEntry.isSpecial,
+      mispredict: status.mispredict,
+      correctTarget: status.correctTarget
+    };
+  endfunction
+
+  function RobHeadCommitMeta headCommitMetaFromStatic(RobStaticEntry staticEntry);
+    return RobHeadCommitMeta{
+      pc: staticEntry.pc,
+      inst: staticEntry.inst,
+      pDst: staticEntry.pDst,
+      oldPdst: staticEntry.oldPdst,
+      dst: staticEntry.dst,
+      pSrc1: staticEntry.pSrc1,
+      pSrc2: staticEntry.pSrc2
+    };
+  endfunction
+
+  function RobHeadStatus defaultHeadStatus();
+    return RobHeadStatus{
+      token: RobToken{index: headPtr, epoch: epoch},
+      state: RobIssued,
+      iType: Alu,
+      excp: defaultExcpInfo(),
+      isBranch: False,
+      isStore: False,
+      isCsr: False,
+      isTlb: False,
+      isSpecial: False,
+      mispredict: False,
+      correctTarget: 0
+    };
+  endfunction
+
+  function RobHeadCommitMeta defaultHeadCommitMeta();
+    return RobHeadCommitMeta{
+      pc: 0,
+      inst: 0,
+      pDst: tagged Invalid,
+      oldPdst: tagged Invalid,
+      dst: tagged Invalid,
+      pSrc1: 0,
+      pSrc2: 0
+    };
+  endfunction
+
+  function RobMemInfo defaultHeadMemInfo();
+    return RobMemInfo{
+      vaddr: 0,
+      paddr: 0,
+      useCache: False,
+      mask: tagged Invalid
     };
   endfunction
 
@@ -255,6 +327,22 @@ module mkROB(ROB);
 
   method Action enq(RobEntry e) if (count != depth);
     enqReq <= tagged Valid e;
+  endmethod
+
+  method RobHeadStatus headStatus;
+    return (count != 0) ?
+      headStatusFromParts(staticEntries[headPtr], execStatus[headPtr]) :
+      defaultHeadStatus();
+  endmethod
+
+  method RobHeadCommitMeta headCommitMeta;
+    return (count != 0) ?
+      headCommitMetaFromStatic(staticEntries[headPtr]) :
+      defaultHeadCommitMeta();
+  endmethod
+
+  method RobMemInfo headMemInfo;
+    return (count != 0) ? memInfo[headPtr] : defaultHeadMemInfo();
   endmethod
 
   method RobEntry head if (count != 0);

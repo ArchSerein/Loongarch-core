@@ -102,6 +102,31 @@ typedef struct {
   Maybe#(ByteMask) mask;
 } RobMemInfo deriving(Bits, Eq);
 
+// Narrow ROB head views used by commit/issue without assembling a full entry.
+typedef struct {
+  RobToken token;
+  RobState state;
+  IType    iType;
+  ExcpInfo excp;
+  Bool     isBranch;
+  Bool     isStore;
+  Bool     isCsr;
+  Bool     isTlb;
+  Bool     isSpecial;
+  Bool     mispredict;
+  Addr     correctTarget;
+} RobHeadStatus deriving(Bits, Eq);
+
+typedef struct {
+  Addr          pc;
+  Instruction   inst;
+  Maybe#(PIndx) pDst;
+  Maybe#(PIndx) oldPdst;
+  Maybe#(RIndx) dst;
+  PIndx         pSrc1;
+  PIndx         pSrc2;
+} RobHeadCommitMeta deriving(Bits, Eq);
+
 // Reservation Station operand state shared by FU-specific RS entries.
 typedef struct {
   Maybe#(PIndx) qj;  // source 1 dependency (Invalid = ready)

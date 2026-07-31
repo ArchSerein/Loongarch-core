@@ -57,6 +57,12 @@ typedef struct {
 } CommitCsrSnapshot deriving(Bits, Eq);
 
 typedef struct {
+  RobHeadStatus     status;
+  RobHeadCommitMeta meta;
+  RobMemInfo        mem;
+} CommitHeadSnapshot deriving(Bits, Eq);
+
+typedef struct {
   RobToken token;
   Addr pc;
   Instruction inst;
@@ -85,8 +91,37 @@ typedef struct {
   Bool waitTlb;
 } CommitNormalResult deriving(Bits, Eq);
 
+function RobEntry robEntryFromCommitHeadSnapshot(CommitHeadSnapshot snap);
+  return RobEntry{
+    valid: True,
+    token: snap.status.token,
+    state: snap.status.state,
+    pc: snap.meta.pc,
+    inst: snap.meta.inst,
+    pDst: snap.meta.pDst,
+    oldPdst: snap.meta.oldPdst,
+    dst: snap.meta.dst,
+    pSrc1: snap.meta.pSrc1,
+    pSrc2: snap.meta.pSrc2,
+    iType: snap.status.iType,
+    excp: snap.status.excp,
+    isBranch: snap.status.isBranch,
+    isStore: snap.status.isStore,
+    isCsr: snap.status.isCsr,
+    isTlb: snap.status.isTlb,
+    isSpecial: snap.status.isSpecial,
+    mispredict: snap.status.mispredict,
+    correctTarget: snap.status.correctTarget,
+    memVaddr: snap.mem.vaddr,
+    memPaddr: snap.mem.paddr,
+    memUseCache: snap.mem.useCache,
+    memMask: snap.mem.mask
+  };
+endfunction
+
 function Action doCollectCommitTLBBody(
     Reg#(CommitState) commitState,
+    Reg#(CommitHeadSnapshot) commitHeadSnapReg,
     TlbArray tlb,
     ROB rob,
     CsrFile csrf
@@ -103,7 +138,8 @@ function Action doCollectCommitTLBBody(
   action
     let res <- tlb.resp;
     commitState <= CommitIdle;
-    let head = rob.head;
+    CommitHeadSnapshot headSnap = commitHeadSnapReg;
+    let head = robEntryFromCommitHeadSnapshot(headSnap);
     Bit#(5) wbTlbfillIndex = 0;
     Bool isTlbfill = !head.excp.valid && head.iType == Tlbfill;
 
@@ -178,12 +214,16 @@ function Action takeCsrSnapshotBody(
     Reg#(DiffArchCsrState) csrSnapReg,
 `endif
     Reg#(CommitCsrSnapshot) commitCsrSnapReg,
+    Reg#(CommitHeadSnapshot) commitHeadSnapReg,
     CsrFile csrf,
     ROB rob,
     Reg#(CommitState) commitState
 );
   action
-    DecodedInst dInst = decode(rob.head.inst);
+    let headStatus = rob.headStatus;
+    let headMeta = rob.headCommitMeta;
+    let headMem = rob.headMemInfo;
+    DecodedInst dInst = decode(headMeta.inst);
     CsrIndx csrIdxForRd = fromMaybe(0, dInst.csr);
     InterruptInfo interruptInfo = csrf.interruptDetected;
 `ifdef CONFIG_DIFFTEST
@@ -201,12 +241,17 @@ function Action takeCsrSnapshotBody(
       llbctlKloVal: csrf.llbctlKloValue,
       interruptInfo: interruptInfo
     };
+    commitHeadSnapReg <= CommitHeadSnapshot{
+      status: headStatus,
+      meta: headMeta,
+      mem: headMem
+    };
     commitState <= interruptInfo.valid ? CommitInterruptReady : CommitReady;
   endaction
 endfunction
 
 function Action doCommitBody(
-    ROB rob
+    Reg#(CommitHeadSnapshot) commitHeadSnapReg
 `ifdef CONFIG_WB_DEBUG
     , Wire#(Bool) debugWsValidWire
     , Wire#(Addr) debugWbPcWire
@@ -217,11 +262,11 @@ function Action doCommitBody(
 );
   action
 `ifdef CONFIG_WB_DEBUG
-    let head = rob.head;
+    CommitHeadSnapshot headSnap = commitHeadSnapReg;
     debugWsValidWire <= True;
-    debugWbPcWire <= head.pc;
+    debugWbPcWire <= headSnap.meta.pc;
 `ifdef CONFIG_WB_DEBUG_INST
-    debugWbInstWire <= head.inst;
+    debugWbInstWire <= headSnap.meta.inst;
 `endif
 `endif
   endaction
@@ -287,6 +332,7 @@ endfunction
 
 function Action doCommitTrapAction(
     CommitTrapInfo trap,
+    Reg#(CommitHeadSnapshot) commitHeadSnapReg,
     ROB rob,
     Reg#(CommitState) commitState,
     CsrFile csrf,
@@ -325,7 +371,8 @@ function Action doCommitTrapAction(
 `endif
 );
   action
-    let head = rob.head;
+    CommitHeadSnapshot headSnap = commitHeadSnapReg;
+    let head = robEntryFromCommitHeadSnapshot(headSnap);
 `ifdef CONFIG_DIFFTEST
     DiffArchCsrState diffCsrSnap = csrSnapReg;
 `endif
@@ -370,6 +417,7 @@ function Action doCommitTrapAction(
 endfunction
 
 function Action doCommitErtnAction(
+    Reg#(CommitHeadSnapshot) commitHeadSnapReg,
     ROB rob,
     Reg#(CommitState) commitState,
     CsrFile csrf,
@@ -409,7 +457,8 @@ function Action doCommitErtnAction(
 `endif
 );
   action
-    let head = rob.head;
+    CommitHeadSnapshot headSnap = commitHeadSnapReg;
+    let head = robEntryFromCommitHeadSnapshot(headSnap);
 `ifdef CONFIG_DIFFTEST
     DiffArchCsrState diffCsrSnap = csrSnapReg;
     Bool llbctlKloVal = unpack(diffCsrSnap.llbctl[2]);
@@ -455,6 +504,7 @@ function Action doCommitErtnAction(
 endfunction
 
 function Action doCommitRedirectAction(
+    Reg#(CommitHeadSnapshot) commitHeadSnapReg,
     ROB rob,
     Reg#(CommitState) commitState,
     CsrFile csrf,
@@ -498,7 +548,8 @@ function Action doCommitRedirectAction(
 `endif
 );
   action
-    let head = rob.head;
+    CommitHeadSnapshot headSnap = commitHeadSnapReg;
+    let head = robEntryFromCommitHeadSnapshot(headSnap);
 `ifdef CONFIG_DIFFTEST
     DiffArchCsrState diffCsrSnap = csrSnapReg;
 `endif
@@ -517,7 +568,7 @@ function Action doCommitRedirectAction(
           ecode: ecode, esubcode: esubcode, badv: head.excp.badv,
           isInterrupt: False, interruptNo: 0
         },
-        rob, commitState, csrf,
+        commitHeadSnapReg, rob, commitState, csrf,
 `ifdef CONFIG_DIFFTEST
         csrSnapReg,
 `endif
@@ -579,7 +630,7 @@ function Action doCommitRedirectAction(
           ecode: ecode, esubcode: esubcode, badv: head.pc,
           isInterrupt: False, interruptNo: 0
         },
-        rob, commitState, csrf,
+        commitHeadSnapReg, rob, commitState, csrf,
 `ifdef CONFIG_DIFFTEST
         csrSnapReg,
 `endif
@@ -598,7 +649,7 @@ endfunction
 
 
 function ActionValue#(PendingCsrCommit) prepareCsrCommit(
-    ROB rob,
+    Reg#(CommitHeadSnapshot) commitHeadSnapReg,
 `ifdef CONFIG_DIFFTEST
     Reg#(DiffArchCsrState) csrSnapReg,
 `endif
@@ -606,7 +657,8 @@ function ActionValue#(PendingCsrCommit) prepareCsrCommit(
     PRF prf
 );
   actionvalue
-    let head = rob.head;
+    CommitHeadSnapshot headSnap = commitHeadSnapReg;
+    let head = robEntryFromCommitHeadSnapshot(headSnap);
     DecodedInst dInst = decode(head.inst);
     CsrIndx csrIdxForRd = fromMaybe(0, dInst.csr);
     CommitCsrSnapshot commitCsrSnap = commitCsrSnapReg;
@@ -684,10 +736,10 @@ function Action doApplyPendingCsrCommitAction(
 `endif
 );
   action
-    let head = rob.head;
+    RobHeadStatus currentHeadStatus = rob.headStatus;
     PendingCsrCommit pending = pendingCsrCommit;
 
-    if (!sameRobToken(head.token, pending.token)) begin
+    if (!rob.headValid || !sameRobToken(currentHeadStatus.token, pending.token)) begin
 `ifdef CONFIG_BSIM
       $display("CSR COMMIT ERROR: pending token does not match ROB head");
       $finish(1);
@@ -764,6 +816,7 @@ function Action doApplyPendingCsrCommitAction(
 endfunction
 
 function ActionValue#(CommitNormalResult) doCommitNormalSharedAction(
+    Reg#(CommitHeadSnapshot) commitHeadSnapReg,
     ROB rob,
     CsrFile csrf,
 `ifdef CONFIG_DIFFTEST
@@ -803,7 +856,8 @@ function ActionValue#(CommitNormalResult) doCommitNormalSharedAction(
 `endif
 );
   actionvalue
-    let head = rob.head;
+    CommitHeadSnapshot headSnap = commitHeadSnapReg;
+    let head = robEntryFromCommitHeadSnapshot(headSnap);
     Bool retired = False;
     Bool deqRob = False;
     Bool waitTlb = False;
@@ -940,6 +994,7 @@ function ActionValue#(CommitNormalResult) doCommitNormalSharedAction(
 endfunction
 
 function Action doCommitIbarAction(
+    Reg#(CommitHeadSnapshot) commitHeadSnapReg,
     ROB rob,
     Reg#(CommitState) commitState,
 `ifdef CONFIG_DIFFTEST
@@ -977,7 +1032,8 @@ function Action doCommitIbarAction(
 `endif
 );
   action
-    let head = rob.head;
+    CommitHeadSnapshot headSnap = commitHeadSnapReg;
+    let head = robEntryFromCommitHeadSnapshot(headSnap);
     Addr nextPc = head.pc + 4;
 
     pcReg <= nextPc;
@@ -1032,6 +1088,7 @@ function Action doCommitIbarAction(
 endfunction
 
 function Action doCommitReclaimAction(
+    Reg#(CommitHeadSnapshot) commitHeadSnapReg,
     ROB rob,
     Reg#(CommitState) commitState,
     CsrFile csrf,
@@ -1073,8 +1130,9 @@ function Action doCommitReclaimAction(
 `endif
 );
   action
-    let head = rob.head;
-    let result <- doCommitNormalSharedAction(rob, csrf,
+    CommitHeadSnapshot headSnap = commitHeadSnapReg;
+    let head = robEntryFromCommitHeadSnapshot(headSnap);
+    let result <- doCommitNormalSharedAction(commitHeadSnapReg, rob, csrf,
 `ifdef CONFIG_DIFFTEST
       csrSnapReg,
 `endif
@@ -1119,6 +1177,7 @@ function Action doCommitReclaimAction(
 endfunction
 
 function Action doCommitNoReclaimAction(
+    Reg#(CommitHeadSnapshot) commitHeadSnapReg,
     ROB rob,
     Reg#(CommitState) commitState,
     CsrFile csrf,
@@ -1159,8 +1218,9 @@ function Action doCommitNoReclaimAction(
 `endif
 );
   action
-    let head = rob.head;
-    let result <- doCommitNormalSharedAction(rob, csrf,
+    CommitHeadSnapshot headSnap = commitHeadSnapReg;
+    let head = robEntryFromCommitHeadSnapshot(headSnap);
+    let result <- doCommitNormalSharedAction(commitHeadSnapReg, rob, csrf,
 `ifdef CONFIG_DIFFTEST
       csrSnapReg,
 `endif
