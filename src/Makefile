@@ -134,10 +134,11 @@ core-verilog: $(VDIR)/$(CORE_AXI_TOP).v
 	@echo "==== Updating myCPU Verilog files ===="
 	rm -rf $(ROOT_DIR)/../chiplab/IP/myCPU/*
 	cp build/verilog/*.v $(ROOT_DIR)/../chiplab/IP/myCPU/
-	cp  /opt/bsc/lib/Verilog/RevertReg.v \
-    	/opt/bsc/lib/Verilog/FIFO*.v \
-    	/opt/bsc/lib/Verilog/RegFile*.v \
-    	/opt/bsc/lib/Verilog/CReg*.v $(ROOT_DIR)/../chiplab/IP/myCPU/
+	cp	/opt/bsc/lib/Verilog/RevertReg.v \
+		/opt/bsc/lib/Verilog/FIFO*.v \
+		/opt/bsc/lib/Verilog/RegFile*.v \
+		/opt/bsc/lib/Verilog/CReg*.v	\
+		$(ROOT_DIR)/vsrc/*.v  $(ROOT_DIR)/../chiplab/IP/myCPU/
 	find $(ROOT_DIR)/../chiplab/IP/myCPU/ -type f -name "*.v" -exec $(ROOT_DIR)/scripts/filter_bsv.sh {} +
 	python3 $(ROOT_DIR)/scripts/gen_axi_wrapper.py
 
