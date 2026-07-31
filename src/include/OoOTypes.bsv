@@ -70,6 +70,38 @@ typedef struct {
   Maybe#(ByteMask) memMask;      // original access size/sign mask for Difftest
 } RobEntry deriving(Bits, Eq);
 
+// ROB physical storage groups.  RobEntry remains the compatibility head/enq view.
+typedef struct {
+  RobToken      token;
+  Addr          pc;
+  Instruction   inst;
+  Maybe#(PIndx) pDst;
+  Maybe#(PIndx) oldPdst;
+  Maybe#(RIndx) dst;
+  PIndx         pSrc1;
+  PIndx         pSrc2;
+  IType         iType;
+  Bool          isBranch;
+  Bool          isStore;
+  Bool          isCsr;
+  Bool          isTlb;
+  Bool          isSpecial;
+} RobStaticEntry deriving(Bits, Eq);
+
+typedef struct {
+  RobState state;
+  ExcpInfo excp;
+  Bool     mispredict;
+  Addr     correctTarget;
+} RobExecStatus deriving(Bits, Eq);
+
+typedef struct {
+  Addr             vaddr;
+  Addr             paddr;
+  Bool             useCache;
+  Maybe#(ByteMask) mask;
+} RobMemInfo deriving(Bits, Eq);
+
 // Reservation Station operand state shared by FU-specific RS entries.
 typedef struct {
   Maybe#(PIndx) qj;  // source 1 dependency (Invalid = ready)

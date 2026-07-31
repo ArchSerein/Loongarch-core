@@ -5,9 +5,8 @@ import Vector::*;
 import OoOTypes::*;
 
 // ============================================================
-// Reorder Buffer (ROB): 32-entry circular queue
-// Ensures in-order commit, supports precise exceptions
-// and branch mispredict recovery
+// Reorder Buffer (ROB)
+// Circular buffer with speculative epoch token checks
 // ============================================================
 
 interface ROB;
@@ -34,7 +33,10 @@ interface ROB;
 endinterface
 
 module mkROB(ROB);
-  Vector#(32, Reg#(RobEntry)) entries <- replicateM(mkRegU);
+  Vector#(32, Reg#(RobStaticEntry)) staticEntries <- replicateM(mkRegU);
+  Vector#(32, Reg#(RobExecStatus)) execStatus <- replicateM(mkRegU);
+  Vector#(32, Reg#(RobMemInfo)) memInfo <- replicateM(mkRegU);
+  Reg#(Bit#(32)) validMask <- mkReg(0);
   Reg#(Bit#(5)) headPtr <- mkReg(0);
   Reg#(Bit#(5)) tail <- mkReg(0);
   Reg#(Bit#(6)) count <- mkReg(0);
@@ -64,18 +66,73 @@ module mkROB(ROB);
     return zeroExtend(age) < count;
   endfunction
 
-  function RobEntry invalidRobEntry;
-    return RobEntry {
-      valid: False, token: RobToken{index: 0, epoch: 0},
-      state: RobIssued, pc: 0, inst: 0,
-      pDst: tagged Invalid, oldPdst: tagged Invalid, dst: tagged Invalid,
-      pSrc1: 0, pSrc2: 0, iType: Alu,
-      excp: ExcpInfo{valid: False, ecode: 0, esubcode: 0, badv: 0},
-      isBranch: False, isStore: False, isCsr: False,
-      isTlb: False, isSpecial: False,
-      mispredict: False, correctTarget: 0,
-      memVaddr: 0, memPaddr: 0, memUseCache: False,
-      memMask: tagged Invalid
+  function RobStaticEntry staticFromEntry(RobEntry e);
+    return RobStaticEntry{
+      token: e.token,
+      pc: e.pc,
+      inst: e.inst,
+      pDst: e.pDst,
+      oldPdst: e.oldPdst,
+      dst: e.dst,
+      pSrc1: e.pSrc1,
+      pSrc2: e.pSrc2,
+      iType: e.iType,
+      isBranch: e.isBranch,
+      isStore: e.isStore,
+      isCsr: e.isCsr,
+      isTlb: e.isTlb,
+      isSpecial: e.isSpecial
+    };
+  endfunction
+
+  function RobExecStatus statusFromEntry(RobEntry e);
+    return RobExecStatus{
+      state: e.state,
+      excp: e.excp,
+      mispredict: e.mispredict,
+      correctTarget: e.correctTarget
+    };
+  endfunction
+
+  function RobMemInfo memFromEntry(RobEntry e);
+    return RobMemInfo{
+      vaddr: e.memVaddr,
+      paddr: e.memPaddr,
+      useCache: e.memUseCache,
+      mask: e.memMask
+    };
+  endfunction
+
+  function RobEntry assembleEntry(
+      Bool valid,
+      RobStaticEntry staticEntry,
+      RobExecStatus status,
+      RobMemInfo mem
+  );
+    return RobEntry{
+      valid: valid,
+      token: staticEntry.token,
+      state: status.state,
+      pc: staticEntry.pc,
+      inst: staticEntry.inst,
+      pDst: staticEntry.pDst,
+      oldPdst: staticEntry.oldPdst,
+      dst: staticEntry.dst,
+      pSrc1: staticEntry.pSrc1,
+      pSrc2: staticEntry.pSrc2,
+      iType: staticEntry.iType,
+      excp: status.excp,
+      isBranch: staticEntry.isBranch,
+      isStore: staticEntry.isStore,
+      isCsr: staticEntry.isCsr,
+      isTlb: staticEntry.isTlb,
+      isSpecial: staticEntry.isSpecial,
+      mispredict: status.mispredict,
+      correctTarget: status.correctTarget,
+      memVaddr: mem.vaddr,
+      memPaddr: mem.paddr,
+      memUseCache: mem.useCache,
+      memMask: mem.mask
     };
   endfunction
 
@@ -87,78 +144,81 @@ module mkROB(ROB);
     Bool doEnq = isValid(enqReq) && !doFlush && !doClear;
     Bool doDeq = deqReq && !doClear;
 
-    // Process entry writes: updates + enq (one write per entry max)
+    // Process entry writes.  Enqueue writes all three arrays; completion ports
+    // only touch execStatus or memInfo, so static metadata is not rewritten.
     for (Integer i = 0; i < 32; i = i + 1) begin
       Bit#(5) idx = fromInteger(i);
-      // A flush makes younger entries unreachable by moving tail/count; they
-      // need not be physically cleared and will be overwritten by later enqs.
       if (doEnq && tail == idx) begin
-        entries[idx] <= fromMaybe(?, enqReq);
+        RobEntry e = fromMaybe(?, enqReq);
+        staticEntries[idx] <= staticFromEntry(e);
+        execStatus[idx] <= statusFromEntry(e);
+        memInfo[idx] <= memFromEntry(e);
       end else begin
-        RobEntry e = entries[idx];
-        RobState newState = e.state;
-        ExcpInfo newExcp = e.excp;
-        Bool newMispredict = e.mispredict;
-        Addr newCorrectTarget = e.correctTarget;
-        Addr newMemVaddr = e.memVaddr;
-        Addr newMemPaddr = e.memPaddr;
-        Bool newMemUseCache = e.memUseCache;
-        Maybe#(ByteMask) newMemMask = e.memMask;
-        Bool modified = False;
+        RobStaticEntry staticEntry = staticEntries[idx];
+        RobExecStatus status = execStatus[idx];
+        RobMemInfo mem = memInfo[idx];
+        Bool valid = validMask[idx] == 1;
+        Bool statusModified = False;
+        Bool memModified = False;
 
         for (Integer p = 0; p < 4; p = p + 1) begin
           if (updateReqs[p] matches tagged Valid .req &&& tpl_1(req).index == idx &&
-              e.valid && sameRobToken(e.token, tpl_1(req))) begin
-            newState = tpl_2(req);
-            modified = True;
+              valid && sameRobToken(staticEntry.token, tpl_1(req))) begin
+            status.state = tpl_2(req);
+            statusModified = True;
           end
         end
         if (updateExcpReq matches tagged Valid .req &&& tpl_1(req).index == idx &&
-            e.valid && sameRobToken(e.token, tpl_1(req))) begin
-          newExcp = tpl_2(req);
-          modified = True;
+            valid && sameRobToken(staticEntry.token, tpl_1(req))) begin
+          status.excp = tpl_2(req);
+          statusModified = True;
         end
         if (updateBranchReq matches tagged Valid .req &&& tpl_1(req).index == idx &&
-            e.valid && sameRobToken(e.token, tpl_1(req))) begin
-          newMispredict = tpl_2(req);
-          newCorrectTarget = tpl_3(req);
-          modified = True;
+            valid && sameRobToken(staticEntry.token, tpl_1(req))) begin
+          status.mispredict = tpl_2(req);
+          status.correctTarget = tpl_3(req);
+          statusModified = True;
         end
         if (updateMemInfoReq matches tagged Valid .req &&& tpl_1(req).index == idx &&
-            e.valid && sameRobToken(e.token, tpl_1(req))) begin
-          newMemVaddr = tpl_2(req);
-          newMemPaddr = tpl_3(req);
-          newMemUseCache = tpl_4(req);
-          newMemMask = tpl_5(req);
-          modified = True;
+            valid && sameRobToken(staticEntry.token, tpl_1(req))) begin
+          mem.vaddr = tpl_2(req);
+          mem.paddr = tpl_3(req);
+          mem.useCache = tpl_4(req);
+          mem.mask = tpl_5(req);
+          memModified = True;
         end
 
-        if (modified) begin
-          entries[idx] <= RobEntry {
-            valid: e.valid, token: e.token, state: newState, pc: e.pc, inst: e.inst,
-            pDst: e.pDst, oldPdst: e.oldPdst,
-            dst: e.dst,
-            pSrc1: e.pSrc1, pSrc2: e.pSrc2,
-            iType: e.iType, excp: newExcp,
-            isBranch: e.isBranch, isStore: e.isStore, isCsr: e.isCsr,
-            isTlb: e.isTlb, isSpecial: e.isSpecial,
-            mispredict: newMispredict, correctTarget: newCorrectTarget,
-            memVaddr: newMemVaddr, memPaddr: newMemPaddr,
-            memUseCache: newMemUseCache, memMask: newMemMask
-          };
+        if (statusModified) begin
+          execStatus[idx] <= status;
+        end
+        if (memModified) begin
+          memInfo[idx] <= mem;
         end
       end
     end
 
-    // Update pointers
+    // Update pointers and valid bits.
     if (doClear) begin
+      validMask <= 0;
       headPtr <= 0;
       tail <= 0;
       count <= 0;
       epoch <= epoch + 1;
     end else if (doFlush) begin
       let tag = fromMaybe(?, flushReq);
+      Bit#(5) flushAge = tag - headPtr;
+      Bit#(32) keepMask = 0;
+
+      for (Integer i = 0; i < 32; i = i + 1) begin
+        Bit#(5) idx = fromInteger(i);
+        Bit#(5) entryAge = idx - headPtr;
+        Bool keep = validMask[idx] == 1 && entryAge <= flushAge &&
+          !(doDeq && idx == headPtr);
+        keepMask[idx] = pack(keep);
+      end
+
       Bit#(5) effectiveHead = doDeq ? nextPtr(headPtr) : headPtr;
+      validMask <= keepMask;
       tail <= nextPtr(tag);
       headPtr <= effectiveHead;
       count <= zeroExtend(tag - headPtr) + (doDeq ? 0 : 1);
@@ -167,16 +227,20 @@ module mkROB(ROB);
       Bit#(5) nextHead = headPtr;
       Bit#(5) nextTail = tail;
       Bit#(6) nextCount = count;
+      Bit#(32) nextValidMask = validMask;
 
       if (doEnq) begin
+        nextValidMask[tail] = 1;
         nextTail = nextPtr(tail);
         nextCount = nextCount + 1;
       end
       if (doDeq) begin
+        nextValidMask[headPtr] = 0;
         nextHead = nextPtr(headPtr);
         nextCount = nextCount - 1;
       end
 
+      validMask <= nextValidMask;
       headPtr <= nextHead;
       tail <= nextTail;
       count <= nextCount;
@@ -194,13 +258,14 @@ module mkROB(ROB);
   endmethod
 
   method RobEntry head if (count != 0);
-    return entries[headPtr];
+    return assembleEntry(validMask[headPtr] == 1,
+      staticEntries[headPtr], execStatus[headPtr], memInfo[headPtr]);
   endmethod
 
   method RobTag headTag = headPtr;
 
   method IType headIType;
-    return (count != 0) ? entries[headPtr].iType : Alu;
+    return (count != 0) ? staticEntries[headPtr].iType : Alu;
   endmethod
 
   method Action deq if (count != 0);
@@ -236,8 +301,8 @@ module mkROB(ROB);
   endmethod
 
   method Bool tokenAlive(RobToken token);
-    return count != 0 && tagInWindow(token.index) && entries[token.index].valid &&
-           sameRobToken(entries[token.index].token, token);
+    return count != 0 && tagInWindow(token.index) && validMask[token.index] == 1 &&
+           sameRobToken(staticEntries[token.index].token, token);
   endmethod
 
   method Action flushAfter(RobTag tag);
