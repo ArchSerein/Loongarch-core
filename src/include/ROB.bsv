@@ -14,7 +14,6 @@ interface ROB;
   method RobToken enqToken;          // next dynamic instruction token
   method SpecEpoch currentEpoch;     // current speculative epoch
   method Action enq(RobEntry e);     // insert at tail
-  method RobEntry head;              // compatibility full head entry (CM)
   method RobHeadStatus headStatus;   // narrow head execution/status view
   method RobHeadCommitMeta headCommitMeta; // narrow head commit metadata view
   method RobMemInfo headMemInfo;     // narrow head memory metadata view
@@ -175,39 +174,6 @@ module mkROB(ROB);
     };
   endfunction
 
-  function RobEntry assembleEntry(
-      Bool valid,
-      RobStaticEntry staticEntry,
-      RobExecStatus status,
-      RobMemInfo mem
-  );
-    return RobEntry{
-      valid: valid,
-      token: staticEntry.token,
-      state: status.state,
-      pc: staticEntry.pc,
-      inst: staticEntry.inst,
-      pDst: staticEntry.pDst,
-      oldPdst: staticEntry.oldPdst,
-      dst: staticEntry.dst,
-      pSrc1: staticEntry.pSrc1,
-      pSrc2: staticEntry.pSrc2,
-      iType: staticEntry.iType,
-      excp: status.excp,
-      isBranch: staticEntry.isBranch,
-      isStore: staticEntry.isStore,
-      isCsr: staticEntry.isCsr,
-      isTlb: staticEntry.isTlb,
-      isSpecial: staticEntry.isSpecial,
-      mispredict: status.mispredict,
-      correctTarget: status.correctTarget,
-      memVaddr: mem.vaddr,
-      memPaddr: mem.paddr,
-      memUseCache: mem.useCache,
-      memMask: mem.mask
-    };
-  endfunction
-
   (* fire_when_enabled *)
   (* no_implicit_conditions *)
   rule canonicalize;
@@ -343,11 +309,6 @@ module mkROB(ROB);
 
   method RobMemInfo headMemInfo;
     return (count != 0) ? memInfo[headPtr] : defaultHeadMemInfo();
-  endmethod
-
-  method RobEntry head if (count != 0);
-    return assembleEntry(validMask[headPtr] == 1,
-      staticEntries[headPtr], execStatus[headPtr], memInfo[headPtr]);
   endmethod
 
   method RobTag headTag = headPtr;

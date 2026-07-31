@@ -70,7 +70,7 @@ typedef struct {
   Maybe#(ByteMask) memMask;      // original access size/sign mask for Difftest
 } RobEntry deriving(Bits, Eq);
 
-// ROB physical storage groups.  RobEntry remains the compatibility head/enq view.
+// ROB physical storage groups.  RobEntry remains the enqueue packet shape.
 typedef struct {
   RobToken      token;
   Addr          pc;
