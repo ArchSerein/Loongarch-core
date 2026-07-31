@@ -70,28 +70,120 @@ typedef struct {
   Maybe#(ByteMask) memMask;      // original access size/sign mask for Difftest
 } RobEntry deriving(Bits, Eq);
 
-// Reservation Station entry (used for ALU, MulDiv, and Memory RS)
+// ROB physical storage groups.  RobEntry remains the enqueue packet shape.
 typedef struct {
-  Bool                valid;
-  IType               iType;
-  Maybe#(AluFunc)     aluFunc;
-  Maybe#(MulDivFunc)  muldivFunc;
-  BrFunc              brFunc;
-  Maybe#(PIndx)       qj;       // source 1 dependency (Invalid = ready)
-  Maybe#(PIndx)       qk;       // source 2 dependency (Invalid = ready)
-  Data                vj;       // source 1 value
-  Data                vk;       // source 2 value
-  Maybe#(PIndx)       pDst;     // destination physical register
-  RobTag              robTag;   // ROB tag
-  RobToken            token;    // ROB slot + speculative epoch
-  Maybe#(Data)        imm;      // immediate
-  Addr                pc;       // program counter
-  Addr                predPc;   // predicted PC (for branch)
-  Maybe#(ByteMask)    mask;     // byte mask (for memory ops)
-  Maybe#(Bit#(5))     cacheOp;  // cache operation (for Cacop)
-  Bool                isStore;  // store flag
-  Bool                isLoad;   // load flag
-} RSEntry deriving(Bits, Eq);
+  RobToken      token;
+  Addr          pc;
+  Instruction   inst;
+  Maybe#(PIndx) pDst;
+  Maybe#(PIndx) oldPdst;
+  Maybe#(RIndx) dst;
+  PIndx         pSrc1;
+  PIndx         pSrc2;
+  IType         iType;
+  Bool          isBranch;
+  Bool          isStore;
+  Bool          isCsr;
+  Bool          isTlb;
+  Bool          isSpecial;
+} RobStaticEntry deriving(Bits, Eq);
+
+typedef struct {
+  RobState state;
+  ExcpInfo excp;
+  Bool     mispredict;
+  Addr     correctTarget;
+} RobExecStatus deriving(Bits, Eq);
+
+typedef struct {
+  Addr             vaddr;
+  Addr             paddr;
+  Bool             useCache;
+  Maybe#(ByteMask) mask;
+} RobMemInfo deriving(Bits, Eq);
+
+// Narrow ROB head views used by commit/issue without assembling a full entry.
+typedef struct {
+  RobToken token;
+  RobState state;
+  IType    iType;
+  ExcpInfo excp;
+  Bool     isBranch;
+  Bool     isStore;
+  Bool     isCsr;
+  Bool     isTlb;
+  Bool     isSpecial;
+  Bool     mispredict;
+  Addr     correctTarget;
+} RobHeadStatus deriving(Bits, Eq);
+
+typedef struct {
+  Addr          pc;
+  Instruction   inst;
+  Maybe#(PIndx) pDst;
+  Maybe#(PIndx) oldPdst;
+  Maybe#(RIndx) dst;
+  PIndx         pSrc1;
+  PIndx         pSrc2;
+} RobHeadCommitMeta deriving(Bits, Eq);
+
+// Reservation Station operand state shared by FU-specific RS entries.
+typedef struct {
+  Maybe#(PIndx) qj;  // source 1 dependency (Invalid = ready)
+  Maybe#(PIndx) qk;  // source 2 dependency (Invalid = ready)
+  Data          vj;  // source 1 value
+  Data          vk;  // source 2 value
+} RSOperandState deriving(Bits, Eq);
+
+// ALU reservation station entry: ALU, cpucfg and branch metadata only.
+typedef struct {
+  IType           iType;
+  Maybe#(AluFunc) aluFunc;
+  BrFunc          brFunc;
+  Maybe#(PIndx)   pDst;
+  RobTag          robTag;
+  RobToken        token;
+  Maybe#(Data)    imm;
+  Addr            pc;
+  Addr            predPc;
+} AluRSPayload deriving(Bits, Eq);
+
+typedef struct {
+  AluRSPayload  payload;
+  RSOperandState operands;
+} AluIssueEntry deriving(Bits, Eq);
+
+// MulDiv reservation station entry: no branch, memory or ALU-only metadata.
+typedef struct {
+  IType              iType;
+  Maybe#(MulDivFunc) muldivFunc;
+  Maybe#(PIndx)      pDst;
+  RobTag             robTag;
+  RobToken           token;
+} MulDivRSPayload deriving(Bits, Eq);
+
+typedef struct {
+  MulDivRSPayload payload;
+  RSOperandState  operands;
+} MulDivIssueEntry deriving(Bits, Eq);
+
+// Memory reservation station entry: address-generation and memory side-effect metadata.
+typedef struct {
+  IType             iType;
+  Maybe#(PIndx)     pDst;
+  RobTag            robTag;
+  RobToken          token;
+  Maybe#(Data)      imm;
+  Maybe#(ByteMask)  mask;
+  Maybe#(Bit#(5))   cacheOp;
+  Bool              isStore;
+  Bool              isLoad;
+} MemRSPayload deriving(Bits, Eq);
+
+typedef struct {
+  MemRSPayload  payload;
+  RSOperandState operands;
+} MemIssueEntry deriving(Bits, Eq);
 
 // Renamed instruction (RN stage output)
 typedef struct {
@@ -220,14 +312,6 @@ function Maybe#(RIndx) normalizeReg(Maybe#(RIndx) r);
   end
 endfunction
 
-// Invalid entry constructors (for invalidation without 'with' syntax)
-function RSEntry invalidRSEntry();
-  return RSEntry {
-    valid: False, iType: ?, aluFunc: ?, muldivFunc: ?, brFunc: ?,
-    qj: ?, qk: ?, vj: ?, vk: ?, pDst: ?, robTag: ?, token: ?,
-    imm: ?, pc: ?, predPc: ?, mask: ?, cacheOp: ?, isStore: ?, isLoad: ?
-  };
-endfunction
 
 function LQEntry invalidLQEntry();
   return LQEntry {
